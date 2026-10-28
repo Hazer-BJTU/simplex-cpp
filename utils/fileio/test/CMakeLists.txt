@@ -17,3 +17,8 @@ add_test(NAME test_fileio_paths COMMAND test_fileio_paths)
 add_executable(test_fileio_streaming test_streaming.cpp)
 target_link_libraries(test_fileio_streaming PRIVATE fileio_lib Boost::unit_test_framework)
 add_test(NAME test_fileio_streaming COMMAND test_fileio_streaming)
+
+# Replacement transaction: lazy candidate, prefix copy, observer and rewind.
+add_executable(test_staged_replace test_staged_replace.cpp)
+target_link_libraries(test_staged_replace PRIVATE fileio_lib Boost::unit_test_framework)
+add_test(NAME test_staged_replace COMMAND test_staged_replace)

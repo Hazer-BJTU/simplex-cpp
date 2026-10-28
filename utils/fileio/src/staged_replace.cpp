@@ -26,7 +26,9 @@ constexpr std::size_t kMaxBufferBytes = 1024 * 1024;
 constexpr std::size_t kCompareChunk = 64 * 1024;
 
 /** Read from both descriptors and require identical bytes. */
-void compare_exact(int left, int right, std::uintmax_t bytes)
+void compare_exact(
+    int left, int right, std::uintmax_t bytes, std::uintmax_t base,
+    SourceObserver* observer)
 {
     std::array<char, kCompareChunk> first{};
     std::array<char, kCompareChunk> second{};
@@ -41,6 +43,9 @@ void compare_exact(int left, int right, std::uintmax_t bytes)
         }
         if (std::memcmp(first.data(), second.data(), left_count) != 0) {
             throw ReplaceConflict("file contents changed before replacement");
+        }
+        if (observer != nullptr) {
+            observer->observe(base + compared, {first.data(), left_count});
         }
         compared += left_count;
     }
@@ -64,10 +69,11 @@ void compare_expected(int descriptor, std::uintmax_t bytes, std::string_view exp
 }
 
 /** Require both descriptors to end together with identical remaining bytes. */
-void compare_to_end(int left, int right)
+void compare_to_end(int left, int right, std::uintmax_t base, SourceObserver* observer)
 {
     std::array<char, kCompareChunk> first{};
     std::array<char, kCompareChunk> second{};
+    std::uintmax_t compared = 0;
     for (;;) {
         const auto left_count = detail::read_some(left, first.data(), first.size());
         const auto right_count = detail::read_some(right, second.data(), second.size());
@@ -78,6 +84,8 @@ void compare_to_end(int left, int right)
         if (std::memcmp(first.data(), second.data(), left_count) != 0) {
             throw ReplaceConflict("file contents changed before replacement");
         }
+        if (observer != nullptr) observer->observe(base + compared, {first.data(), left_count});
+        compared += left_count;
     }
 }
 
@@ -110,18 +118,11 @@ StagedReplacement::StagedReplacement(
     detail::Descriptor directory(
         ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (!directory.valid()) detail::fail("open editable file directory");
-    auto pattern = (parent / ".simplex-edit-XXXXXX").string();
-    std::vector<char> name(pattern.begin(), pattern.end());
-    name.push_back('\0');
-    detail::Descriptor candidate(::mkostemp(name.data(), O_CLOEXEC));
-    if (!candidate.valid()) detail::fail("create replacement file");
     destination_ = destination;
-    temporary_path_ = name.data();
     identity_ = detail::identity_of(opened);
     buffer_.resize(buffer_bytes);
     source_ = source.release();
     directory_ = directory.release();
-    candidate_ = candidate.release();
 }
 
 StagedReplacement::StagedReplacement(StagedReplacement&& other) noexcept
@@ -133,7 +134,8 @@ StagedReplacement::StagedReplacement(StagedReplacement&& other) noexcept
       candidate_bytes_(other.candidate_bytes_),
       source_(std::exchange(other.source_, -1)),
       candidate_(std::exchange(other.candidate_, -1)),
-      directory_(std::exchange(other.directory_, -1))
+      directory_(std::exchange(other.directory_, -1)),
+      consumed_(std::exchange(other.consumed_, false))
 {
     other.temporary_path_.clear();
     other.source_bytes_ = 0;
@@ -155,6 +157,7 @@ StagedReplacement& StagedReplacement::operator=(StagedReplacement&& other) noexc
         source_ = std::exchange(other.source_, -1);
         candidate_ = std::exchange(other.candidate_, -1);
         directory_ = std::exchange(other.directory_, -1);
+        consumed_ = std::exchange(other.consumed_, false);
         other.temporary_path_.clear();
         other.source_bytes_ = 0;
         other.candidate_bytes_ = 0;
@@ -167,6 +170,27 @@ StagedReplacement::~StagedReplacement()
     discard();
     if (source_ >= 0) ::close(source_);
     if (directory_ >= 0) ::close(directory_);
+}
+
+void StagedReplacement::ensure_candidate()
+{
+    if (candidate_ >= 0) return;
+    const auto parent = destination_.parent_path();
+    auto pattern = (parent / ".simplex-edit-XXXXXX").string();
+    std::vector<char> name(pattern.begin(), pattern.end());
+    name.push_back('\0');
+    detail::Descriptor candidate(::mkostemp(name.data(), O_CLOEXEC));
+    if (!candidate.valid()) detail::fail("create replacement file");
+    // The path exists now; keep it removable even if the string assignment
+    // below throws, because discard() would not know about it yet.
+    struct Guard {
+        const char* path;
+        bool armed = true;
+        ~Guard() { if (armed) ::unlink(path); }
+    } guard{name.data()};
+    temporary_path_ = name.data();
+    guard.armed = false;
+    candidate_ = candidate.release();
 }
 
 std::string_view StagedReplacement::next_source()
@@ -184,6 +208,13 @@ std::string_view StagedReplacement::next_source()
     }
 }
 
+void StagedReplacement::restart_source()
+{
+    if (source_ < 0) throw std::logic_error("replacement source is closed");
+    if (::lseek(source_, 0, SEEK_SET) != 0) detail::fail("rewind editable file");
+    source_bytes_ = 0;
+}
+
 std::uintmax_t StagedReplacement::source_bytes() const noexcept
 {
     return source_bytes_;
@@ -199,15 +230,61 @@ std::uintmax_t StagedReplacement::candidate_bytes() const noexcept
     return candidate_bytes_;
 }
 
+void StagedReplacement::copy_prefix(std::uintmax_t bytes)
+{
+    if (bytes > source_bytes_) {
+        throw std::logic_error("prefix copy exceeds the scanned source");
+    }
+    if (bytes == 0) return;
+    ensure_candidate();
+    std::uintmax_t copied = 0;
+#if defined(__linux__)
+    // The kernel copies from the source without another user-space read, so the
+    // scan budget stays at two source reads.
+    while (copied < bytes) {
+        const auto want = static_cast<std::size_t>(
+            std::min<std::uintmax_t>(bytes - copied, 1u << 30));
+        auto offset = static_cast<off_t>(copied);
+        const auto count = ::copy_file_range(source_, &offset, candidate_, nullptr, want, 0);
+        if (count > 0) {
+            copied += static_cast<std::uintmax_t>(count);
+            continue;
+        }
+        if (count < 0 && errno == EINTR) continue;
+        break;
+    }
+#endif
+    if (copied < bytes) {
+        // Fallback for filesystems without copy_file_range; pread keeps the
+        // source scan position untouched.
+        std::array<char, kCompareChunk> chunk{};
+        while (copied < bytes) {
+            const auto want = static_cast<std::size_t>(
+                std::min<std::uintmax_t>(chunk.size(), bytes - copied));
+            const auto count = ::pread(source_, chunk.data(), want, static_cast<off_t>(copied));
+            if (count < 0) {
+                if (errno == EINTR) continue;
+                detail::fail("copy editable file prefix");
+            }
+            if (count == 0) detail::fail("copy editable file prefix");
+            detail::write_all(candidate_, {chunk.data(), static_cast<std::size_t>(count)});
+            copied += static_cast<std::uintmax_t>(count);
+        }
+    }
+    candidate_bytes_ += bytes;
+}
+
 void StagedReplacement::write(std::string_view bytes)
 {
-    if (candidate_ < 0) throw std::logic_error("replacement candidate is closed");
+    if (consumed_) throw std::logic_error("replacement candidate is closed");
+    ensure_candidate();
     detail::write_all(candidate_, bytes);
     candidate_bytes_ += bytes.size();
 }
 
 void StagedReplacement::finish_candidate()
 {
+    ensure_candidate();
     struct stat created {};
     if (::fstat(candidate_, &created) != 0) detail::fail("inspect replacement file");
     if (static_cast<std::uintmax_t>(created.st_size) != candidate_bytes_) {
@@ -243,7 +320,8 @@ void StagedReplacement::confirm_source_unchanged(int descriptor) const
 }
 
 void StagedReplacement::verify_against_source(
-    std::uintmax_t match_byte, std::string_view matched_source)
+    std::uintmax_t match_byte, std::string_view matched_source,
+    SourceObserver* observer)
 {
     if (match_byte > source_bytes_ ||
         matched_source.size() > source_bytes_ - match_byte) {
@@ -260,10 +338,11 @@ void StagedReplacement::verify_against_source(
     confirm_source_unchanged(reopened.get());
 
     detail::Descriptor candidate(detail::open_source(temporary_path_));
-    compare_exact(reopened.get(), candidate.get(), match_byte);
+    compare_exact(reopened.get(), candidate.get(), match_byte, 0, observer);
     skip_bytes(candidate.get(), replaced);
     compare_expected(reopened.get(), matched_source.size(), matched_source);
-    compare_to_end(reopened.get(), candidate.get());
+    compare_to_end(reopened.get(), candidate.get(), match_byte + matched_source.size(),
+                   observer);
 
     struct stat after {};
     if (::fstat(reopened.get(), &after) != 0) detail::fail("inspect compared file");
@@ -273,14 +352,18 @@ void StagedReplacement::verify_against_source(
 }
 
 void StagedReplacement::publish(
-    std::uintmax_t match_byte, std::string_view matched_source)
+    std::uintmax_t match_byte, std::string_view matched_source,
+    SourceObserver* observer)
 {
-    if (candidate_ < 0 || temporary_path_.empty()) {
+    if (source_ < 0 || consumed_) {
         throw std::logic_error("replacement candidate is already consumed");
     }
+    // Nothing written yet is still a valid output (a file replaced by nothing),
+    // so an empty candidate is created before verifying.
+    ensure_candidate();
     finish_candidate();
     confirm_source_unchanged(source_);
-    verify_against_source(match_byte, matched_source);
+    verify_against_source(match_byte, matched_source, observer);
 
     struct stat original {};
     if (::fstat(source_, &original) != 0) detail::fail("inspect editable file");
@@ -296,6 +379,7 @@ void StagedReplacement::publish(
         detail::fail("publish replacement file");
     }
     temporary_path_.clear();
+    consumed_ = true;
     if (::fsync(directory_) != 0) {
         throw AtomicWriteError(
             {errno, std::generic_category()},

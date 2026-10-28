@@ -66,7 +66,11 @@ SequentialFile SequentialFile::open(
             std::make_error_code(std::errc::operation_not_supported),
             "streaming read requires a regular file");
     }
-    return SequentialFile(holder.release(), detail::identity_of(info), buffer_bytes);
+    // Construct while the holder still owns the descriptor: if the buffer
+    // allocation throws, the descriptor is closed instead of leaking.
+    SequentialFile file(holder.get(), detail::identity_of(info), buffer_bytes);
+    holder.release();
+    return file;
 }
 
 std::string_view SequentialFile::fill()

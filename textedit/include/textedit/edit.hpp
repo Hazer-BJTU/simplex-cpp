@@ -77,9 +77,10 @@ struct PreparedEdit {
  * The source is scanned once by a streaming exact matcher; the replacement is
  * staged in a private candidate beside the destination, and memory stays
  * proportional to old_text, the preview budget and fixed IO buffers rather than
- * to file size. A temporary file approximately the size of the edited output
- * exists until publication, so a missing or ambiguous match creates and removes
- * one. Missing/ambiguous matches and unchanged content never publish. Before
+ * to file size. Nothing is written before a unique match is known: the prefix is
+ * then copied straight from the source, so a missing or unchanged edit creates no
+ * candidate at all and an ambiguous one only spools from the first match onward.
+ * Missing/ambiguous matches and unchanged content never publish. Before
  * commit, the candidate is compared against the still-unchanged source (shared
  * prefix, the matched span byte for byte, then the suffix to the end), so exact
  * comparison is never replaced by a digest or timestamp. A change detected
@@ -88,7 +89,10 @@ struct PreparedEdit {
  * visible but directory fsync failed; do not retry blindly. Other IO failures
  * throw before publication. External writers that ignore this protocol can
  * still race after the final check. The path is not a workspace restriction.
- * max_file_bytes bounds the scanned source and the resulting size.
+ * max_file_bytes bounds the scanned source, the resulting size and every
+ * candidate byte; a replacement that cannot fit is rejected before the scan.
+ * Previews are collected from the verification re-read of the source, so they
+ * cost no extra pass and follow the final match offset exactly.
  */
 [[nodiscard]] EditResult str_replace_file(
     const std::filesystem::path& path,

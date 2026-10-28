@@ -17,11 +17,19 @@ permissions are preserved. Other inode metadata, such as ACLs and extended
 attributes, is not preserved.
 
 `str_replace_file` streams: it scans the source once with a KMP matcher that
-withholds at most `old_text`, writes the result into a private candidate beside
-the destination, and only then verifies and publishes. Memory therefore follows
-`old_text` plus the preview budget, not file size. A candidate file roughly the
-size of the edited output exists until publication, so even a missing or
-ambiguous match creates and removes one temporary file in that directory.
+withholds at most `old_text`, stages the result in a private candidate beside the
+destination, and only then verifies and publishes. Memory therefore follows
+`old_text` plus the preview budget, not file size. Nothing is written before a
+unique match is known: the untouched prefix is then copied straight from the
+source, so a missing or unchanged edit creates no candidate and an ambiguous one
+spools only from the first match onward. A candidate that does exist holds the
+full edited output, and the configured byte budget caps it.
+
+Previews are collected while the publication check re-reads the source: both the
+original and the edited text are tracked as continuous byte streams, so a
+terminator that straddles the changed span is classified exactly as the
+in-memory renderer classifies it, and the coordinates follow the final match
+offset even when the matcher backtracked.
 
 Results include a before excerpt and an after excerpt with a shared line-number
 width. `-` marks changed original lines, `+` marks changed replacement lines,

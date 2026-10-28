@@ -1,12 +1,12 @@
 #pragma once
 
-// Internal building blocks of the streaming edit scan: a fixed-buffer byte
-// ring, the logical-row tracker used for bounded previews, a buffered candidate
-// writer and the streaming exact matcher. Nothing here is installed or exported
-// through textedit's public headers.
+// Internal building blocks of the streaming edit scan: the logical-row tracker
+// used for bounded previews, the buffered candidate writer and the streaming
+// exact matcher. Nothing here is installed or exported through textedit's
+// public headers.
 
+#include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -21,50 +21,10 @@
 
 namespace textedit::detail {
 
-/// Raw bytes kept before the match: enough for a split terminator.
-constexpr std::size_t kRawTailBytes = 3;
 /// Content bytes of a row kept before the match for a focused window.
 constexpr std::size_t kFocusTailBytes = 128 + 4;
 /// Stream bytes after the span captured for the last changed row.
 constexpr std::size_t kSuffixCaptureBytes = kRowWindowBytes + 4;
-/// Completed rows recorded after a change: the last changed row plus its context.
-constexpr std::size_t kCapturedRowLimit = kMaxContextLines + 2;
-/// Largest change treated as a single "modified" span for preview purposes.
-constexpr std::size_t kRecentRowLimit = kMaxContextLines;
-
-/** A fixed-capacity byte ring, for lookbehind without unbounded copying. */
-class ByteRing {
-public:
-    explicit ByteRing(std::size_t capacity) : bytes_(capacity) {}
-
-    void push(unsigned char byte)
-    {
-        bytes_[next_] = byte;
-        next_ = (next_ + 1) % bytes_.size();
-        if (count_ < bytes_.size()) ++count_;
-    }
-
-    void clear()
-    {
-        next_ = 0;
-        count_ = 0;
-    }
-
-    [[nodiscard]] std::string ordered() const
-    {
-        std::string text(count_, '\0');
-        for (std::size_t index = 0; index < count_; ++index) {
-            text[index] = static_cast<char>(
-                bytes_[(next_ + bytes_.size() - count_ + index) % bytes_.size()]);
-        }
-        return text;
-    }
-
-private:
-    std::vector<unsigned char> bytes_;
-    std::size_t next_ = 0;
-    std::size_t count_ = 0;
-};
 
 /** One logical row captured with bounded display material. */
 struct CapturedRow {
@@ -108,6 +68,40 @@ private:
     std::size_t index_ = 0;
 };
 
+/** A small fixed-capacity byte ring, for lookbehind without unbounded copying. */
+class ByteRing {
+public:
+    explicit ByteRing(std::size_t capacity) : bytes_(capacity) {}
+
+    void push(unsigned char byte)
+    {
+        bytes_[next_] = byte;
+        next_ = (next_ + 1) % bytes_.size();
+        if (count_ < bytes_.size()) ++count_;
+    }
+
+    void clear()
+    {
+        next_ = 0;
+        count_ = 0;
+    }
+
+    [[nodiscard]] std::string ordered() const
+    {
+        std::string text(count_, '\0');
+        for (std::size_t index = 0; index < count_; ++index) {
+            text[index] = static_cast<char>(
+                bytes_[(next_ + bytes_.size() - count_ + index) % bytes_.size()]);
+        }
+        return text;
+    }
+
+private:
+    std::vector<unsigned char> bytes_;
+    std::size_t next_ = 0;
+    std::size_t count_ = 0;
+};
+
 /**
  * Row coordinates of one byte stream, advanced in order.
  *
@@ -115,7 +109,8 @@ private:
  * an exact snapshot at any offset. A row ends when the last byte of its
  * terminator is consumed, which matches position_of()'s "terminator contained
  * in [0, offset)" rule. Retained state is the current row's head, a short tail
- * for focused windows, and the most recent completed rows.
+ * for focused windows, and the most recent completed rows; a listener can
+ * observe every completed row without keeping an unbounded deque.
  */
 class RowTracker {
 public:
@@ -127,8 +122,16 @@ public:
         std::string tail;
     };
 
-    explicit RowTracker(std::uintmax_t start_offset = 0)
-        : offset_(start_offset), row_start_(start_offset), tail_(kFocusTailBytes)
+    /** Optional row observer; `row` is borrowed for the duration of the call. */
+    class Listener {
+    public:
+        virtual ~Listener() = default;
+        virtual void row_completed(const CapturedRow& row) = 0;
+    };
+
+    explicit RowTracker(std::uintmax_t start_offset = 0, Listener* listener = nullptr)
+        : offset_(start_offset), row_start_(start_offset), tail_(kFocusTailBytes),
+          listener_(listener)
     {}
 
     /**
@@ -169,60 +172,69 @@ public:
         ++offset_;
     }
 
-    /** Feed a chunk, carrying the last two bytes for lookahead. */
-    void feed(std::string_view bytes)
+    /**
+     * Feed a chunk, carrying the last two bytes for lookahead.
+     *
+     * The carry is kept across calls, so consecutive feeds form one continuous
+     * stream: a terminator split between two chunks is classified once.
+     */
+    void feed(std::string_view bytes) { feed_until(bytes, kNoStop); }
+
+    /**
+     * Feed a chunk, stopping as soon as offset() reaches `stop`.
+     *
+     * The unprocessed bytes stay in the carry for the next call, so a caller can
+     * take an exact snapshot at any offset, including one that falls at the end
+     * of the bytes supplied so far. Requires `stop >= offset()`.
+     */
+    void feed_until(std::string_view bytes, std::uintmax_t stop)
     {
         carry_buffer_.assign(carry_);
         carry_buffer_.append(bytes);
         carry_.clear();
-        const auto processable = carry_buffer_.size() > 2 ? carry_buffer_.size() - 2 : 0;
-        for (std::size_t index = 0; index < processable; ++index) {
-            push(carry_buffer_, index);
-        }
-        carry_.assign(carry_buffer_.substr(processable));
+        const auto usable = carry_buffer_.size() > 2 ? carry_buffer_.size() - 2 : 0;
+        std::size_t index = 0;
+        while (index < usable && offset_ < stop) push(carry_buffer_, index++);
+        carry_.assign(carry_buffer_.substr(index));
     }
 
-    /** Resolve a trailing partial terminator at EOF. */
+    /**
+     * Resolve the remaining bytes at EOF, stopping once offset() reaches `stop`.
+     *
+     * A milestone that falls on the final bytes is still observed exactly: the
+     * remaining bytes are consumed with end-of-file terminator semantics, one
+     * at a time, so offset() never steps past `stop`.
+     */
+    void finish_until(std::uintmax_t stop)
+    {
+        std::size_t index = 0;
+        while (index < carry_.size() && offset_ < stop) {
+            push_final(std::string_view(carry_), index);
+            ++index;
+        }
+        carry_.erase(0, index);
+    }
+
+    /** Resolve a trailing partial terminator at EOF and record the final row. */
     void finish()
     {
-        std::string_view remaining(carry_);
-        while (!remaining.empty()) {
-            if (pending_left_ > 0) {
-                if (--pending_left_ == 0) complete_row();
-                remaining.remove_prefix(1);
-                ++offset_;
-                continue;
-            }
-            const auto width = line_break_width(remaining);
-            if (width != 0) {
-                pending_left_ = width;
-                continue;
-            }
-            ++length_;
-            if (head_.size() < kRowWindowBytes) head_ += remaining.front();
-            tail_.push(static_cast<unsigned char>(remaining.front()));
-            remaining.remove_prefix(1);
-            ++offset_;
-        }
-        carry_.clear();
-        // The final row has no terminator, so record it explicitly for capture.
-        recent_.push_back(CapturedRow{line_, static_cast<std::size_t>(row_start_),
-                                      length_, head_, 0, {}});
-        if (recent_.size() > kRecentRowLimit) recent_.pop_front();
-        ++generation_;
+        finish_until(kNoStop);
+        CapturedRow row;
+        row.line = line_;
+        row.start = static_cast<std::size_t>(row_start_);
+        row.length = length_;
+        row.head = head_;
+        notify(row);
     }
 
     [[nodiscard]] std::size_t line() const noexcept { return line_; }
     [[nodiscard]] std::uintmax_t offset() const noexcept { return offset_; }
-    [[nodiscard]] std::size_t generation() const noexcept { return generation_; }
-
     [[nodiscard]] Snapshot snapshot() const
     {
         return {line_, static_cast<std::size_t>(row_start_), length_, head_, tail_.ordered()};
     }
 
-    /** Most recent completed rows, oldest first. */
-    [[nodiscard]] const std::deque<CapturedRow>& recent() const noexcept { return recent_; }
+    static constexpr std::uintmax_t kNoStop = std::numeric_limits<std::uintmax_t>::max();
 
 private:
     void complete_row()
@@ -232,14 +244,17 @@ private:
         row.start = static_cast<std::size_t>(row_start_);
         row.length = length_;
         row.head = head_;
-        recent_.push_back(std::move(row));
-        if (recent_.size() > kRecentRowLimit) recent_.pop_front();
+        notify(row);
         ++line_;
         row_start_ = offset_ + 1;
         length_ = 0;
         head_.clear();
         tail_.clear();
-        ++generation_;
+    }
+
+    void notify(const CapturedRow& row)
+    {
+        if (listener_ != nullptr) listener_->row_completed(row);
     }
 
     std::uintmax_t offset_ = 0;
@@ -247,22 +262,43 @@ private:
     std::size_t line_ = 0;
     std::size_t length_ = 0;
     std::size_t pending_left_ = 0;
-    std::size_t generation_ = 0;
     std::string head_;
     ByteRing tail_;
-    std::deque<CapturedRow> recent_;
     std::string carry_;
     std::string carry_buffer_;
+    Listener* listener_ = nullptr;
 };
 
-/** Buffered candidate writes: one syscall per flush instead of per byte. */
+/**
+ * Buffered candidate writes, bounded by the configured edit budget.
+ *
+ * Nothing is written before the match is known: begin() copies the untouched
+ * prefix straight from the source and appends the replacement, and every later
+ * append is suffix bytes. A missing match therefore leaves the candidate empty,
+ * and no write can push the temporary file past the budget.
+ */
 class CandidateWriter {
 public:
-    explicit CandidateWriter(fileio::StagedReplacement& staged) : staged_(staged) {}
+    CandidateWriter(fileio::StagedReplacement& staged, std::size_t limit)
+        : staged_(staged), limit_(limit) {}
+
+    /** Start the candidate at the match: copy the prefix, then the replacement. */
+    void begin(std::uintmax_t prefix_bytes, std::string_view replacement)
+    {
+        if (!enabled_) return;
+        if (prefix_bytes > limit_) throw std::length_error(
+            "edited text exceeds the configured byte limit");
+        staged_.copy_prefix(prefix_bytes);
+        written_ = prefix_bytes;
+        append(replacement);
+    }
 
     void append(std::string_view bytes)
     {
         if (!enabled_) return;
+        if (bytes.size() > limit_ - written_) throw std::length_error(
+            "edited text exceeds the configured byte limit");
+        written_ += bytes.size();
         if (buffer_.size() + bytes.size() < kFlushBytes) {
             buffer_.append(bytes);
             return;
@@ -292,6 +328,8 @@ private:
     static constexpr std::size_t kFlushBytes = 64 * 1024;
 
     fileio::StagedReplacement& staged_;
+    std::size_t limit_ = 0;
+    std::uintmax_t written_ = 0;
     std::string buffer_;
     bool enabled_ = true;
 };
@@ -307,21 +345,15 @@ public:
 
     void step(unsigned char byte, std::size_t offset)
     {
-        if (stopped_) {
-            writer_.append_byte(byte);
-            return;
-        }
+        if (stopped_) return;
         if (!found_) {
             while (q_ > 0 && static_cast<unsigned char>(pattern_[q_]) != byte) {
-                emit(q_ - prefix_[q_ - 1]);
+                drop(q_ - prefix_[q_ - 1]);
                 q_ = prefix_[q_ - 1];
             }
             if (static_cast<unsigned char>(pattern_[q_]) == byte) {
-                if (q_ == 0) start_event_ = true;
                 pending_.push_back(static_cast<char>(byte));
                 ++q_;
-            } else {
-                writer_.append_byte(byte);
             }
         } else {
             writer_.append_byte(byte);
@@ -333,19 +365,13 @@ public:
         if (q_ == pattern_.size()) complete(offset);
     }
 
-    /** True once for the step that started a potential match. */
-    [[nodiscard]] bool take_start_event() noexcept
-    {
-        return std::exchange(start_event_, false);
-    }
-
     [[nodiscard]] bool found() const noexcept { return found_; }
     [[nodiscard]] bool ambiguous() const noexcept { return ambiguous_; }
     [[nodiscard]] std::size_t match_byte() const noexcept { return match_byte_; }
     [[nodiscard]] std::size_t second_match_byte() const noexcept { return second_match_byte_; }
     [[nodiscard]] const std::string& span() const noexcept { return span_; }
 
-    /** Stop emitting generated bytes; used by no-op and ambiguous results. */
+    /** Stop emitting suffix bytes; used by ambiguous results. */
     void stop_writing() { writer_.enable(false); }
 
 private:
@@ -364,9 +390,14 @@ private:
         return prefix;
     }
 
-    void emit(std::size_t count)
+    /**
+     * Drop unmatched bytes from the front of the pending buffer.
+     *
+     * Bytes before the match are not written: if a match is found, begin()
+     * copies that whole prefix from the source instead of replaying it here.
+     */
+    void drop(std::size_t count)
     {
-        writer_.append(std::string_view(pending_).substr(begin_, count));
         begin_ += count;
         if (begin_ > 4096 && begin_ * 2 > pending_.size()) {
             pending_.erase(0, begin_);
@@ -383,7 +414,7 @@ private:
             span_.assign(pending_, begin_, pattern_.size());
             pending_.clear();
             begin_ = 0;
-            writer_.append(replacement_);
+            writer_.begin(start, replacement_);
             q_ = prefix_[pattern_.size() - 1];
         } else {
             // Only the first second-match offset is reported, and the candidate
@@ -409,7 +440,6 @@ private:
     bool found_ = false;
     bool ambiguous_ = false;
     bool stopped_ = false;
-    bool start_event_ = false;
 };
 
 } // namespace textedit::detail

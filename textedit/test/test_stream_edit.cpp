@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -212,6 +213,8 @@ std::vector<Case> cases()
         {"a\xc2\x85old\xc2\x85", "old", "new"},
         {std::string("\x80\x80old\x80", 9), "old", "\xef\xbf\xbd"},
         {long_line, "needle", "REPLACED"},
+        // Unchanged long row: the focus window must come from the preview pass.
+        {long_line, "needle", "needle"},
         {long_line, long_line.substr(100, 300), "short"},
         {long_span, long_span.substr(5, 400), "new\n"},
         {long_span, "block\nblock\n", ""},
@@ -224,6 +227,16 @@ std::vector<Case> cases()
         {deep_lines, "needle\n", "one\ntwo\n"},
         {deep_lines, "lead\nlead\nlead", "merged\n"},
         {deep_lines, "tail\ntail", "TAIL\n"},
+        // KMP fallback: the eventual match starts later than the first
+        // potential start, so coordinates and rows must follow the final offset.
+        {"aaab", "aab", "X"},
+        {"a\naaab", "aab", "X"},
+        {"\r\r\r\raab\r ", "\r\ra", "\nb"},
+        // Terminators that straddle the changed span, at every context size.
+        {"a\rb", "b", "\nc"},
+        {"a\r\nb", "\nb", "X"},
+        {"\n\r ", " ", "\nabaab"},
+        {"x\r\ny\r", "\r\ny", "\nq"},
         {"aa", "a", "b"},
         {"aaa", "aa", "b"},
         {"abcabc", "abc", "abc"},
@@ -335,12 +348,37 @@ BOOST_FIXTURE_TEST_CASE(unsafe_targets_and_limits_are_rejected_without_writing, 
     no_temporary_files();
 }
 
+/** True when this filesystem copies between two descriptors in the kernel. */
+bool kernel_copies_prefixes(const fs::path& root)
+{
+    const auto from = root / "copy-probe-source";
+    const auto to = root / "copy-probe-target";
+    {
+        std::ofstream out(from, std::ios::binary);
+        out << "probe";
+        BOOST_REQUIRE(out.good());
+    }
+    const auto source = ::open(from.c_str(), O_RDONLY | O_CLOEXEC);
+    const auto target = ::open(to.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    bool copied = false;
+    if (source >= 0 && target >= 0) {
+        off_t offset = 0;
+        copied = ::copy_file_range(source, &offset, target, nullptr, 5, 0) == 5;
+    }
+    if (source >= 0) ::close(source);
+    if (target >= 0) ::close(target);
+    fs::remove(from);
+    fs::remove(to);
+    return copied;
+}
+
 BOOST_FIXTURE_TEST_CASE(successful_edit_keeps_the_documented_scan_budget, Scratch)
 {
     const std::string text = std::string(300000, 'a') + "needle" + std::string(150000, 'b');
     const auto path = write(text);
     struct stat source {};
     BOOST_REQUIRE(::stat(path.c_str(), &source) == 0);
+    const auto kernel_copy = kernel_copies_prefixes(root);
     textedit::EditResult result;
     {
         Counting counted;
@@ -348,14 +386,21 @@ BOOST_FIXTURE_TEST_CASE(successful_edit_keeps_the_documented_scan_budget, Scratc
     }
     BOOST_REQUIRE(result.status == textedit::EditStatus::Modified);
     const auto edited_bytes = text.size() - 6 + 8;
-    // Two source reads (scan + verification), one candidate read and one
-    // candidate write; no hidden snapshot or preview pass.
+    // Two source reads (scan + verification) and one candidate read. The prefix
+    // is copied straight from the source, so a kernel copy moves no user-space
+    // bytes; the portable fallback reads the prefix instead and shows up here.
     BOOST_TEST(counted_reads.size() == 2u);
     BOOST_TEST(counted_writes.size() == 1u);
-    BOOST_TEST(counted_reads[source.st_ino] == 2 * text.size());
     const auto candidate = counted_writes.begin()->first;
-    BOOST_TEST(counted_writes[candidate] == edited_bytes);
     BOOST_TEST(counted_reads[candidate] == edited_bytes);
+    if (kernel_copy) {
+        BOOST_TEST(counted_reads[source.st_ino] == 2 * text.size());
+        // 300000 copied prefix bytes never pass through the interposed write().
+        BOOST_TEST(counted_writes[candidate] == edited_bytes - 300000);
+    } else {
+        BOOST_TEST(counted_reads[source.st_ino] == 3 * text.size());
+        BOOST_TEST(counted_writes[candidate] == edited_bytes);
+    }
     BOOST_TEST(read(path).size() == edited_bytes);
 }
 
@@ -380,5 +425,42 @@ BOOST_FIXTURE_TEST_CASE(failed_matches_stop_reading_and_never_write_the_target, 
         BOOST_TEST(counted_writes.empty());
     }
     BOOST_TEST(read(path) == "one\ntwo\n");
+    no_temporary_files();
+}
+
+BOOST_FIXTURE_TEST_CASE(failed_and_no_op_edits_never_spool_a_candidate, Scratch)
+{
+    // The candidate is created lazily and only after a unique match, so a large
+    // file that does not change costs no temporary-file I/O at all. The older
+    // 8-byte case above could not see this: the prefix buffer never filled.
+    const std::string text = std::string(200000, 'a') + "needle" + std::string(1000, 'b');
+    const auto path = write(text);
+    struct stat source {};
+    BOOST_REQUIRE(::stat(path.c_str(), &source) == 0);
+    {
+        Counting counted;
+        const auto missing = textedit::str_replace_file(path, "absent", "x", 3);
+        BOOST_CHECK(missing.status == textedit::EditStatus::NotFound);
+        BOOST_TEST(counted_writes.empty());
+        BOOST_TEST(counted_reads[source.st_ino] == text.size());
+    }
+    {
+        Counting counted;
+        const auto same = textedit::str_replace_file(path, "needle", "needle", 3);
+        BOOST_CHECK(same.status == textedit::EditStatus::Unchanged);
+        BOOST_TEST(counted_writes.empty());
+        // The scan and one preview pass; nothing is published.
+        BOOST_TEST(counted_reads[source.st_ino] == 2 * text.size());
+        BOOST_TEST(!same.before_excerpt.empty());
+    }
+    {
+        // A replacement that cannot fit the budget is rejected before the scan.
+        Counting counted;
+        BOOST_CHECK_THROW((void)textedit::str_replace_file(
+            path, "needle", std::string(4096, 'x'), 3, 1024), std::length_error);
+        BOOST_TEST(counted_writes.empty());
+        BOOST_TEST(counted_reads.empty());
+    }
+    BOOST_TEST(read(path) == text);
     no_temporary_files();
 }
