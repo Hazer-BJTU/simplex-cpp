@@ -133,7 +133,7 @@ BOOST_AUTO_TEST_CASE(persisted_revision_is_required_and_nullable) {
     BOOST_TEST(numbered.revision.value() == 7);
 }
 
-BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
+BOOST_AUTO_TEST_CASE(payload_structure_is_separate_from_application_policy) {
     // Accepted: a plain message, even with an incidental start cursor.
     Json message = message_payload();
     BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(message));
@@ -147,10 +147,10 @@ BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
                        {"source", source_json()}};
     BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(answer));
 
-    // Rejected: empty content text.
+    // Empty text is structurally valid; usefulness is application policy.
     Json empty_raw = message_payload();
     empty_raw["content"] = Json::array({part_json("")});
-    BOOST_TEST(rejects_payload(empty_raw));
+    BOOST_TEST(!rejects_payload(empty_raw));
 
     // Rejected: content extras that are not an object.
     Json array_extras = message_payload();
@@ -187,14 +187,14 @@ BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
     polluted_source["source"] = extra_source;
     BOOST_TEST(rejects_payload(polluted_source));
 
-    // Rejected: an unknown or non-empty reserved options category.
+    // Option categories and their values are application-owned.
     Json unknown_category = message_payload();
     unknown_category["options"] = Json{{"unknown", Json::object()}};
-    BOOST_TEST(rejects_payload(unknown_category));
+    BOOST_TEST(!rejects_payload(unknown_category));
 
     Json nonempty_tools = message_payload();
     nonempty_tools["options"] = Json{{"tools", Json{{"a", 1}}}};
-    BOOST_TEST(rejects_payload(nonempty_tools));
+    BOOST_TEST(!rejects_payload(nonempty_tools));
 
     Json empty_tools = message_payload();
     empty_tools["options"] = Json{{"tools", Json::object()}};
@@ -215,19 +215,19 @@ BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
                                 {"options", Json{{"tools", Json::object()}}}};
     BOOST_TEST(rejects_payload(history_options));
 
-    // Rejected: history limit outside 1..10.
+    // Resource limits are checked by the application, not the protocol.
     Json wide = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", 11}};
-    BOOST_TEST(rejects_payload(wide));
+    BOOST_TEST(!rejects_payload(wide));
     Json narrow = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", 0}};
-    BOOST_TEST(rejects_payload(narrow));
+    BOOST_TEST(!rejects_payload(narrow));
 
-    // Rejected: identifiers shorter than one byte or longer than 128.
+    // Identifier length is application policy.
     Json empty_id = message_payload();
     empty_id["request_id"] = "";
-    BOOST_TEST(rejects_payload(empty_id));
+    BOOST_TEST(!rejects_payload(empty_id));
     Json long_id = message_payload();
     long_id["request_id"] = std::string(129, 'x');
-    BOOST_TEST(rejects_payload(long_id));
+    BOOST_TEST(!rejects_payload(long_id));
 }
 
 BOOST_AUTO_TEST_CASE(signal_cancel_requires_its_run_identity) {
@@ -439,4 +439,23 @@ BOOST_AUTO_TEST_CASE(remote_tool_contents_belong_to_the_handler) {
                              {"request_id", "q"}, {"route", "future/extension"},
                              {"status", "succeeded"}, {"result", 1}};
     BOOST_TEST(rejects<ToolResponse>(scalar_result));
+}
+
+BOOST_AUTO_TEST_CASE(options_are_preserved_for_runtime_validation) {
+    Json request = message_payload();
+    for (const Json options : {
+             Json{{"confirmation", Json{{"mode", "future-mode"}, {"new_policy", true}}}},
+             Json{{"confirmation", 42}, {"model", nullptr},
+                  {"tools", Json{{"enabled", true}}}, {"future_category", "value"}}}) {
+        request["options"] = options;
+        const auto parsed = protocol::from_json<PayloadRequest>(request);
+        BOOST_TEST(protocol::to_json(parsed).at("options") == options);
+    }
+    request["options"] = Json::array();
+    BOOST_TEST(rejects_payload(request));
+    request["options"] = Json::object();
+    request["request_id"] = 42;
+    BOOST_TEST(rejects_payload(request));
+    request = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", "10"}};
+    BOOST_TEST(rejects_payload(request));
 }

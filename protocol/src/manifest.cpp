@@ -191,12 +191,10 @@ std::span<const RecordDescriptor* const> record_registry() {
         &describe_record<ExecutionIdentity>(),
         &describe_record<Call>(),
         &describe_record<Result>(),
-        &describe_record<ConfirmationOptions>(),
         &describe_record<RequestContent>(),
         &describe_record<ResponseProjection>(),
         &describe_record<ToolResultMessage>(),
         &describe_record<OmissionSummary>(),
-        &describe_record<Options>(),
         &describe_record<OptionChoice>(),
         &describe_record<OptionCategory>(),
         &describe_record<OptionsData>(),
@@ -250,7 +248,6 @@ std::span<const EnumDescriptor* const> enum_registry() {
         &describe_enum<MessageType>(),
         &describe_enum<CallScheduling>(),
         &describe_enum<CallSecurity>(),
-        &describe_enum<ConfirmationMode>(),
         &describe_enum<ConfirmationDecision>(),
         &describe_enum<EventName>(),
         &describe_enum<LoopStatus>(),
@@ -419,7 +416,7 @@ Json manifest() {
     }
     document["json_schema"] = json_schema();
     document["extension_policies"] = Json::array({
-        "extras, tool arguments, provider option values and route results are open JSON owned by "
+        "extras, tool arguments, payload options and route results are open JSON owned by "
         "their provider, tool or plugin; the manifest describes their policy rather than their shape",
         "unknown fields are ignored unless a record declares rejection",
         "remote-tool routes belong to the Hub: the connection path names the route and no body "
@@ -433,7 +430,7 @@ Json manifest() {
         "certified: field names, kinds, presence, nullability, closed vocabularies, record "
         "references, the event registry and the message registry",
         "not certified: ordering and delivery guarantees, backpressure and admission policy, "
-        "argument and reply size budgets, cancellation and shutdown behaviour, confirmation "
+        "resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation "
         "deadlines, authorization and security judgement, persistence atomicity, and every "
         "explanatory sentence",
     });

@@ -162,8 +162,7 @@ BOOST_AUTO_TEST_CASE(published_extension_policies_name_the_open_points) {
 }
 
 BOOST_AUTO_TEST_CASE(constraints_defaults_and_policies_are_inside_the_contract) {
-    // These are acceptance rules, not prose: they must live in the document the
-    // fingerprint covers, or a relaxation like `limit <= 11` would be invisible.
+    // Structural rules are fingerprinted; runtime budgets and option policies are not.
     const Json canonical = canonical_contract();
     const Json& request = canonical.at("records").at("PayloadRequest");
     BOOST_TEST(request.at("unknown_fields").get<std::string>() == "ignore");
@@ -178,16 +177,13 @@ BOOST_AUTO_TEST_CASE(constraints_defaults_and_policies_are_inside_the_contract) 
         BOOST_FAIL("missing field " << name);
         return fields.at(0);
     };
-    BOOST_TEST(find_field("request_id").at("min_length").get<std::uint64_t>() == 1);
-    BOOST_TEST(find_field("request_id").at("max_length").get<std::uint64_t>() == 128);
-    BOOST_TEST(find_field("limit").at("maximum").get<std::uint64_t>() == 10);
-    BOOST_TEST(find_field("limit").at("minimum").get<std::uint64_t>() == 1);
-    BOOST_TEST(find_field("limit").at("default").get<std::uint64_t>() == 10);
-    BOOST_TEST(find_field("content").at("non_empty").get<bool>());
-
-    // Options is a closed category set, and its reserved member must be empty.
-    const Json& options = canonical.at("records").at("Options");
-    BOOST_TEST(options.at("unknown_fields").get<std::string>() == "reject");
+    BOOST_TEST(!find_field("request_id").contains("min_length"));
+    BOOST_TEST(!find_field("request_id").contains("max_length"));
+    BOOST_TEST(!find_field("limit").contains("maximum"));
+    BOOST_TEST(!find_field("limit").contains("minimum"));
+    BOOST_TEST(!find_field("limit").contains("default"));
+    BOOST_TEST(!canonical.at("records").contains("Options"));
+    BOOST_TEST(!canonical.at("enumerations").contains("ConfirmationMode"));
 
     // A required-but-nullable field keeps both statements.
     const Json& revision = canonical.at("records").at("PersistedData").at("fields").at(2);
@@ -205,14 +201,16 @@ BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
     const Json& request = schema.at("$defs").at("PayloadRequest");
     BOOST_TEST(request.at("required").dump().find("request_id") != std::string::npos);
     const Json& limit = request.at("properties").at("limit");
-    BOOST_TEST(limit.at("maximum").get<std::uint64_t>() == 10);
-    BOOST_TEST(limit.at("minimum").get<std::uint64_t>() == 1);
+    BOOST_TEST(!limit.contains("maximum"));
+    // Unsigned integer representation remains a field type, not a paging quota.
+    BOOST_TEST(limit.at("minimum").get<std::uint64_t>() == 0);
     const Json& request_id = request.at("properties").at("request_id");
-    // UTF-8 byte limits are annotations: maxLength counts code points.
-    BOOST_TEST(request_id.at("x-simplex-utf8-bytes").at("min").get<std::uint64_t>() == 1);
-    BOOST_TEST(request_id.at("x-simplex-utf8-bytes").at("max").get<std::uint64_t>() == 128);
+    BOOST_TEST(!request_id.contains("x-simplex-utf8-bytes"));
     BOOST_TEST(!request_id.contains("maxLength"));
-    BOOST_TEST(request.at("properties").at("limit").at("default").get<std::uint64_t>() == 10);
+    const Json& options = request.at("properties").at("options");
+    BOOST_TEST(options.at("type").get<std::string>() == "object");
+    BOOST_TEST(options.at("additionalProperties").get<bool>());
+    BOOST_TEST(!options.contains("properties"));
     BOOST_TEST(request.at("allOf").dump().find("content") != std::string::npos);
 
     const Json& envelope = schema.at("$defs").at("EventEnvelope").at("properties").at("type");

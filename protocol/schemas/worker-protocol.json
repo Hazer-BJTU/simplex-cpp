@@ -20,13 +20,6 @@
         "denied"
       ]
     },
-    "ConfirmationMode": {
-      "spellings": [
-        "ask",
-        "approve",
-        "deny"
-      ]
-    },
     "ContentType": {
       "spellings": [
         "text",
@@ -263,16 +256,16 @@
     }
   },
   "extension_policies": [
-    "extras, tool arguments, provider option values and route results are open JSON owned by their provider, tool or plugin; the manifest describes their policy rather than their shape",
+    "extras, tool arguments, payload options and route results are open JSON owned by their provider, tool or plugin; the manifest describes their policy rather than their shape",
     "unknown fields are ignored unless a record declares rejection",
     "remote-tool routes belong to the Hub: the connection path names the route and no body field overrides it. The Hub decides support, authorization and argument validity; neither route names nor tool-specific arguments/results are part of the worker contract",
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "4d45bc7174abee40dbd4abd9c5549e17a096d03a6fc020f6b21aeb34852ef7ae",
+  "fingerprint": "7bdc735fc86422592cdf216639dad82288ffc1f3c2acaf52b9f5ab8f0548277f",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
-    "not certified: ordering and delivery guarantees, backpressure and admission policy, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
+    "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
   ],
   "json_schema": {
     "$defs": {
@@ -347,10 +340,7 @@
             "type": "string"
           },
           "fingerprint": {
-            "type": "string",
-            "x-simplex-utf8-bytes": {
-              "min": 1
-            }
+            "type": "string"
           },
           "step": {
             "minimum": 0,
@@ -550,24 +540,6 @@
           "denied"
         ],
         "type": "string"
-      },
-      "ConfirmationMode": {
-        "enum": [
-          "ask",
-          "approve",
-          "deny"
-        ],
-        "type": "string"
-      },
-      "ConfirmationOptions": {
-        "additionalProperties": true,
-        "description": "Per-run confirmation policy; only mode is remotely configurable.",
-        "properties": {
-          "mode": {
-            "$ref": "#/$defs/ConfirmationMode"
-          }
-        },
-        "type": "object"
       },
       "ConfirmationRequest": {
         "additionalProperties": true,
@@ -1244,25 +1216,6 @@
         ],
         "type": "object"
       },
-      "Options": {
-        "additionalProperties": false,
-        "description": "Optional payload categories applied at the next run boundary; unknown categories are rejected.",
-        "properties": {
-          "confirmation": {
-            "$ref": "#/$defs/ConfirmationOptions"
-          },
-          "model": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "tools": {
-            "additionalProperties": false,
-            "maxProperties": 0,
-            "type": "object"
-          }
-        },
-        "type": "object"
-      },
       "OptionsData": {
         "additionalProperties": true,
         "description": "Available choices and current selections grouped by category.",
@@ -1474,13 +1427,10 @@
             "items": {
               "$ref": "#/$defs/RequestContent"
             },
-            "minItems": 1,
             "type": "array"
           },
           "limit": {
-            "default": 10,
-            "maximum": 10,
-            "minimum": 1,
+            "minimum": 0,
             "type": "integer"
           },
           "offset": {
@@ -1492,7 +1442,8 @@
             "$ref": "#/$defs/InputOperation"
           },
           "options": {
-            "$ref": "#/$defs/Options"
+            "additionalProperties": true,
+            "type": "object"
           },
           "part": {
             "default": 0,
@@ -1500,11 +1451,7 @@
             "type": "integer"
           },
           "request_id": {
-            "type": "string",
-            "x-simplex-utf8-bytes": {
-              "max": 128,
-              "min": 1
-            }
+            "type": "string"
           },
           "source": {
             "$ref": "#/$defs/AnswerSource"
@@ -1602,7 +1549,7 @@
       },
       "RequestContent": {
         "additionalProperties": true,
-        "description": "One admitted user part. raw must be nonempty and extras, when present, an object.",
+        "description": "One user part. raw is a string and extras, when present, an object.",
         "properties": {
           "extras": {
             "additionalProperties": true,
@@ -1612,10 +1559,7 @@
             "$ref": "#/$defs/Modality"
           },
           "raw": {
-            "type": "string",
-            "x-simplex-utf8-bytes": {
-              "min": 1
-            }
+            "type": "string"
           },
           "type": {
             "$ref": "#/$defs/ContentType"
@@ -2288,7 +2232,6 @@
         },
         {
           "kind": "text",
-          "min_length": 1,
           "name": "fingerprint",
           "required": true,
           "summary": "SHA-256 over the ordered canonical answer parts of this response."
@@ -2493,19 +2436,6 @@
         }
       ],
       "summary": "Compacted state was durably published; old history pages must be invalidated.",
-      "unknown_fields": "ignore"
-    },
-    "ConfirmationOptions": {
-      "fields": [
-        {
-          "enumeration": "ConfirmationMode",
-          "kind": "enumeration",
-          "name": "mode",
-          "required": false,
-          "summary": "ask requests approval, approve grants locally, deny refuses locally."
-        }
-      ],
-      "summary": "Per-run confirmation policy; only mode is remotely configurable.",
       "unknown_fields": "ignore"
     },
     "ConfirmationRequest": {
@@ -3208,34 +3138,6 @@
       "summary": "An option name with its advertised values, in display order.",
       "unknown_fields": "ignore"
     },
-    "Options": {
-      "fields": [
-        {
-          "kind": "any",
-          "name": "model",
-          "object_only": true,
-          "required": false,
-          "summary": "Provider-defined keys and values; the adapter validates what it supports."
-        },
-        {
-          "empty_object": true,
-          "kind": "any",
-          "name": "tools",
-          "object_only": true,
-          "required": false,
-          "summary": "Reserved category; it must be an empty object."
-        },
-        {
-          "kind": "record",
-          "name": "confirmation",
-          "record": "ConfirmationOptions",
-          "required": false,
-          "summary": "Confirmation policy for this and later runs."
-        }
-      ],
-      "summary": "Optional payload categories applied at the next run boundary; unknown categories are rejected.",
-      "unknown_fields": "reject"
-    },
     "OptionsData": {
       "fields": [
         {
@@ -3295,26 +3197,23 @@
         },
         {
           "kind": "text",
-          "max_length": 128,
-          "min_length": 1,
           "name": "request_id",
           "required": true,
-          "summary": "Client-chosen correlation identity; 1 to 128 UTF-8 bytes."
+          "summary": "Client-chosen correlation identity; application policy controls its length."
         },
         {
           "kind": "records",
           "name": "content",
-          "non_empty": true,
           "record": "RequestContent",
           "required": false,
           "summary": "Ordered user parts; required for message and refused elsewhere."
         },
         {
-          "kind": "record",
+          "kind": "any",
           "name": "options",
-          "record": "Options",
+          "object_only": true,
           "required": false,
-          "summary": "Applied at the next run boundary; refused for history and answer."
+          "summary": "Application-owned options, including confirmation; unsupported settings are runtime business errors, not protocol incompatibility."
         },
         {
           "default": 0,
@@ -3331,13 +3230,10 @@
           "summary": "First step within the history turn."
         },
         {
-          "default": 10,
           "kind": "integer",
-          "maximum": 10,
-          "minimum": 1,
           "name": "limit",
           "required": false,
-          "summary": "History turn count; 1 to 10, applied to the history operation only."
+          "summary": "Requested history turn count; limits and defaults belong to the application."
         },
         {
           "kind": "record",
@@ -3495,10 +3391,9 @@
         },
         {
           "kind": "text",
-          "min_length": 1,
           "name": "raw",
           "required": true,
-          "summary": "The part body; empty text is rejected."
+          "summary": "The part body; the application decides whether empty text is meaningful."
         },
         {
           "kind": "any",
@@ -3508,7 +3403,7 @@
           "summary": "Optional metadata object; an array or scalar is rejected."
         }
       ],
-      "summary": "One admitted user part. raw must be nonempty and extras, when present, an object.",
+      "summary": "One user part. raw is a string and extras, when present, an object.",
       "unknown_fields": "ignore"
     },
     "ResponseProjection": {

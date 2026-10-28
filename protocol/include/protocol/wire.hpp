@@ -56,8 +56,6 @@ enum class CallScheduling { read_only, parall_write, serial_write };
 
 enum class CallSecurity { default_deny, require_confirm, trusted };
 
-enum class ConfirmationMode { ask, approve, deny };
-
 enum class ConfirmationDecision { approved, denied };
 
 enum class EventName {
@@ -173,16 +171,6 @@ struct EnumTraits<CallSecurity> {
         EnumValue{CallSecurity::default_deny, "default_deny"},
         EnumValue{CallSecurity::require_confirm, "require_confirm"},
         EnumValue{CallSecurity::trusted, "trusted"},
-    };
-};
-
-template <>
-struct EnumTraits<ConfirmationMode> {
-    static constexpr std::string_view name = "ConfirmationMode";
-    static constexpr std::array values{
-        EnumValue{ConfirmationMode::ask, "ask"},
-        EnumValue{ConfirmationMode::approve, "approve"},
-        EnumValue{ConfirmationMode::deny, "deny"},
     };
 };
 
@@ -385,8 +373,7 @@ struct AnswerSource {
             text("commit_sequence", &AnswerSource::commit_sequence,
                  "Nonzero commit sequence as a decimal string, never a JSON number."),
             text("fingerprint", &AnswerSource::fingerprint,
-                 "SHA-256 over the ordered canonical answer parts of this response.")
-                .min_length(1),
+                 "SHA-256 over the ordered canonical answer parts of this response."),
         };
     }
     friend UnknownFields wire_unknown_fields(const AnswerSource&) { return UnknownFields::reject; }
@@ -473,7 +460,7 @@ struct RequestContent {
 
     friend constexpr std::string_view wire_name(const RequestContent&) { return "RequestContent"; }
     friend constexpr std::string_view wire_summary(const RequestContent&) {
-        return "One admitted user part. raw must be nonempty and extras, when present, an object.";
+        return "One user part. raw is a string and extras, when present, an object.";
     }
     friend auto wire_fields(const RequestContent&) {
         return std::tuple{
@@ -481,7 +468,7 @@ struct RequestContent {
                                      "Encoding of raw; an unknown label is rejected, never inferred."),
             enumeration<Modality>("modality", &RequestContent::modality,
                                   "Media category, required and never inferred from type."),
-            text("raw", &RequestContent::raw, "The part body; empty text is rejected.").min_length(1),
+            text("raw", &RequestContent::raw, "The part body; the application decides whether empty text is meaningful."),
             opaque("extras", &RequestContent::extras,
                    "Optional metadata object; an array or scalar is rejected.").object_only(),
         };
@@ -573,51 +560,6 @@ struct ToolResultMessage {
 };
 
 // ---- Options and status -----------------------------------------------------
-
-/** Only `mode` is remotely selectable for confirmation. */
-struct ConfirmationOptions {
-    std::optional<ConfirmationMode> mode;
-
-    friend constexpr std::string_view wire_name(const ConfirmationOptions&) {
-        return "ConfirmationOptions";
-    }
-    friend constexpr std::string_view wire_summary(const ConfirmationOptions&) {
-        return "Per-run confirmation policy; only mode is remotely configurable.";
-    }
-    friend auto wire_fields(const ConfirmationOptions&) {
-        return std::tuple{
-            enumeration<ConfirmationMode>("mode", &ConfirmationOptions::mode,
-                                          "ask requests approval, approve grants locally, deny refuses locally."),
-        };
-    }
-};
-
-/**
- * Payload options. `model` and `tools` are open category objects on purpose:
- * providers name their own options, and `tools` is reserved and must be empty.
- */
-struct Options {
-    std::optional<Json> model;
-    std::optional<Json> tools;
-    std::optional<ConfirmationOptions> confirmation;
-
-    friend constexpr std::string_view wire_name(const Options&) { return "Options"; }
-    friend constexpr std::string_view wire_summary(const Options&) {
-        return "Optional payload categories applied at the next run boundary; unknown categories are rejected.";
-    }
-    friend auto wire_fields(const Options&) {
-        return std::tuple{
-            opaque("model", &Options::model,
-                   "Provider-defined keys and values; the adapter validates what it supports.")
-                .object_only(),
-            opaque("tools", &Options::tools, "Reserved category; it must be an empty object.")
-                .object_only().empty_object(),
-            record<ConfirmationOptions>("confirmation", &Options::confirmation,
-                                        "Confirmation policy for this and later runs."),
-        };
-    }
-    friend UnknownFields wire_unknown_fields(const Options&) { return UnknownFields::reject; }
-};
 
 /** One advertised choice list within a category. */
 struct OptionChoice {
@@ -815,7 +757,7 @@ struct PayloadRequest {
     InputOperation operation = InputOperation::message;
     std::string request_id;
     std::optional<std::vector<RequestContent>> content;
-    std::optional<Options> options;
+    std::optional<Json> options;
     std::optional<std::uint64_t> start;
     std::optional<std::uint64_t> step;
     std::optional<std::uint64_t> limit;
@@ -833,19 +775,17 @@ struct PayloadRequest {
             enumeration<InputOperation>("operation", &PayloadRequest::operation,
                                         "Selects the request family and its required fields."),
             text("request_id", &PayloadRequest::request_id,
-                 "Client-chosen correlation identity; 1 to 128 UTF-8 bytes.")
-                .min_length(1).max_length(128),
+                 "Client-chosen correlation identity; application policy controls its length."),
             records<RequestContent>("content", &PayloadRequest::content,
-                                    "Ordered user parts; required for message and refused elsewhere.")
-                .non_empty(),
-            record<Options>("options", &PayloadRequest::options,
-                            "Applied at the next run boundary; refused for history and answer."),
+                                    "Ordered user parts; required for message and refused elsewhere."),
+            opaque("options", &PayloadRequest::options,
+                   "Application-owned options, including confirmation; unsupported settings are "
+                   "runtime business errors, not protocol incompatibility.").object_only(),
             integer("start", &PayloadRequest::start, "History turn cursor.").default_value("0"),
             integer("step", &PayloadRequest::step, "First step within the history turn.")
                 .default_value("0"),
             integer("limit", &PayloadRequest::limit,
-                    "History turn count; 1 to 10, applied to the history operation only.")
-                .minimum(1).maximum(10).default_value("10"),
+                    "Requested history turn count; limits and defaults belong to the application."),
             record<AnswerSource>("source", &PayloadRequest::source,
                                  "Exact-answer locator; required for answer only."),
             integer("part", &PayloadRequest::part, "Answer part index, defaulted to 0.")

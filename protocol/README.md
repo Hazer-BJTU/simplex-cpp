@@ -84,6 +84,16 @@ it needs in a reply; those checks stay with that tool. Unknown Hub error codes
 remain readable diagnostic strings. Neither a route addition nor a tool schema
 change changes the worker protocol fingerprint.
 
+**Runtime policy stays in the application.** Payload `options` is an opaque
+object: category names, confirmation modes and provider-specific settings are
+not a closed protocol vocabulary. The codec preserves them for application
+validation, which reports unsupported values as business errors. The protocol
+keeps request field types and basic operation combinations, but does not impose
+ID/text length limits, page-size quotas or application-owned resource defaults.
+Unsigned counts/cursors still require unsigned integers. Status diagnostics
+remain described in detail. The later application migration must retain its
+runtime safeguards rather than relying on structural decoding alone.
+
 **Two libraries.** `protocol_lib` (`libsimplex_protocol.so`) is the descriptors
 and codec and depends on nlohmann/json only — a tool or plugin can speak the wire
 format without acquiring a crypto dependency. `protocol_manifest_lib` adds the
