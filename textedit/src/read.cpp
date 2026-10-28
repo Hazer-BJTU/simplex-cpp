@@ -1,12 +1,9 @@
 #include "textedit/read.hpp"
 
-#include "fileio/read_prefix.hpp"
 #include "textedit/line_index.hpp"
 #include "line_break.hpp"
-#include "read_detail.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 
 namespace textedit {
@@ -34,18 +31,6 @@ void append_index(std::string& output, std::size_t value, std::size_t width)
 }
 
 } // namespace
-
-std::string detail::load_file(const std::filesystem::path& path, std::size_t limit)
-{
-    if (limit == std::numeric_limits<std::size_t>::max()) {
-        throw std::invalid_argument("file byte limit must leave room for one lookahead byte");
-    }
-    auto bytes = fileio::read_prefix(path, limit + 1);
-    if (bytes.size() > limit) {
-        throw std::length_error("file exceeds the configured byte limit");
-    }
-    return bytes;
-}
 
 LineReadResult read_lines(
     std::string_view text,
@@ -141,28 +126,6 @@ ReadResult read_bytes(
         }
     }
     return result;
-}
-
-LineReadResult read_file_lines(
-    const std::filesystem::path& path,
-    std::size_t start_line,
-    std::size_t line_count,
-    LineReadFormat format,
-    std::size_t max_file_bytes)
-{
-    const auto bytes = detail::load_file(path, max_file_bytes);
-    return read_lines(bytes, start_line, line_count, format);
-}
-
-ReadResult read_file_bytes(
-    const std::filesystem::path& path,
-    std::size_t start_byte,
-    std::size_t byte_count,
-    ByteReadFormat format,
-    std::size_t max_file_bytes)
-{
-    const auto bytes = detail::load_file(path, max_file_bytes);
-    return read_bytes(bytes, start_byte, byte_count, format);
 }
 
 } // namespace textedit

@@ -7,16 +7,18 @@ description: >-
   Byte ranges [start:end] are half-open original-file offsets, including endings.
   Counts clamp at EOF; a start at the total entry count returns an empty result,
   while a greater start fails. Reads follow symlinks and are not a workspace
-  sandbox. Host-configured file and display byte limits apply;
+  sandbox. The host streams the file once with bounded memory: a large file costs
+  scan time, not memory, and the rendered output stays within the configured
+  display budget. Host-configured file and display byte limits apply;
   check output_truncated and reduce count if needed. Metadata reports total_lines
-  and total_bytes for the whole loaded file; an empty file has one logical line.
+  and total_bytes for the whole file; an empty file has one logical line.
   Encoding hints appear in metadata before content. Malformed UTF-8 is replaced for
   model transport and marked display_replaced; hex_escaped preserves exact bytes.
 type: read_only
 security: trusted
 # Host-side settings; these are not invocation arguments or model metadata.
 config:
-  max_file_bytes: 16777216
+  max_file_bytes: 1073741824
   max_output_bytes: 65536
 argument_schema:
   type: object

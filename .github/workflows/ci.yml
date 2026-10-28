@@ -688,10 +688,10 @@ jobs:
           # Check exact lines before and after editing so a schema change cannot
           # silently leave this reload check exercising the default limits.
           declaration=stage/bin/schemas/reading/read_text.yaml
-          grep -Fxq '  max_file_bytes: 16777216' "$declaration"
+          grep -Fxq '  max_file_bytes: 1073741824' "$declaration"
           grep -Fxq '  max_output_bytes: 65536' "$declaration"
           sed -i \
-            -e 's/^  max_file_bytes: 16777216$/  max_file_bytes: 64/' \
+            -e 's/^  max_file_bytes: 1073741824$/  max_file_bytes: 64/' \
             -e 's/^  max_output_bytes: 65536$/  max_output_bytes: 7/' \
             "$declaration"
           grep -Fxq '  max_file_bytes: 64' "$declaration"
@@ -710,7 +710,7 @@ jobs:
           unset SIMPLEX_EDITING_SCHEMA_DIR
           export LD_LIBRARY_PATH="$PWD/stage/lib"
           stage/bin/test_editing_tools --log_level=error \
-            --run_test=schema_registration_confirmation_and_aligned_preview,installed_declarations_take_precedence_when_present
+            --run_test=schema_registration_confirmation_and_aligned_preview,installed_declarations_take_precedence_when_present,installed_declaration_budget_matches_the_tool_default
 
       - name: Verify executable-relative default prompt in the installed tree
         run: |

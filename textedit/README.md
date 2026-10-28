@@ -10,10 +10,26 @@ precise replacement. Editing and reading tools are separate consumers.
 `str_replace_file` for publication to an existing file. `old_text` must be
 nonempty and occur exactly once (overlapping matches count separately). An
 empty `new_text` deletes it; an identical replacement reports `Unchanged`
-without writing. The file path is not confined to a workspace. Files over
-16 MiB, final symlinks, multiple hard links and special-mode files are
-rejected. Existing owner, group and POSIX permissions are preserved. Other
-inode metadata, such as ACLs and extended attributes, is not preserved.
+without writing. The file path is not confined to a workspace. Sources over the
+`max_file_bytes` argument (library default 16 MiB), final symlinks, multiple
+hard links and special-mode files are rejected. Existing owner, group and POSIX
+permissions are preserved. Other inode metadata, such as ACLs and extended
+attributes, is not preserved.
+
+`str_replace_file` streams: it scans the source once with a KMP matcher that
+withholds at most `old_text`, stages the result in a private candidate beside the
+destination, and only then verifies and publishes. Memory therefore follows
+`old_text` plus the preview budget, not file size. Nothing is written before a
+unique match is known: the untouched prefix is then copied straight from the
+source, so a missing or unchanged edit creates no candidate and an ambiguous one
+spools only from the first match onward. A candidate that does exist holds the
+full edited output, and the configured byte budget caps it.
+
+Previews are collected while the publication check re-reads the source: both the
+original and the edited text are tracked as continuous byte streams, so a
+terminator that straddles the changed span is classified exactly as the
+in-memory renderer classifies it, and the coordinates follow the final match
+offset even when the matcher backtracked.
 
 Results include a before excerpt and an after excerpt with a shared line-number
 width. `-` marks changed original lines, `+` marks changed replacement lines,
@@ -24,12 +40,15 @@ their first and last 24 lines with an omission marker. These limits affect
 only previews: the edit retains exact bytes, including newlines and invalid
 UTF-8. `preview_truncated` reports clipping or omission.
 
-Before publication, the file's bytes and identity are checked again.
-`Conflict` means this call did not publish a replacement. Publication uses a
-temporary file in the same directory, followed by rename and directory sync.
-`PublishedSyncFailed` means new content is visible but crash durability is
-uncertain; inspect the destination before retrying. Independent writers can
-still race after the final check, so this is not a compare-and-swap protocol.
+Before publication the candidate is compared against the still-unchanged source:
+the shared prefix, the matched span byte for byte, and the shared suffix through
+EOF. Exact comparison is never replaced by a digest or timestamps, so a
+same-size rewrite is still a conflict. `Conflict` means this call did not publish
+a replacement. Publication is a rename of the finished candidate in the same
+directory, followed by directory sync. `PublishedSyncFailed` means new content is
+visible but crash durability is uncertain; inspect the destination before
+retrying. Independent writers can still race after the final check, so this is
+not a compare-and-swap protocol.
 
 ## Reading selections
 
@@ -82,13 +101,12 @@ selections. Line totals follow `LineIndex` (empty input has one line, and a fina
 terminator introduces an empty line). Byte reads also scan the complete input
 to compute total_lines; they do not count just the selected bytes.
 
-File functions currently load the whole file before selection, bounded by an
-optional `max_file_bytes` parameter (default 16 MiB). One lookahead byte detects
-oversize input, which throws `std::length_error`; content is never silently
-truncated to satisfy this bound. Zero allows an empty file, while `SIZE_MAX` is
-invalid. The original unrestricted read functions can allocate a full line
-index and full formatted selection; they are intended for callers that need
-the complete result.
+File functions scan the file once with fixed buffers, bounded by an optional
+`max_file_bytes` parameter (default 16 MiB). The limit is enforced on bytes
+actually observed, so growth during the scan cannot extend it, and exceeding it
+throws `std::length_error` rather than silently truncating content. Zero allows
+an empty file, while `SIZE_MAX` is invalid. The whole-selection variants still
+return their complete result in memory; the bounded variants below do not.
 
 `read_lines_bounded` / `read_bytes_bounded` and their file counterparts enforce
 an output byte budget during rendering. They count lines with constant index
@@ -97,13 +115,15 @@ escapes are produced only until the display budget is reached. Plain display
 validates UTF-8 as it appends, replacing malformed bytes with U+FFFD without
 splitting valid characters. `display_replaced` reports replacements in the
 displayed prefix; `output_truncated` reports undisplayed selection content.
-The file bytes remain subject to the input limit and are loaded once. These
-bounded functions use O(file size + display budget) memory, excluding normal
-allocator overhead and the small metadata/result objects.
-For repeated selections, load once and use the string-view functions. Reads are
-synchronous and use `fileio`'s regular-file checks and symlink handling. Filesystem
-errors throw `std::system_error`; concurrent modifications are not a snapshot.
-No files are modified, and UTF-8 probing remains a separate advisory operation.
+Their file variants scan the source once and retain only material that can reach
+the display budget, so memory follows the budget rather than the file; a row cut
+by that budget keeps its true byte length, which keeps byte-range labels exact.
+The bounded variants repair malformed UTF-8, while the whole-selection variants
+return the exact selected bytes, matching their string counterparts.
+Reads are synchronous and use `fileio`'s regular-file checks and symlink
+handling. Filesystem errors throw `std::system_error`; concurrent modifications
+are not a snapshot. No files are modified, and UTF-8 probing remains a separate
+advisory operation.
 
 ## Line and byte-column indexing
 

@@ -276,18 +276,17 @@ BOOST_FIXTURE_TEST_CASE(output_limits_are_visible_and_preserve_utf8_boundaries, 
     contains(result, "[[total_lines]]: 1");
     contains(result, "[[display_replaced]]: false");
     BOOST_CHECK_NO_THROW(Json(result.output.raw).dump());
-    const auto oversize = write(std::string(tools::intrinsic::ReadTextTool::kMaxFileBytes + 1, 'a'));
-    BOOST_TEST(tools::is_error(call({{"path", oversize}})));
 }
 
+/** Also proves the default file budget exceeds the former 16 MiB ceiling. */
 BOOST_FIXTURE_TEST_CASE(dense_newlines_are_bounded_before_indexed_rendering, Fixture)
 {
-    const auto path = write(std::string(16 * 1024 * 1024, '\n'));
+    const auto path = write(std::string(17 * 1024 * 1024, '\n'));
     const auto indexed = call({{"path", path}, {"format", "byte_range"},
                                {"count", std::numeric_limits<std::uint64_t>::max()}});
     BOOST_REQUIRE(!tools::is_error(indexed));
-    contains(indexed, "[[total_lines]]: 16777217");
-    contains(indexed, "[[lines_read]]: 16777217");
+    contains(indexed, "[[total_lines]]: 17825793");
+    contains(indexed, "[[lines_read]]: 17825793");
     contains(indexed, "[[output_truncated]]: true");
     contains(indexed, "[       0:       1] | ");
     BOOST_TEST(indexed.output.raw.size() < 70000u);
@@ -296,7 +295,7 @@ BOOST_FIXTURE_TEST_CASE(dense_newlines_are_bounded_before_indexed_rendering, Fix
                            {"format", "hex_escaped"},
                            {"count", std::numeric_limits<std::uint64_t>::max()}});
     BOOST_REQUIRE(!tools::is_error(hex));
-    contains(hex, "[[total_lines]]: 16777217");
+    contains(hex, "[[total_lines]]: 17825793");
     contains(hex, "[[output_truncated]]: true");
     contains(hex, "\\x0A\\x0A");
     BOOST_TEST(hex.output.raw.size() < 70000u);
@@ -410,9 +409,8 @@ BOOST_FIXTURE_TEST_CASE(configuration_omission_and_empty_mapping_keep_read_defau
         registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
         const auto result = call({{"path", write(std::string(65537, 'a'))}});
         BOOST_REQUIRE(!tools::is_error(result));
+        // An empty or omitted config keeps the inherited 64 KiB display budget.
         contains(result, "Output clipped to 65536 bytes");
-        BOOST_TEST(tools::is_error(call({{"path", write(std::string(
-            tools::intrinsic::ReadTextTool::kMaxFileBytes + 1, 'a'))}})));
     }
 }
 
@@ -451,21 +449,35 @@ BOOST_FIXTURE_TEST_CASE(invalid_configuration_names_file_field_and_isolates_regi
     }
 }
 
-/** Also run from an installed tree after changing its YAML byte limits. */
+/**
+ * The installed declaration is authoritative.
+ *
+ * Run twice by CI: against the shipped defaults and against a staged copy whose
+ * limits were rewritten, so this must derive its expectations from the file
+ * rather than from the tool constants. The boundary is only observable with a
+ * fixture this suite is willing to create, so the shipped 1 GiB default skips it
+ * and the configuration tests cover that value instead.
+ */
 BOOST_FIXTURE_TEST_CASE(selected_yaml_configuration_controls_read_limits, Fixture)
 {
     const auto declaration = tools::intrinsic::load_tool_declaration(
         tools::intrinsic::reading::schema_directory() / "read_text.yaml");
-    const auto file_limit = declaration.config.value("max_file_bytes",
-        tools::intrinsic::ReadTextTool::kMaxFileBytes);
-    const auto output_limit = declaration.config.value("max_output_bytes",
-        tools::intrinsic::ReadTextTool::kMaxOutputBytes);
+    const auto file_limit = declaration.config.value(
+        "max_file_bytes", tools::intrinsic::ReadTextTool::kMaxFileBytes);
+    const auto output_limit = declaration.config.value(
+        "max_output_bytes", tools::intrinsic::ReadTextTool::kMaxOutputBytes);
+    BOOST_TEST(file_limit >= 1u);
+    BOOST_TEST(file_limit <= tools::intrinsic::ReadTextTool::kMaxConfiguredFileBytes);
+    BOOST_TEST(output_limit >= 1u);
+    BOOST_TEST(output_limit <= tools::intrinsic::ReadTextTool::kMaxConfiguredOutputBytes);
+
+    constexpr std::size_t kFixtureLimit = 64 * 1024;
+    if (file_limit > kFixtureLimit) return;
     BOOST_TEST(tools::is_error(call({{"path", write(std::string(file_limit + 1, 'a'))}})));
+    const auto exact = call({{"path", write(std::string(file_limit, 'a'))}});
+    BOOST_REQUIRE(!tools::is_error(exact));
     if (output_limit < file_limit) {
-        const auto result = call({{"path", write(std::string(output_limit + 1, 'a'))}});
-        BOOST_REQUIRE(!tools::is_error(result));
-        contains(result, "Output clipped to " + std::to_string(output_limit) + " bytes");
-        contains(result, "text (truncated, first " + std::to_string(output_limit) + " bytes)");
+        contains(exact, "Output clipped to " + std::to_string(output_limit) + " bytes");
     }
 }
 

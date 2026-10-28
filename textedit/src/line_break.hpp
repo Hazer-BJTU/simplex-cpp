@@ -41,4 +41,47 @@ inline std::size_t count_lines(std::string_view text)
     return lines;
 }
 
+/** Terminator probe result at one position of a lookahead window. */
+struct BreakProbe {
+    /// Complete terminator width, or zero when this byte starts content.
+    std::size_t width = 0;
+    /// The window ends inside a sequence that may still become a longer
+    /// terminator; the caller must carry those bytes into the next window.
+    bool incomplete = false;
+};
+
+/**
+ * Probe a terminator starting at window[at].
+ *
+ * The caller must keep at least two bytes of lookahead after `at` when it wants
+ * a decisive answer without carrying bytes. At EOF, line_break_width resolves
+ * the same suffix with final semantics: a lone CR is a terminator and a
+ * truncated UTF-8 prefix is content.
+ */
+inline BreakProbe probe_break(std::string_view window, std::size_t at)
+{
+    switch (static_cast<unsigned char>(window[at])) {
+        case '\r':
+            if (at + 1 == window.size()) return {0, true};
+            return {window[at + 1] == '\n' ? 2u : 1u, false};
+        case '\n':
+        case '\v':
+        case '\f':
+            return {1, false};
+        case 0xc2:
+            if (at + 1 == window.size()) return {0, true};
+            return {static_cast<unsigned char>(window[at + 1]) == 0x85 ? 2u : 0u, false};
+        case 0xe2:
+            if (at + 1 == window.size()) return {0, true};
+            if (static_cast<unsigned char>(window[at + 1]) != 0x80) return {0, false};
+            if (at + 2 == window.size()) return {0, true};
+            {
+                const auto third = static_cast<unsigned char>(window[at + 2]);
+                return {third == 0xa8 || third == 0xa9 ? 3u : 0u, false};
+            }
+        default:
+            return {0, false};
+    }
+}
+
 } // namespace textedit::detail

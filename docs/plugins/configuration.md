@@ -78,17 +78,33 @@ existing `schemas/<tool_name>.yaml`. For example, the installed
 name: read_text
 # Keep the existing description and argument_schema alongside this mapping.
 config:
-  max_file_bytes: 16777216
+  max_file_bytes: 1073741824
   max_output_bytes: 65536
 ```
 
 `read_text` accepts integer byte counts: `max_file_bytes` from 1 to 1073741824
-(default 16777216), and `max_output_bytes` from 1 to 16777216 (default 65536).
-These cap loaded file bytes and rendered text bytes respectively, in both line
+(default 1073741824), and `max_output_bytes` from 1 to 16777216 (default 65536).
+These cap scanned file bytes and rendered text bytes respectively, in both line
 and byte modes. Metadata and result framing are outside the display cap.
-Increasing the limits permits more synchronous IO and memory use. Truncation
-hints report the effective output cap; model-facing guidance does not hard-code
+Reading scans the file once with fixed buffers, so a larger file budget raises
+the supported input size and the synchronous scan time, not the memory a call
+needs; the display cap bounds what the model sees. Truncation hints report the
+effective output cap; model-facing guidance does not hard-code
 operator-configurable limits.
+
+`str_replace_edit` accepts the same kind of host-only limit:
+
+```yaml
+name: str_replace_edit
+config:
+  max_file_bytes: 1073741824
+```
+
+`max_file_bytes` from 1 to 1073741824 (default 1073741824) bounds both the
+scanned source and the resulting size. Editing streams the source and stages the
+result in a private candidate beside the destination, so the file is never
+buffered; the visible cost is one temporary file roughly the size of the edited
+output, plus the scan and verification passes.
 
 Omitting `config` means `{}`. Explicit null, scalars, and sequences are invalid.
 The shared loader checks only its mapping shape and preserves nested JSON data;

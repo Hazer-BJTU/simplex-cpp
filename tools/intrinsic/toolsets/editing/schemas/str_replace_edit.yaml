@@ -3,9 +3,10 @@ description: >-
   Replace exactly one byte-exact occurrence of old_text in an existing regular
   file. Missing or multiple matches, including overlaps, do not write. Empty
   new_text deletes the match; an identical replacement reports unchanged.
-  The operation requires confirmation and checks the original file again before
-  atomic publication. Final symlinks, hard-linked files, and files larger than
-  16 MiB are refused. Normal file owner, group and permissions are preserved.
+  The operation requires confirmation, streams the source once, and checks the
+  original bytes again before atomic publication. Final symlinks, hard-linked
+  files, and files larger than the configured host limit (1 GiB by default) are
+  refused. Normal file owner, group and permissions are preserved.
   Results show aligned line-numbered before/after excerpts: '-' marks removed
   lines, '+' marks replacement lines. context_lines controls surrounding rows.
   Long lines and large spans are visibly clipped. A published_sync_failed
@@ -13,6 +14,9 @@ description: >-
   inspect the file rather than blindly retrying.
 type: serial_write
 security: require_confirm
+# Host-side setting; not an invocation argument or model metadata.
+config:
+  max_file_bytes: 1073741824
 argument_schema:
   type: object
   required: [path, old_text, new_text]

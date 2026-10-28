@@ -4,6 +4,7 @@
 #include "tools/intrinsic/editing/toolset.hpp"
 #include "tools/intrinsic/editing/tools.hpp"
 #include "tools/intrinsic/editing/schemas.hpp"
+#include "tools/intrinsic/tool_declaration.hpp"
 #include "tools/registry.hpp"
 #include "tools/security_check.hpp"
 #include "tools/invoke_exception.hpp"
@@ -11,9 +12,14 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
+#include <cstdlib>
+#include <iostream>
+#include <sstream>
+#include <vector>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unistd.h>
 
@@ -54,6 +60,44 @@ struct Fixture {
     {
         std::ifstream input(root / "source", std::ios::binary);
         return {std::istreambuf_iterator<char>(input), {}};
+    }
+
+    /** Restore an authoritative schema override even when an assertion throws. */
+    struct SchemaOverride {
+        std::optional<std::string> previous;
+        explicit SchemaOverride(const std::filesystem::path& path)
+        {
+            if (const auto old = std::getenv("SIMPLEX_EDITING_SCHEMA_DIR")) previous = old;
+            BOOST_REQUIRE(::setenv("SIMPLEX_EDITING_SCHEMA_DIR", path.c_str(), 1) == 0);
+        }
+        ~SchemaOverride()
+        {
+            if (previous) ::setenv("SIMPLEX_EDITING_SCHEMA_DIR", previous->c_str(), 1);
+            else ::unsetenv("SIMPLEX_EDITING_SCHEMA_DIR");
+        }
+    };
+
+    /** Write a declaration with a chosen host configuration, keeping the skill. */
+    std::filesystem::path schema(Json config)
+    {
+        const auto original = tools::intrinsic::load_tool_declaration(
+            tools::intrinsic::editing::schema_directory() / "str_replace_edit.yaml");
+        const auto directory = root / "schemas";
+        std::filesystem::create_directories(directory);
+        Json declaration = {
+            {"name", original.name}, {"description", original.description},
+            {"argument_schema", original.argument_schema},
+            {"type", "read_only"}, {"security", "trusted"},
+            {"config", std::move(config)}
+        };
+        std::ofstream out(directory / "str_replace_edit.yaml");
+        out << declaration;
+        BOOST_REQUIRE(out.good());
+        std::filesystem::copy_file(
+            tools::intrinsic::editing::schema_directory() / "skill.yaml",
+            directory / "skill.yaml",
+            std::filesystem::copy_options::overwrite_existing);
+        return directory;
     }
 
     model_io::InvokeReturn call(Json arguments, bool approve = true)
@@ -142,4 +186,56 @@ BOOST_FIXTURE_TEST_CASE(denial_invalid_arguments_and_ambiguous_match_do_not_writ
     BOOST_TEST(tools::is_error(call({{"path", path}, {"old_text", "old"},
                                      {"new_text", ""}, {"context_lines", 21}})));
     BOOST_TEST(read() == "old\nold\n");
+}
+
+BOOST_FIXTURE_TEST_CASE(configured_file_budget_is_per_instance_and_hidden_from_models, Fixture)
+{
+    const auto directory = schema({{"max_file_bytes", 8}});
+    SchemaOverride override(directory);
+    registry.clear();
+    registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
+    const auto oversized = call({{"path", write("123456789")},
+                                 {"old_text", "1"}, {"new_text", "x"}});
+    BOOST_TEST(tools::is_error(oversized));
+    BOOST_TEST(read() == "123456789");
+    const auto exact = call({{"path", write("12345678")},
+                             {"old_text", "1"}, {"new_text", "x"}});
+    BOOST_REQUIRE(!tools::is_error(exact));
+    contains(exact, "[[status]]: modified");
+    BOOST_TEST(read() == "x2345678");
+    // The budget is a host setting: an argument of the same name cannot widen
+    // or narrow it, and the configured value stays authoritative.
+    BOOST_TEST(tools::is_error(call({{"path", write("123456789")}, {"old_text", "1"},
+                                     {"new_text", "x"}, {"max_file_bytes", 1024}})));
+    BOOST_TEST(read() == "123456789");
+}
+
+BOOST_AUTO_TEST_CASE(installed_declaration_budget_matches_the_tool_default)
+{
+    const auto declaration = tools::intrinsic::load_tool_declaration(
+        tools::intrinsic::editing::schema_directory() / "str_replace_edit.yaml");
+    BOOST_TEST(declaration.config.value("max_file_bytes", std::size_t{0}) ==
+               tools::intrinsic::StrReplaceEditTool::kMaxFileBytes);
+}
+
+BOOST_FIXTURE_TEST_CASE(invalid_file_budget_configuration_is_reported_without_a_tool, Fixture)
+{
+    const std::vector<Json> invalid = {
+        nullptr, Json::array(), Json{{"max_file_bytes", 0}},
+        Json{{"max_file_bytes", -1}}, Json{{"max_file_bytes", 1.5}},
+        Json{{"max_file_bytes", "big"}},
+        Json{{"max_file_bytes", 1073741825}},
+        Json{{"max_file_bytes", 8}, {"unknown", "distinctive-secret"}}
+    };
+    for (const auto& config : invalid) {
+        const auto directory = schema(config);
+        SchemaOverride override(directory);
+        std::ostringstream errors;
+        auto* previous = std::cerr.rdbuf(errors.rdbuf());
+        auto set = std::make_shared<tools::intrinsic::EditingToolSet>();
+        std::cerr.rdbuf(previous);
+        BOOST_TEST(set->get_tools().empty());
+        BOOST_TEST(errors.str().find("str_replace_edit.yaml") != std::string::npos);
+        BOOST_TEST(errors.str().find("distinctive-secret") == std::string::npos);
+    }
 }
