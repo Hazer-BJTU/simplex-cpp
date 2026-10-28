@@ -74,6 +74,13 @@ wire object whose required fields depend on `operation`; `wire_validate()` is
 where that lives, so `history` carrying `content` fails rather than being
 half-read.
 
+**A route publishes its forms, not one shape.** `subagent/send` accepts four
+operations and `subagent/receive` three queries, and each one has its own
+argument record and reply. The route registry therefore lists `(arguments,
+result)` pairs, so an operation-dependent field is a visible contract change
+instead of a note in a handler. A route absent from the registry stays
+extension-owned: the connection path names it and no body field overrides it.
+
 **Two libraries.** `protocol_lib` (`libsimplex_protocol.so`) is the descriptors
 and codec and depends on nlohmann/json only — a tool or plugin can speak the wire
 format without acquiring a crypto dependency. `protocol_manifest_lib` adds the

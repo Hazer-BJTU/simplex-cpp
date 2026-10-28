@@ -180,10 +180,12 @@ Json canonical_document() {
 
     Json routes = Json::array();
     for (const auto& route : route_registry()) {
-        Json entry = Json{{"route", route.route}};
-        entry["arguments"] = route.arguments != nullptr ? Json(route.arguments->name) : Json(nullptr);
-        entry["result"] = route.result != nullptr ? Json(route.result->name) : Json(nullptr);
-        routes.push_back(std::move(entry));
+        Json forms = Json::array();
+        for (const auto& form : route.forms) {
+            forms.push_back(Json{{"arguments", form.arguments->name},
+                                 {"result", form.result->name}});
+        }
+        routes.push_back(Json{{"route", route.route}, {"forms", std::move(forms)}});
     }
     document["routes"] = std::move(routes);
     return document;
@@ -228,6 +230,28 @@ std::span<const RecordDescriptor* const> record_registry() {
         &describe_record<HistoryTurn>(),
         &describe_record<HistoryPage>(),
         &describe_record<AnswerPage>(),
+        &describe_record<AnswerQuery>(),
+        &describe_record<SubagentStatus>(),
+        &describe_record<SubagentRequestOutcome>(),
+        &describe_record<DialoguePart>(),
+        &describe_record<DialogueStep>(),
+        &describe_record<DialogueTurn>(),
+        &describe_record<ConversationPage>(),
+        &describe_record<SubagentSendOptions>(),
+        &describe_record<SubagentForkArguments>(),
+        &describe_record<SubagentForkResult>(),
+        &describe_record<SubagentListArguments>(),
+        &describe_record<SubagentListResult>(),
+        &describe_record<SubagentReceiveArguments>(),
+        &describe_record<SubagentReceiveResult>(),
+        &describe_record<SubagentAnswerArguments>(),
+        &describe_record<SubagentAnswerResult>(),
+        &describe_record<SubagentMessageArguments>(),
+        &describe_record<SubagentContinueArguments>(),
+        &describe_record<SubagentCompactArguments>(),
+        &describe_record<SubagentStopArguments>(),
+        &describe_record<SubagentSendResult>(),
+        &describe_record<SubagentStopResult>(),
         &describe_record<EmptyData>(),
         &describe_record<QueryErrorData>(),
         &describe_record<InputAdmittedData>(),
@@ -274,6 +298,14 @@ std::span<const EnumDescriptor* const> enum_registry() {
         &describe_enum<FailureStage>(),
         &describe_enum<ToolStatus>(),
         &describe_enum<ToolErrorCode>(),
+        &describe_enum<SubagentLifecycle>(),
+        &describe_enum<SubagentPolicy>(),
+        &describe_enum<SubagentHealth>(),
+        &describe_enum<SubagentOperation>(),
+        &describe_enum<SubagentRequestState>(),
+        &describe_enum<SubagentDispatchState>(),
+        &describe_enum<SubagentProcessState>(),
+        &describe_enum<DialoguePartType>(),
     };
     return enums;
 }
@@ -430,23 +462,29 @@ Json manifest() {
             fields[index]["summary"] = views[index].summary;
         }
     }
+    const auto routes = route_registry();
+    for (std::size_t index = 0; index < routes.size(); ++index) {
+        document["routes"][index]["summary"] = routes[index].summary;
+    }
     document["json_schema"] = json_schema();
     document["extension_policies"] = Json::array({
         "extras, tool arguments, provider option values and route results are open JSON owned by "
         "their provider, tool or plugin; the manifest describes their policy rather than their shape",
         "unknown fields are ignored unless a record declares rejection",
         "remote-tool routes are an open registry: the connection path names the route and no body "
-        "field overrides it",
+        "field overrides it. A built-in route publishes every form it accepts; a route absent from "
+        "`routes` is extension-owned and the Hub answers it with not_implemented",
         "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
         "the manifest describes built-in shapes only; it is not a claim that a configured provider "
         "or plugin capability is enabled",
     });
     document["fingerprint_scope"] = Json::array({
         "certified: field names, kinds, presence, nullability, closed vocabularies, record "
-        "references, the event registry and the message registry",
+        "references, the event registry, the message registry and the route forms",
         "not certified: ordering and delivery guarantees, backpressure and admission policy, "
-        "cancellation and shutdown behaviour, confirmation deadlines, authorization and security "
-        "judgement, persistence atomicity, and every explanatory sentence",
+        "argument and reply size budgets, cancellation and shutdown behaviour, confirmation "
+        "deadlines, authorization and security judgement, persistence atomicity, and every "
+        "explanatory sentence",
     });
     document["fingerprint"] = fingerprint();
     return document;

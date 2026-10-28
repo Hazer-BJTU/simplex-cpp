@@ -34,6 +34,12 @@
         "external_ref"
       ]
     },
+    "DialoguePartType": {
+      "spellings": [
+        "text",
+        "external_ref"
+      ]
+    },
     "EnvelopeType": {
       "spellings": [
         "event",
@@ -158,6 +164,66 @@
         "sqlite"
       ]
     },
+    "SubagentDispatchState": {
+      "spellings": [
+        "unknown",
+        "sent",
+        "rejected"
+      ]
+    },
+    "SubagentHealth": {
+      "spellings": [
+        "healthy",
+        "degraded",
+        "unknown"
+      ]
+    },
+    "SubagentLifecycle": {
+      "spellings": [
+        "preparing",
+        "starting",
+        "ready",
+        "stopping",
+        "stopped",
+        "cleanup-pending"
+      ]
+    },
+    "SubagentOperation": {
+      "spellings": [
+        "message",
+        "continue",
+        "compact",
+        "stop"
+      ]
+    },
+    "SubagentPolicy": {
+      "spellings": [
+        "ask",
+        "deny",
+        "approve"
+      ]
+    },
+    "SubagentProcessState": {
+      "spellings": [
+        "not-started",
+        "stopped",
+        "starting",
+        "running",
+        "stopping",
+        "exited",
+        "failed"
+      ]
+    },
+    "SubagentRequestState": {
+      "spellings": [
+        "intent",
+        "sent",
+        "admitted",
+        "rejected",
+        "unknown",
+        "finished"
+      ]
+    },
     "ToolErrorCode": {
       "spellings": [
         "unauthorized",
@@ -273,14 +339,14 @@
   "extension_policies": [
     "extras, tool arguments, provider option values and route results are open JSON owned by their provider, tool or plugin; the manifest describes their policy rather than their shape",
     "unknown fields are ignored unless a record declares rejection",
-    "remote-tool routes are an open registry: the connection path names the route and no body field overrides it",
+    "remote-tool routes are an open registry: the connection path names the route and no body field overrides it. A built-in route publishes every form it accepts; a route absent from `routes` is extension-owned and the Hub answers it with not_implemented",
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "1b9c416d850e47464d49d15a8d48c0aa6e64b659a7b6563bc3c3b299927f53fc",
+  "fingerprint": "01775a672fb8d103025c9df54a48a50fde5777192544cb97ed0e91569daf9749",
   "fingerprint_scope": [
-    "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
-    "not certified: ordering and delivery guarantees, backpressure and admission policy, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
+    "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry, the message registry and the route forms",
+    "not certified: ordering and delivery guarantees, backpressure and admission policy, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
   ],
   "json_schema": {
     "$defs": {
@@ -347,8 +413,31 @@
         ],
         "type": "object"
       },
+      "AnswerQuery": {
+        "additionalProperties": false,
+        "description": "A complete answer locator plus the cursor to continue from; incomplete sources are rejected before a payload is forwarded.",
+        "properties": {
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "part": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/$defs/AnswerSource"
+          }
+        },
+        "required": [
+          "source",
+          "part",
+          "offset"
+        ],
+        "type": "object"
+      },
       "AnswerSource": {
-        "additionalProperties": true,
+        "additionalProperties": false,
         "description": "Locator for exact-answer pagination. Every field must be copied unchanged.",
         "properties": {
           "commit_sequence": {
@@ -713,6 +802,183 @@
           "external_ref"
         ],
         "type": "string"
+      },
+      "ConversationPage": {
+        "additionalProperties": true,
+        "description": "A turn window of the current projection. A refresh or compaction can change the array and its revision, so restart cursor 0 to read a new one.",
+        "properties": {
+          "cursor": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "next": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "total": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/$defs/DialogueTurn"
+            },
+            "type": "array"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "worker_id",
+          "turns",
+          "truncated",
+          "incomplete",
+          "stale",
+          "refreshed_at",
+          "cursor",
+          "next",
+          "total"
+        ],
+        "type": "object"
+      },
+      "DialoguePart": {
+        "additionalProperties": true,
+        "description": "Visible user or answer text. Reasoning, tool payloads and extras never persist here.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "modality": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "max": 262144
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "type": {
+            "$ref": "#/$defs/DialoguePartType"
+          }
+        },
+        "required": [
+          "type",
+          "modality",
+          "raw"
+        ],
+        "type": "object"
+      },
+      "DialoguePartType": {
+        "enum": [
+          "text",
+          "external_ref"
+        ],
+        "type": "string"
+      },
+      "DialogueStep": {
+        "additionalProperties": true,
+        "description": "One answer preview plus, for a committed response, the cursor for its exact text.",
+        "properties": {
+          "answer_source": {
+            "$ref": "#/$defs/AnswerSource"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/$defs/DialoguePart"
+            },
+            "type": "array"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "content"
+        ],
+        "type": "object"
+      },
+      "DialogueTurn": {
+        "additionalProperties": true,
+        "description": "A bounded turn. An automatic compaction turn carries internal_input and its source instead of user parts.",
+        "properties": {
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "internal_input": {
+            "const": "auto_compact_continue",
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/$defs/ExecutionIdentity"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/DialogueStep"
+            },
+            "type": "array"
+          },
+          "user": {
+            "items": {
+              "$ref": "#/$defs/DialoguePart"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "user",
+          "steps"
+        ],
+        "type": "object"
       },
       "EmptyData": {
         "additionalProperties": true,
@@ -2064,6 +2330,691 @@
         ],
         "type": "string"
       },
+      "SubagentAnswerArguments": {
+        "additionalProperties": false,
+        "description": "One direct child and a complete answer cursor; turn paging is refused here.",
+        "properties": {
+          "answer": {
+            "$ref": "#/$defs/AnswerQuery"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "answer"
+        ],
+        "type": "object"
+      },
+      "SubagentAnswerResult": {
+        "additionalProperties": true,
+        "description": "Child status plus one exact answer page; the outcome tail and the conversation page are empty by construction.",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "answer": {
+            "$ref": "#/$defs/AnswerPage"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "conversation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConversationPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "$ref": "#/$defs/SubagentHealth"
+          },
+          "lifecycle": {
+            "$ref": "#/$defs/SubagentLifecycle"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent": {
+            "type": "string"
+          },
+          "pending_approvals": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/$defs/SubagentPolicy"
+          },
+          "process_state": {
+            "$ref": "#/$defs/SubagentProcessState"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/$defs/SubagentRequestOutcome"
+            },
+            "type": "array"
+          },
+          "requests_truncated": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "parent",
+          "lifecycle",
+          "policy",
+          "health",
+          "reason",
+          "observed_at",
+          "active",
+          "process_state",
+          "connected",
+          "run_id",
+          "pending_approvals",
+          "error",
+          "requests",
+          "requests_truncated",
+          "conversation",
+          "answer"
+        ],
+        "type": "object"
+      },
+      "SubagentCompactArguments": {
+        "additionalProperties": false,
+        "description": "Compact the child's context; the child must advertise context-compact first.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation",
+            "const": "compact"
+          },
+          "options": {
+            "$ref": "#/$defs/SubagentSendOptions"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "SubagentContinueArguments": {
+        "additionalProperties": false,
+        "description": "Resume the child's worker state; it creates no empty user turn and carries no content.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation",
+            "const": "continue"
+          },
+          "options": {
+            "$ref": "#/$defs/SubagentSendOptions"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "SubagentDispatchState": {
+        "enum": [
+          "unknown",
+          "sent",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "SubagentForkArguments": {
+        "additionalProperties": false,
+        "description": "An empty object: the route and the caller's configuration decide everything.",
+        "properties": {},
+        "type": "object"
+      },
+      "SubagentForkResult": {
+        "additionalProperties": true,
+        "description": "The new child and its initial lifecycle; startup continues under the supervisor after ownership is durably recorded.",
+        "properties": {
+          "lifecycle": {
+            "$ref": "#/$defs/SubagentLifecycle",
+            "const": "preparing"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "lifecycle"
+        ],
+        "type": "object"
+      },
+      "SubagentHealth": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "SubagentLifecycle": {
+        "enum": [
+          "preparing",
+          "starting",
+          "ready",
+          "stopping",
+          "stopped",
+          "cleanup-pending"
+        ],
+        "type": "string"
+      },
+      "SubagentListArguments": {
+        "additionalProperties": false,
+        "description": "An empty object: direct children of the calling lifecycle, terminal ones included.",
+        "properties": {},
+        "type": "object"
+      },
+      "SubagentListResult": {
+        "additionalProperties": true,
+        "description": "Every direct child of this worker lifecycle; empty when none was created.",
+        "properties": {
+          "subagents": {
+            "items": {
+              "$ref": "#/$defs/SubagentStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "subagents"
+        ],
+        "type": "object"
+      },
+      "SubagentMessageArguments": {
+        "additionalProperties": false,
+        "description": "One user message for a child. Content follows the normal payload content rules.",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/$defs/RequestContent"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation",
+            "const": "message"
+          },
+          "options": {
+            "$ref": "#/$defs/SubagentSendOptions"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "operation",
+          "content"
+        ],
+        "type": "object"
+      },
+      "SubagentOperation": {
+        "enum": [
+          "message",
+          "continue",
+          "compact",
+          "stop"
+        ],
+        "type": "string"
+      },
+      "SubagentPolicy": {
+        "enum": [
+          "ask",
+          "deny",
+          "approve"
+        ],
+        "type": "string"
+      },
+      "SubagentProcessState": {
+        "enum": [
+          "not-started",
+          "stopped",
+          "starting",
+          "running",
+          "stopping",
+          "exited",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "SubagentReceiveArguments": {
+        "additionalProperties": false,
+        "description": "One direct child with an optional turn window; it is a snapshot query and never waits for a run to finish.",
+        "properties": {
+          "cursor": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 5,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id"
+        ],
+        "type": "object"
+      },
+      "SubagentReceiveResult": {
+        "additionalProperties": true,
+        "description": "Child status, its latest request outcomes and one conversation page.",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "conversation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConversationPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "$ref": "#/$defs/SubagentHealth"
+          },
+          "lifecycle": {
+            "$ref": "#/$defs/SubagentLifecycle"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent": {
+            "type": "string"
+          },
+          "pending_approvals": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/$defs/SubagentPolicy"
+          },
+          "process_state": {
+            "$ref": "#/$defs/SubagentProcessState"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/$defs/SubagentRequestOutcome"
+            },
+            "type": "array"
+          },
+          "requests_truncated": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "parent",
+          "lifecycle",
+          "policy",
+          "health",
+          "reason",
+          "observed_at",
+          "active",
+          "process_state",
+          "connected",
+          "run_id",
+          "pending_approvals",
+          "error",
+          "requests",
+          "requests_truncated",
+          "conversation"
+        ],
+        "type": "object"
+      },
+      "SubagentRequestOutcome": {
+        "additionalProperties": true,
+        "description": "A bounded request outcome; sent means socket admission only, and connection loss before a definitive outcome stays unknown.",
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/$defs/SubagentRequestState"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "max": 32768
+            }
+          }
+        },
+        "required": [
+          "request_id",
+          "operation",
+          "state",
+          "run_id",
+          "at"
+        ],
+        "type": "object"
+      },
+      "SubagentRequestState": {
+        "enum": [
+          "intent",
+          "sent",
+          "admitted",
+          "rejected",
+          "unknown",
+          "finished"
+        ],
+        "type": "string"
+      },
+      "SubagentSendOptions": {
+        "additionalProperties": false,
+        "description": "Options forwarded to the child. Confirmation policy is the operator's alone, so the Hub refuses it here.",
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "confirmation"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "model": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "tools": {
+            "additionalProperties": false,
+            "maxProperties": 0,
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "SubagentSendResult": {
+        "additionalProperties": true,
+        "description": "The child request identity and the socket dispatch outcome; later outcomes are read through receive.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/$defs/SubagentDispatchState"
+          },
+          "subagent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "request_id",
+          "operation",
+          "state"
+        ],
+        "type": "object"
+      },
+      "SubagentStatus": {
+        "additionalProperties": true,
+        "description": "Lifecycle, policy, health and process state of one child; never its events, config or conversation.",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "health": {
+            "$ref": "#/$defs/SubagentHealth"
+          },
+          "lifecycle": {
+            "$ref": "#/$defs/SubagentLifecycle"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent": {
+            "type": "string"
+          },
+          "pending_approvals": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/$defs/SubagentPolicy"
+          },
+          "process_state": {
+            "$ref": "#/$defs/SubagentProcessState"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "parent",
+          "lifecycle",
+          "policy",
+          "health",
+          "reason",
+          "observed_at",
+          "active",
+          "process_state",
+          "connected",
+          "run_id",
+          "pending_approvals",
+          "error"
+        ],
+        "type": "object"
+      },
+      "SubagentStopArguments": {
+        "additionalProperties": false,
+        "description": "Process shutdown with escalation, not a run cancellation; content and options are refused.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation",
+            "const": "stop"
+          },
+          "subagent_id": {
+            "type": "string",
+            "x-simplex-utf8-bytes": {
+              "min": 1
+            }
+          }
+        },
+        "required": [
+          "subagent_id",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "SubagentStopResult": {
+        "additionalProperties": true,
+        "description": "The shutdown operation identity and its stopping state; the supervised work continues after this reply.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SubagentOperation",
+            "const": "stop"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "state": {
+            "const": "stopping",
+            "type": "string"
+          },
+          "subagent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "operation_id",
+          "operation",
+          "state"
+        ],
+        "type": "object"
+      },
       "ToolError": {
         "additionalProperties": true,
         "description": "Machine-readable rejection code with a diagnostic message.",
@@ -2373,6 +3324,31 @@
       "summary": "Exact answer bytes with the cursor to continue; binary parts are unavailable.",
       "unknown_fields": "ignore"
     },
+    "AnswerQuery": {
+      "fields": [
+        {
+          "kind": "record",
+          "name": "source",
+          "record": "AnswerSource",
+          "required": true,
+          "summary": "Copy all five fields unchanged, fingerprint included."
+        },
+        {
+          "kind": "integer",
+          "name": "part",
+          "required": true,
+          "summary": "Part index; start at 0."
+        },
+        {
+          "kind": "integer",
+          "name": "offset",
+          "required": true,
+          "summary": "UTF-8 byte offset within the part; reset to 0 when the part advances."
+        }
+      ],
+      "summary": "A complete answer locator plus the cursor to continue from; incomplete sources are rejected before a payload is forwarded.",
+      "unknown_fields": "reject"
+    },
     "AnswerSource": {
       "fields": [
         {
@@ -2408,7 +3384,7 @@
         }
       ],
       "summary": "Locator for exact-answer pagination. Every field must be copied unchanged.",
-      "unknown_fields": "ignore"
+      "unknown_fields": "reject"
     },
     "ArchiveCleanup": {
       "fields": [
@@ -2791,6 +3767,186 @@
         }
       ],
       "summary": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them.",
+      "unknown_fields": "ignore"
+    },
+    "ConversationPage": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "revision",
+          "nullable": true,
+          "required": true,
+          "summary": "Child display revision, or null before the first refresh."
+        },
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Worker incarnation the projection belongs to, or null before the first refresh."
+        },
+        {
+          "kind": "records",
+          "name": "turns",
+          "record": "DialogueTurn",
+          "required": true,
+          "summary": "Retained turns; the page window is a subrange of this array."
+        },
+        {
+          "kind": "boolean",
+          "name": "truncated",
+          "required": true,
+          "summary": "True when turns, steps or parts were dropped from this projection."
+        },
+        {
+          "kind": "boolean",
+          "name": "incomplete",
+          "required": true,
+          "summary": "True when a history query has not yet covered the retained tail."
+        },
+        {
+          "kind": "boolean",
+          "name": "stale",
+          "required": true,
+          "summary": "True when no connection or a failed query invalidated the projection."
+        },
+        {
+          "kind": "text",
+          "name": "refreshed_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 time of the last successful refresh, or null when never refreshed."
+        },
+        {
+          "kind": "integer",
+          "name": "cursor",
+          "required": true,
+          "summary": "Offset this window started at."
+        },
+        {
+          "kind": "integer",
+          "name": "next",
+          "required": true,
+          "summary": "Offset to continue from; it can advance past an omitted turn."
+        },
+        {
+          "kind": "integer",
+          "name": "total",
+          "required": true,
+          "summary": "Turns in the current projection array."
+        }
+      ],
+      "summary": "A turn window of the current projection. A refresh or compaction can change the array and its revision, so restart cursor 0 to read a new one.",
+      "unknown_fields": "ignore"
+    },
+    "DialoguePart": {
+      "fields": [
+        {
+          "enumeration": "DialoguePartType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "text or external_ref; every other part kind is dropped."
+        },
+        {
+          "kind": "text",
+          "name": "modality",
+          "required": true,
+          "summary": "Media category as the child reported it, clipped to 32 characters."
+        },
+        {
+          "kind": "text",
+          "max_length": 262144,
+          "name": "raw",
+          "required": true,
+          "summary": "Visible text, at most 256 KiB as a prefix clipped at a UTF-8 boundary."
+        },
+        {
+          "kind": "boolean",
+          "name": "truncated",
+          "required": false,
+          "summary": "Display marker: raw is a prefix of the retained value."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": false,
+          "summary": "Display marker: original UTF-8 byte length of the shortened value."
+        }
+      ],
+      "summary": "Visible user or answer text. Reasoning, tool payloads and extras never persist here.",
+      "unknown_fields": "ignore"
+    },
+    "DialogueStep": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Zero-based step index within its turn."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "DialoguePart",
+          "required": true,
+          "summary": "Ordered answer preview."
+        },
+        {
+          "kind": "record",
+          "name": "answer_source",
+          "record": "AnswerSource",
+          "required": false,
+          "summary": "Present for a committed response with a live source."
+        }
+      ],
+      "summary": "One answer preview plus, for a committed response, the cursor for its exact text.",
+      "unknown_fields": "ignore"
+    },
+    "DialogueTurn": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Worker turn index; a cursor is only an array offset into the current projection."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": false,
+          "summary": "Input request identity, when the Hub still knows it."
+        },
+        {
+          "constant": "auto_compact_continue",
+          "kind": "text",
+          "name": "internal_input",
+          "required": false,
+          "summary": "auto_compact_continue for a turn the Hub started itself."
+        },
+        {
+          "kind": "record",
+          "name": "source",
+          "record": "ExecutionIdentity",
+          "required": false,
+          "summary": "Worker, request and run that produced the internal turn."
+        },
+        {
+          "kind": "records",
+          "name": "user",
+          "record": "DialoguePart",
+          "required": true,
+          "summary": "Submitted parts; empty for an internal turn."
+        },
+        {
+          "kind": "records",
+          "name": "steps",
+          "record": "DialogueStep",
+          "required": true,
+          "summary": "Answer steps; only the newest 32 of a long turn are retained."
+        }
+      ],
+      "summary": "A bounded turn. An automatic compaction turn carries internal_input and its source instead of user parts.",
       "unknown_fields": "ignore"
     },
     "EmptyData": {
@@ -4048,6 +5204,692 @@
       "summary": "State snapshot. Optional fields are omitted by older workers and must be tolerated.",
       "unknown_fields": "ignore"
     },
+    "SubagentAnswerArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "kind": "record",
+          "name": "answer",
+          "record": "AnswerQuery",
+          "required": true,
+          "summary": "Source, part and offset; every field is required."
+        }
+      ],
+      "summary": "One direct child and a complete answer cursor; turn paging is refused here.",
+      "unknown_fields": "reject"
+    },
+    "SubagentAnswerResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Child session identifier."
+        },
+        {
+          "kind": "text",
+          "name": "parent",
+          "required": true,
+          "summary": "Direct cascading parent session."
+        },
+        {
+          "enumeration": "SubagentLifecycle",
+          "kind": "enumeration",
+          "name": "lifecycle",
+          "required": true,
+          "summary": "Headless lifecycle label; cleanup-pending still owns the child."
+        },
+        {
+          "enumeration": "SubagentPolicy",
+          "kind": "enumeration",
+          "name": "policy",
+          "required": true,
+          "summary": "Operator-owned tool policy, independent of the parent worker."
+        },
+        {
+          "enumeration": "SubagentHealth",
+          "kind": "enumeration",
+          "name": "health",
+          "required": true,
+          "summary": "Last observed assessment; not proof of process liveness."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": true,
+          "summary": "Diagnostic reason in prose; not a stable error code."
+        },
+        {
+          "kind": "text",
+          "name": "observed_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 time of the latest observation, or null when unknown."
+        },
+        {
+          "kind": "boolean",
+          "name": "active",
+          "required": true,
+          "summary": "True when the last observed worker status reported an active run."
+        },
+        {
+          "enumeration": "SubagentProcessState",
+          "kind": "enumeration",
+          "name": "process_state",
+          "required": true,
+          "summary": "Supervised process state; not-started before the first launch."
+        },
+        {
+          "kind": "boolean",
+          "name": "connected",
+          "required": true,
+          "summary": "True while a worker event connection is attached."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Active run identifier, or null while the child is idle."
+        },
+        {
+          "kind": "integer",
+          "name": "pending_approvals",
+          "required": true,
+          "summary": "Open confirmation prompts awaiting an operator decision."
+        },
+        {
+          "kind": "text",
+          "name": "error",
+          "nullable": true,
+          "required": true,
+          "summary": "Child-level diagnostic, or null when there is none."
+        },
+        {
+          "kind": "records",
+          "name": "requests",
+          "record": "SubagentRequestOutcome",
+          "required": true,
+          "summary": "Always empty: an answer read has no outcomes."
+        },
+        {
+          "kind": "boolean",
+          "name": "requests_truncated",
+          "required": true,
+          "summary": "Always false: there is no outcome tail to shorten."
+        },
+        {
+          "kind": "record",
+          "name": "conversation",
+          "nullable": true,
+          "record": "ConversationPage",
+          "required": true,
+          "summary": "Always null: an answer read carries no turn window."
+        },
+        {
+          "kind": "record",
+          "name": "answer",
+          "record": "AnswerPage",
+          "required": true,
+          "summary": "Exact bytes with the cursor to continue."
+        }
+      ],
+      "summary": "Child status plus one exact answer page; the outcome tail and the conversation page are empty by construction.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentCompactArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "constant": "compact",
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Always compact in this form."
+        },
+        {
+          "kind": "record",
+          "name": "options",
+          "record": "SubagentSendOptions",
+          "required": false,
+          "summary": "Optional model or reserved tools category."
+        }
+      ],
+      "summary": "Compact the child's context; the child must advertise context-compact first.",
+      "unknown_fields": "reject"
+    },
+    "SubagentContinueArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "constant": "continue",
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Always continue in this form."
+        },
+        {
+          "kind": "record",
+          "name": "options",
+          "record": "SubagentSendOptions",
+          "required": false,
+          "summary": "Optional model or reserved tools category."
+        }
+      ],
+      "summary": "Resume the child's worker state; it creates no empty user turn and carries no content.",
+      "unknown_fields": "reject"
+    },
+    "SubagentForkArguments": {
+      "fields": [],
+      "summary": "An empty object: the route and the caller's configuration decide everything.",
+      "unknown_fields": "reject"
+    },
+    "SubagentForkResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "New child session identifier."
+        },
+        {
+          "constant": "preparing",
+          "enumeration": "SubagentLifecycle",
+          "kind": "enumeration",
+          "name": "lifecycle",
+          "required": true,
+          "summary": "Always preparing in this reply."
+        }
+      ],
+      "summary": "The new child and its initial lifecycle; startup continues under the supervisor after ownership is durably recorded.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentListArguments": {
+      "fields": [],
+      "summary": "An empty object: direct children of the calling lifecycle, terminal ones included.",
+      "unknown_fields": "reject"
+    },
+    "SubagentListResult": {
+      "fields": [
+        {
+          "kind": "records",
+          "name": "subagents",
+          "record": "SubagentStatus",
+          "required": true,
+          "summary": "Direct children, including retained terminal states."
+        }
+      ],
+      "summary": "Every direct child of this worker lifecycle; empty when none was created.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentMessageArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "constant": "message",
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Always message in this form."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "non_empty": true,
+          "record": "RequestContent",
+          "required": true,
+          "summary": "One or more admitted parts; an empty array or empty text is refused."
+        },
+        {
+          "kind": "record",
+          "name": "options",
+          "record": "SubagentSendOptions",
+          "required": false,
+          "summary": "Optional model or reserved tools category."
+        }
+      ],
+      "summary": "One user message for a child. Content follows the normal payload content rules.",
+      "unknown_fields": "reject"
+    },
+    "SubagentReceiveArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "default": 0,
+          "kind": "integer",
+          "name": "cursor",
+          "required": false,
+          "summary": "Offset into the current turn array, defaulted to 0."
+        },
+        {
+          "default": 5,
+          "kind": "integer",
+          "maximum": 10,
+          "minimum": 1,
+          "name": "limit",
+          "required": false,
+          "summary": "Turns to return; 1 to 10, defaulted to 5."
+        }
+      ],
+      "summary": "One direct child with an optional turn window; it is a snapshot query and never waits for a run to finish.",
+      "unknown_fields": "reject"
+    },
+    "SubagentReceiveResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Child session identifier."
+        },
+        {
+          "kind": "text",
+          "name": "parent",
+          "required": true,
+          "summary": "Direct cascading parent session."
+        },
+        {
+          "enumeration": "SubagentLifecycle",
+          "kind": "enumeration",
+          "name": "lifecycle",
+          "required": true,
+          "summary": "Headless lifecycle label; cleanup-pending still owns the child."
+        },
+        {
+          "enumeration": "SubagentPolicy",
+          "kind": "enumeration",
+          "name": "policy",
+          "required": true,
+          "summary": "Operator-owned tool policy, independent of the parent worker."
+        },
+        {
+          "enumeration": "SubagentHealth",
+          "kind": "enumeration",
+          "name": "health",
+          "required": true,
+          "summary": "Last observed assessment; not proof of process liveness."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": true,
+          "summary": "Diagnostic reason in prose; not a stable error code."
+        },
+        {
+          "kind": "text",
+          "name": "observed_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 time of the latest observation, or null when unknown."
+        },
+        {
+          "kind": "boolean",
+          "name": "active",
+          "required": true,
+          "summary": "True when the last observed worker status reported an active run."
+        },
+        {
+          "enumeration": "SubagentProcessState",
+          "kind": "enumeration",
+          "name": "process_state",
+          "required": true,
+          "summary": "Supervised process state; not-started before the first launch."
+        },
+        {
+          "kind": "boolean",
+          "name": "connected",
+          "required": true,
+          "summary": "True while a worker event connection is attached."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Active run identifier, or null while the child is idle."
+        },
+        {
+          "kind": "integer",
+          "name": "pending_approvals",
+          "required": true,
+          "summary": "Open confirmation prompts awaiting an operator decision."
+        },
+        {
+          "kind": "text",
+          "name": "error",
+          "nullable": true,
+          "required": true,
+          "summary": "Child-level diagnostic, or null when there is none."
+        },
+        {
+          "kind": "records",
+          "name": "requests",
+          "record": "SubagentRequestOutcome",
+          "required": true,
+          "summary": "Latest outcomes, newest last; the tail shrinks before the reply exceeds 256 KiB."
+        },
+        {
+          "kind": "boolean",
+          "name": "requests_truncated",
+          "required": true,
+          "summary": "True when the outcome tail was shortened to fit the reply budget."
+        },
+        {
+          "kind": "record",
+          "name": "conversation",
+          "nullable": true,
+          "record": "ConversationPage",
+          "required": true,
+          "summary": "Conversation page, or null when the projection is not available."
+        }
+      ],
+      "summary": "Child status, its latest request outcomes and one conversation page.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentRequestOutcome": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Child request identity chosen by the Hub."
+        },
+        {
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Operation that was dispatched."
+        },
+        {
+          "enumeration": "SubagentRequestState",
+          "kind": "enumeration",
+          "name": "state",
+          "required": true,
+          "summary": "intent, sent, admitted, rejected, unknown or finished."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Run that admitted the request; empty until admission."
+        },
+        {
+          "kind": "text",
+          "name": "status",
+          "required": false,
+          "summary": "Run status reported when the request finished, or unknown when the event carried none; clipped to 32 characters."
+        },
+        {
+          "kind": "text",
+          "name": "detail",
+          "required": false,
+          "summary": "Rejection or transport diagnostic, clipped to 512 characters; not a stable machine code."
+        },
+        {
+          "kind": "text",
+          "max_length": 32768,
+          "name": "summary",
+          "required": false,
+          "summary": "Published compact summary, retained in full at up to 32 KiB."
+        },
+        {
+          "kind": "text",
+          "name": "at",
+          "required": true,
+          "summary": "ISO-8601 time the outcome was recorded."
+        }
+      ],
+      "summary": "A bounded request outcome; sent means socket admission only, and connection loss before a definitive outcome stays unknown.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentSendOptions": {
+      "fields": [
+        {
+          "kind": "any",
+          "name": "model",
+          "object_only": true,
+          "required": false,
+          "summary": "Provider-defined keys; the child adapter validates what it supports."
+        },
+        {
+          "empty_object": true,
+          "kind": "any",
+          "name": "tools",
+          "object_only": true,
+          "required": false,
+          "summary": "Reserved category; it must be an empty object."
+        }
+      ],
+      "forbidden_fields": [
+        "confirmation"
+      ],
+      "summary": "Options forwarded to the child. Confirmation policy is the operator's alone, so the Hub refuses it here.",
+      "unknown_fields": "reject"
+    },
+    "SubagentSendResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Target child session."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Child request identity; the same identity never means exactly-once delivery."
+        },
+        {
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Echoes the accepted operation."
+        },
+        {
+          "enumeration": "SubagentDispatchState",
+          "kind": "enumeration",
+          "name": "state",
+          "required": true,
+          "summary": "sent for queue admission only, rejected when the payload was not enqueued, unknown when delivery is."
+        },
+        {
+          "kind": "boolean",
+          "name": "replayed",
+          "required": false,
+          "summary": "True when this reply repeats a committed receipt instead of doing new work."
+        }
+      ],
+      "summary": "The child request identity and the socket dispatch outcome; later outcomes are read through receive.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentStatus": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Child session identifier."
+        },
+        {
+          "kind": "text",
+          "name": "parent",
+          "required": true,
+          "summary": "Direct cascading parent session."
+        },
+        {
+          "enumeration": "SubagentLifecycle",
+          "kind": "enumeration",
+          "name": "lifecycle",
+          "required": true,
+          "summary": "Headless lifecycle label; cleanup-pending still owns the child."
+        },
+        {
+          "enumeration": "SubagentPolicy",
+          "kind": "enumeration",
+          "name": "policy",
+          "required": true,
+          "summary": "Operator-owned tool policy, independent of the parent worker."
+        },
+        {
+          "enumeration": "SubagentHealth",
+          "kind": "enumeration",
+          "name": "health",
+          "required": true,
+          "summary": "Last observed assessment; not proof of process liveness."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": true,
+          "summary": "Diagnostic reason in prose; not a stable error code."
+        },
+        {
+          "kind": "text",
+          "name": "observed_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 time of the latest observation, or null when unknown."
+        },
+        {
+          "kind": "boolean",
+          "name": "active",
+          "required": true,
+          "summary": "True when the last observed worker status reported an active run."
+        },
+        {
+          "enumeration": "SubagentProcessState",
+          "kind": "enumeration",
+          "name": "process_state",
+          "required": true,
+          "summary": "Supervised process state; not-started before the first launch."
+        },
+        {
+          "kind": "boolean",
+          "name": "connected",
+          "required": true,
+          "summary": "True while a worker event connection is attached."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Active run identifier, or null while the child is idle."
+        },
+        {
+          "kind": "integer",
+          "name": "pending_approvals",
+          "required": true,
+          "summary": "Open confirmation prompts awaiting an operator decision."
+        },
+        {
+          "kind": "text",
+          "name": "error",
+          "nullable": true,
+          "required": true,
+          "summary": "Child-level diagnostic, or null when there is none."
+        }
+      ],
+      "summary": "Lifecycle, policy, health and process state of one child; never its events, config or conversation.",
+      "unknown_fields": "ignore"
+    },
+    "SubagentStopArguments": {
+      "fields": [
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Direct child of the calling worker lifecycle."
+        },
+        {
+          "constant": "stop",
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Always stop in this form."
+        }
+      ],
+      "summary": "Process shutdown with escalation, not a run cancellation; content and options are refused.",
+      "unknown_fields": "reject"
+    },
+    "SubagentStopResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "subagent_id",
+          "required": true,
+          "summary": "Target child session."
+        },
+        {
+          "kind": "text",
+          "name": "operation_id",
+          "required": true,
+          "summary": "Shutdown operation identity; stop is idempotent and needs no request ID."
+        },
+        {
+          "constant": "stop",
+          "enumeration": "SubagentOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Always stop in this reply."
+        },
+        {
+          "constant": "stopping",
+          "kind": "text",
+          "name": "state",
+          "required": true,
+          "summary": "Always stopping in this reply."
+        },
+        {
+          "kind": "boolean",
+          "name": "replayed",
+          "required": false,
+          "summary": "True when this reply repeats a committed receipt instead of doing new work."
+        }
+      ],
+      "summary": "The shutdown operation identity and its stopping state; the supervised work continues after this reply.",
+      "unknown_fields": "ignore"
+    },
     "ToolError": {
       "fields": [
         {
@@ -4273,29 +6115,74 @@
   },
   "routes": [
     {
-      "arguments": "PlanReadArguments",
-      "result": "PlanReadResult",
-      "route": "plan/read"
+      "forms": [
+        {
+          "arguments": "PlanReadArguments",
+          "result": "PlanReadResult"
+        }
+      ],
+      "route": "plan/read",
+      "summary": "Read the session plan; forbidden arguments include markdown."
     },
     {
-      "arguments": "PlanReplaceArguments",
-      "result": "PlanReplaceResult",
-      "route": "plan/replace"
+      "forms": [
+        {
+          "arguments": "PlanReplaceArguments",
+          "result": "PlanReplaceResult"
+        }
+      ],
+      "route": "plan/replace",
+      "summary": "Replace or clear the session plan; markdown is limited to 64 KiB."
     },
     {
-      "arguments": null,
-      "result": null,
-      "route": "subagent/clean-fork"
+      "forms": [
+        {
+          "arguments": "SubagentForkArguments",
+          "result": "SubagentForkResult"
+        }
+      ],
+      "route": "subagent/clean-fork",
+      "summary": "Start an independent headless worker from the caller's startup snapshot; the reply precedes asynchronous startup. Arguments are limited to 64 KiB and the reply to 256 KiB of serialized UTF-8."
     },
     {
-      "arguments": null,
-      "result": null,
-      "route": "subagent/send"
+      "forms": [
+        {
+          "arguments": "SubagentMessageArguments",
+          "result": "SubagentSendResult"
+        },
+        {
+          "arguments": "SubagentContinueArguments",
+          "result": "SubagentSendResult"
+        },
+        {
+          "arguments": "SubagentCompactArguments",
+          "result": "SubagentSendResult"
+        },
+        {
+          "arguments": "SubagentStopArguments",
+          "result": "SubagentStopResult"
+        }
+      ],
+      "route": "subagent/send",
+      "summary": "Send message, continue, compact or stop to a direct child. Content is refused outside message, options.confirmation is the operator's alone, and mutating operations keep their receipt so a repeated request ID replays the committed answer. Arguments are limited to 64 KiB and the reply to 256 KiB."
     },
     {
-      "arguments": null,
-      "result": null,
-      "route": "subagent/receive"
+      "forms": [
+        {
+          "arguments": "SubagentListArguments",
+          "result": "SubagentListResult"
+        },
+        {
+          "arguments": "SubagentReceiveArguments",
+          "result": "SubagentReceiveResult"
+        },
+        {
+          "arguments": "SubagentAnswerArguments",
+          "result": "SubagentAnswerResult"
+        }
+      ],
+      "route": "subagent/receive",
+      "summary": "List direct children, or read one child's status with a bounded conversation page or one exact answer page. It is a snapshot query: it never waits for a run to finish, and the reply is limited to 256 KiB."
     }
   ]
 }

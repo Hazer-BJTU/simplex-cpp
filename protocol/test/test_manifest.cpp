@@ -219,3 +219,81 @@ BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
     const Json& envelope = schema.at("$defs").at("EventEnvelope").at("properties").at("type");
     BOOST_TEST(envelope.at("const").get<std::string>() == "event");
 }
+
+BOOST_AUTO_TEST_CASE(subagent_routes_publish_every_built_in_form) {
+    const Json canonical = canonical_contract();
+    const Json& routes = canonical.at("routes");
+    // No built-in route may publish an unresolved shape any more.
+    BOOST_TEST(routes.dump().find("null") == std::string::npos);
+
+    const auto forms_of = [&](std::string_view route) -> const Json& {
+        for (const auto& entry : routes) {
+            if (entry.at("route").get<std::string>() == route) return entry.at("forms");
+        }
+        BOOST_FAIL("missing route " << route);
+        return routes.at(0);
+    };
+    // One form per documented operation: the two plan routes, fork, three
+    // receive queries and the four send operations.
+    BOOST_TEST(forms_of("subagent/clean-fork").size() == 1);
+    BOOST_TEST(forms_of("subagent/receive").size() == 3);
+    BOOST_TEST(forms_of("subagent/send").size() == 4);
+    for (const auto& entry : routes) {
+        BOOST_TEST(!entry.at("forms").empty());
+        for (const auto& form : entry.at("forms")) {
+            BOOST_TEST(find_record(form.at("arguments").get<std::string>()) != nullptr);
+            BOOST_TEST(find_record(form.at("result").get<std::string>()) != nullptr);
+        }
+    }
+
+    // Argument records are closed and carry the Hub's own constraints.
+    const Json& message = canonical.at("records").at("SubagentMessageArguments");
+    BOOST_TEST(message.at("unknown_fields").get<std::string>() == "reject");
+    BOOST_TEST(message.at("fields").at(2).at("non_empty").get<bool>());
+    const Json& options = canonical.at("records").at("SubagentSendOptions");
+    BOOST_TEST(options.at("unknown_fields").get<std::string>() == "reject");
+    BOOST_TEST(options.at("forbidden_fields").dump().find("confirmation") != std::string::npos);
+    const Json& receive = canonical.at("records").at("SubagentReceiveArguments");
+    BOOST_TEST(receive.at("fields").at(2).at("minimum").get<std::uint64_t>() == 1);
+    BOOST_TEST(receive.at("fields").at(2).at("maximum").get<std::uint64_t>() == 10);
+
+    // The status prefix is shared, so a new status field reaches every reply.
+    const std::size_t status = canonical.at("records").at("SubagentStatus").at("fields").size();
+    BOOST_TEST(status == 13);
+    BOOST_TEST(canonical.at("records").at("SubagentReceiveResult").at("fields").size()
+               == status + 3);
+    BOOST_TEST(canonical.at("records").at("SubagentAnswerResult").at("fields").size()
+               == status + 4);
+
+    // A required-but-nullable page slot keeps both statements.
+    const Json& conversation =
+        canonical.at("records").at("SubagentReceiveResult").at("fields").at(status + 2);
+    BOOST_TEST(conversation.at("name").get<std::string>() == "conversation");
+    BOOST_TEST(conversation.at("required").get<bool>());
+    BOOST_TEST(conversation.at("nullable").get<bool>());
+
+    // Replies stay open: a client must tolerate a diagnostic field it does not know.
+    BOOST_TEST(canonical.at("records").at("SubagentReceiveResult")
+                   .at("unknown_fields").get<std::string>() == "ignore");
+}
+
+BOOST_AUTO_TEST_CASE(subagent_shapes_reach_the_schema_and_the_prose) {
+    const Json schema = json_schema();
+    const Json& observed = schema.at("$defs").at("SubagentStatus")
+                               .at("properties").at("observed_at");
+    BOOST_TEST(observed.at("anyOf").dump().find("null") != std::string::npos);
+    const Json& answer = schema.at("$defs").at("SubagentAnswerResult").at("required");
+    BOOST_TEST(answer.dump().find("answer") != std::string::npos);
+    BOOST_TEST(answer.dump().find("conversation") != std::string::npos);
+
+    // Route prose is published with the manifest and never inside the canonical
+    // document, so editing a sentence cannot move the fingerprint.
+    const Json document = manifest();
+    for (const auto& entry : document.at("routes")) {
+        BOOST_TEST(!entry.at("summary").get<std::string>().empty());
+    }
+    for (const auto& entry : canonical_contract().at("routes")) {
+        BOOST_TEST(entry.contains("forms"));
+        BOOST_TEST(entry.size() == 2);
+    }
+}

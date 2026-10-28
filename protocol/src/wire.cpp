@@ -143,19 +143,44 @@ std::span<const MessageSpec> message_registry() {
 }
 
 std::span<const RouteSpec> route_registry() {
+    static const RouteForm plan_read[] = {
+        {&describe_record<PlanReadArguments>(), &describe_record<PlanReadResult>()},
+    };
+    static const RouteForm plan_replace[] = {
+        {&describe_record<PlanReplaceArguments>(), &describe_record<PlanReplaceResult>()},
+    };
+    static const RouteForm fork[] = {
+        {&describe_record<SubagentForkArguments>(), &describe_record<SubagentForkResult>()},
+    };
+    static const RouteForm receive[] = {
+        {&describe_record<SubagentListArguments>(), &describe_record<SubagentListResult>()},
+        {&describe_record<SubagentReceiveArguments>(), &describe_record<SubagentReceiveResult>()},
+        {&describe_record<SubagentAnswerArguments>(), &describe_record<SubagentAnswerResult>()},
+    };
+    static const RouteForm send[] = {
+        {&describe_record<SubagentMessageArguments>(), &describe_record<SubagentSendResult>()},
+        {&describe_record<SubagentContinueArguments>(), &describe_record<SubagentSendResult>()},
+        {&describe_record<SubagentCompactArguments>(), &describe_record<SubagentSendResult>()},
+        {&describe_record<SubagentStopArguments>(), &describe_record<SubagentStopResult>()},
+    };
     static const RouteSpec routes[] = {
-        {"plan/read", &describe_record<PlanReadArguments>(), &describe_record<PlanReadResult>(),
+        {"plan/read", plan_read,
          "Read the session plan; forbidden arguments include markdown."},
-        {"plan/replace", &describe_record<PlanReplaceArguments>(),
-         &describe_record<PlanReplaceResult>(),
+        {"plan/replace", plan_replace,
          "Replace or clear the session plan; markdown is limited to 64 KiB."},
-        {"subagent/clean-fork", nullptr, nullptr,
-         "Start an independent headless worker; argument and result shapes are "
-         "defined by the Hub subagent contract."},
-        {"subagent/send", nullptr, nullptr,
-         "Send message/continue/compact/stop to a child; Hub contract."},
-        {"subagent/receive", nullptr, nullptr,
-         "Read bounded child status and conversation; Hub contract."},
+        {"subagent/clean-fork", fork,
+         "Start an independent headless worker from the caller's startup snapshot; the reply "
+         "precedes asynchronous startup. Arguments are limited to 64 KiB and the reply to "
+         "256 KiB of serialized UTF-8."},
+        {"subagent/send", send,
+         "Send message, continue, compact or stop to a direct child. Content is refused outside "
+         "message, options.confirmation is the operator's alone, and mutating operations keep "
+         "their receipt so a repeated request ID replays the committed answer. Arguments are "
+         "limited to 64 KiB and the reply to 256 KiB."},
+        {"subagent/receive", receive,
+         "List direct children, or read one child's status with a bounded conversation page or "
+         "one exact answer page. It is a snapshot query: it never waits for a run to finish, and "
+         "the reply is limited to 256 KiB."},
     };
     return routes;
 }

@@ -176,9 +176,14 @@ socket deadline. Unknown routes continue to return `not_implemented`.
 | `subagent/clean-fork` | `{}` | generated ID and initial lifecycle |
 | `subagent/receive` | `{}` | direct children, including retained terminal states |
 | `subagent/receive` | `subagent_id`, optional `cursor` (0), `limit` (5, range 1–10) | status, bounded request outcomes and current primary conversation page |
+| `subagent/receive` | `subagent_id`, `answer` (`source`, `part`, `offset`) | status plus one exact answer page; turn paging is forbidden |
 | `subagent/send` | `subagent_id`, `operation: message`, `content`, optional `options` | child request ID and socket dispatch state |
 | `subagent/send` | `subagent_id`, `operation: continue` or `compact`, optional `options` | child request ID and dispatch state; content is forbidden |
 | `subagent/send` | `subagent_id`, `operation: stop` | operation ID and stopping state; content/options are forbidden |
+
+Each row above is one published form. `protocol/schemas/worker-protocol.json`
+lists them under `routes[].forms` together with the exact argument and reply
+records, so a field change here is a reviewable contract change there.
 
 All unspecified arguments are rejected. `content` follows normal worker payload
 content rules. This is the remote protocol, distinct from the C++ tool's text-only
