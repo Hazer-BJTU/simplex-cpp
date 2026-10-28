@@ -119,6 +119,18 @@ HistoryRequest parse_history_request(const nlohmann::json& payload) {
     return result;
 }
 
+QueryRejection query_rejection(const nlohmann::json& request_id,
+                               const std::string& operation, const std::string& code) {
+    QueryRejection rejection;
+    rejection.event = operation == "answer" ? protocol::EventName::answer_error
+                                            : protocol::EventName::history_error;
+    rejection.data.request_id = request_id;
+    rejection.data.message =
+        "Worker query quota exceeded; retry after the connection drains.";
+    rejection.data.code = code;
+    return rejection;
+}
+
 std::string new_identity() {
     return boost::uuids::to_string(boost::uuids::random_generator()());
 }

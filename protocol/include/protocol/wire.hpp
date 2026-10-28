@@ -1119,16 +1119,21 @@ struct EmptyData {
 struct QueryErrorData {
     Json request_id = nullptr;
     std::string message;
+    std::optional<std::string> code;
 
     friend constexpr std::string_view wire_name(const QueryErrorData&) { return "QueryErrorData"; }
     friend constexpr std::string_view wire_summary(const QueryErrorData&) {
-        return "Query failure. request_id echoes whatever the query carried, including null.";
+        return "Query failure. request_id echoes whatever the query carried, including null. "
+               "code is present only when the query was refused before validation.";
     }
     friend auto wire_fields(const QueryErrorData&) {
         return std::tuple{
             opaque("request_id", &QueryErrorData::request_id,
                    "Echoed query identity; any JSON value, including null.", true),
             text("message", &QueryErrorData::message, "Diagnostic text."),
+            text("code", &QueryErrorData::code,
+                 "Machine-readable refusal code such as query_queue_full or query_too_large; "
+                 "absent when the query reached validation."),
         };
     }
 };

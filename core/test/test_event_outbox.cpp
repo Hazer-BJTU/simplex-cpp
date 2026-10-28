@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE CoreEventOutbox
 #include <boost/test/unit_test.hpp>
 #include "core/event_outbox.hpp"
+#include "core/event_admission.hpp"
 #include "protocol/wire.hpp"
 using Json = nlohmann::json;
 using Outbox = core::EventOutbox;
@@ -165,4 +166,75 @@ BOOST_AUTO_TEST_CASE(query_preflight_counts_only_skipped_work_without_spending_r
     queue.close();
     BOOST_CHECK(queue.omit_query_when_congested());
     BOOST_TEST(queue.sequence() == 2u);
+}
+
+BOOST_AUTO_TEST_CASE(classification_keeps_ordinary_metadata_out_of_the_lifecycle_reserve) {
+    using protocol::EventName;
+    const auto kind = [](EventName name, const Json& data, bool failed) {
+        return static_cast<int>(core::classify_event(name, data, failed));
+    };
+    const auto metadata = static_cast<int>(Kind::Metadata);
+    const auto lifecycle = static_cast<int>(Kind::Lifecycle);
+
+    // These four stay latest-value metadata in every storage state: a repeated
+    // snapshot must not consume the reserve the terminal diagnostic needs.
+    for (const bool failed : {false, true}) {
+        for (const auto name : {EventName::persisted, EventName::status,
+                                EventName::options, EventName::export_error}) {
+            BOOST_TEST(kind(name, Json::object(), failed) == metadata);
+        }
+    }
+    // Only a latched storage failure promotes the diagnostic itself.
+    BOOST_TEST(kind(EventName::error, Json::object(), false) == metadata);
+    BOOST_TEST(kind(EventName::error, Json::object(), true) == lifecycle);
+
+    // The rest of the vocabulary does not depend on the storage state.
+    for (const bool failed : {false, true}) {
+        BOOST_TEST(kind(EventName::model_response, Json::object(), failed)
+                   == static_cast<int>(Kind::Preview));
+        BOOST_TEST(kind(EventName::tool_calls, Json::object(), failed)
+                   == static_cast<int>(Kind::Preview));
+        BOOST_TEST(kind(EventName::tool_results, Json::object(), failed)
+                   == static_cast<int>(Kind::Preview));
+        for (const auto name : {EventName::history, EventName::answer,
+                                EventName::history_error, EventName::answer_error}) {
+            BOOST_TEST(kind(name, Json::object(), failed) == static_cast<int>(Kind::Query));
+        }
+        for (const auto name : {EventName::ready, EventName::input_admitted,
+                                EventName::run_started, EventName::input_committed,
+                                EventName::run_finished}) {
+            BOOST_TEST(kind(name, Json::object(), failed) == lifecycle);
+        }
+        BOOST_TEST(kind(EventName::input_rejected, Json::object(), failed)
+                   == static_cast<int>(Kind::Feedback));
+        BOOST_TEST(kind(EventName::compact_finished, Json{{"origin", "automatic"}}, failed)
+                   == metadata);
+        BOOST_TEST(kind(EventName::compact_finished, Json::object(), failed) == lifecycle);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_latched_storage_failure_leaves_metadata_coalescing_and_the_terminal_error_admissible) {
+    // The regression this guards: classifying status like a lifecycle event once
+    // storage failed consumed the eight reserved slots, so a polling client could
+    // make the final diagnostic unadmittable.
+    Outbox queue(1);
+    constexpr bool failed = true;
+    const auto admit = [&](protocol::EventName name, Json data) {
+        return queue.admit(event(name, std::move(data)),
+                           core::classify_event(name, data, failed));
+    };
+
+    for (int index = 0; index < 3; ++index) {
+        BOOST_CHECK(admit(protocol::EventName::run_started, Json::object()) == Admission::Added);
+    }
+    // Twelve identical snapshots coalesce into the one queued metadata slot.
+    BOOST_CHECK(admit(protocol::EventName::status, Json{{"active", true}}) == Admission::Added);
+    for (int index = 0; index < 11; ++index) {
+        BOOST_CHECK(admit(protocol::EventName::status, Json{{"active", index % 2 == 0}})
+                    == Admission::Replaced);
+    }
+    // The terminal storage diagnostic is still admitted with no draining.
+    BOOST_CHECK(admit(protocol::EventName::error, Json{{"durable", false}}) == Admission::Added);
+    BOOST_TEST(queue.sequence() == 5u);
+    BOOST_TEST(queue.size() == 5u);
 }

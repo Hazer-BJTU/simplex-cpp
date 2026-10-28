@@ -917,8 +917,8 @@ may occur in nested dataclass records.
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
 | `compact_finished` | `{ "summary": string, "memory_file"?: string, "archive"?: { "session_id": string, "archive_id": string, "storage_kind": "json" \| "sqlite", "restorable": true }, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `answer` | Correlated answer page | Exact read-only content segment; no run admission. |
-| `answer_error` | `{ "request_id": any JSON value or null, "message": string }` | Answer source or cursor is unavailable. |
-| `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
+| `answer_error` | `{ "request_id": any JSON value or null, "message": string, "code"?: "query_queue_full" \| "query_too_large" }` | Answer source or cursor is unavailable, or the query was refused before validation. |
+| `history_error` | `{ "request_id": any JSON value or null, "message": string, "code"?: "query_queue_full" \| "query_too_large" }` | Invalid history query, or the query was refused before validation. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" \| "payload_queue_full" }` | Input failed host validation or payload queue admission; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
 | `run_started` | `{}` | Loop admitted the invocation. |

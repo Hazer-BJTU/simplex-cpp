@@ -270,7 +270,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "eacd78eae31297b56e82802842a30947a9401b01d780afa9f339dfad745ddb4e",
+  "fingerprint": "8c4ea7a439f7252d252723df0b6dcff3d9c615c03fdd56dd4f475b2bad7b7217",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -1685,8 +1685,11 @@
       },
       "QueryErrorData": {
         "additionalProperties": true,
-        "description": "Query failure. request_id echoes whatever the query carried, including null.",
+        "description": "Query failure. request_id echoes whatever the query carried, including null. code is present only when the query was refused before validation.",
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "message": {
             "type": "string"
           },
@@ -3754,9 +3757,15 @@
           "name": "message",
           "required": true,
           "summary": "Diagnostic text."
+        },
+        {
+          "kind": "text",
+          "name": "code",
+          "required": false,
+          "summary": "Machine-readable refusal code such as query_queue_full or query_too_large; absent when the query reached validation."
         }
       ],
-      "summary": "Query failure. request_id echoes whatever the query carried, including null.",
+      "summary": "Query failure. request_id echoes whatever the query carried, including null. code is present only when the query was refused before validation.",
       "unknown_fields": "ignore"
     },
     "RequestContent": {

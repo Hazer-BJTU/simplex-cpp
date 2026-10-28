@@ -9,6 +9,7 @@
 #include "core/compact.hpp"
 #include "logging/logger.hpp"
 #include "core/event_outbox.hpp"
+#include "core/event_admission.hpp"
 #include "core/wire.hpp"
 #include "load/plugins.hpp"
 #include "persistence/store.hpp"
@@ -393,44 +394,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         control_messages.close();
     }
 
-    /** Admission class of one event; a message type alone cannot decide this. */
-    EventOutbox::Kind classify(protocol::EventName name, const Json& data) const {
-        using protocol::EventName;
-        switch (name) {
-            case EventName::model_response:
-            case EventName::tool_calls:
-            case EventName::tool_results:
-                return EventOutbox::Kind::Preview;
-            case EventName::history:
-            case EventName::answer:
-            case EventName::history_error:
-            case EventName::answer_error:
-                return EventOutbox::Kind::Query;
-            case EventName::persisted:
-            case EventName::status:
-            case EventName::options:
-            case EventName::export_error:
-            case EventName::error:
-                // A terminal storage failure is a lifecycle boundary; every other
-                // error is a replayable diagnostic.
-                return storage_failed ? EventOutbox::Kind::Lifecycle : EventOutbox::Kind::Metadata;
-            case EventName::compact_finished:
-                // Automatic compaction is latest-value metadata; a manual result is
-                // a lifecycle event the transcript must retain.
-                return data.value("origin", std::string()) == "automatic"
-                    ? EventOutbox::Kind::Metadata : EventOutbox::Kind::Lifecycle;
-            case EventName::ready:
-            case EventName::input_admitted:
-            case EventName::run_started:
-            case EventName::input_committed:
-            case EventName::run_finished:
-                return EventOutbox::Kind::Lifecycle;
-            case EventName::input_rejected:
-                break;
-        }
-        return EventOutbox::Kind::Feedback;
-    }
-
     /** A described record is serialized; open event data is used as it is. */
     template <class Data>
     static Json wire_data(Data data) {
@@ -452,7 +415,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     /** Noncritical congestion is bounded and observable, never a run failure. */
     void publish(protocol::EventName name, Json data,
                  const std::string& event_request, const std::string& event_run) {
-        const auto kind = classify(name, data);
+        const auto kind = classify_event(name, data, storage_failed);
         protocol::EventEnvelope envelope;
         envelope.event = name;
         envelope.session_id = session_id;
@@ -840,10 +803,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             }
         }));
         subscriptions.emplace_back(events.subscribe<io::PayloadQueryRejectedEvent>([this](const auto& event) {
-            emit(event.operation == "answer" ? protocol::EventName::answer_error
-                                          : protocol::EventName::history_error,
-                protocol::QueryErrorData{event.request_id,
-                    "Worker query quota exceeded; retry after the connection drains."});
+            // The refusal reason stays machine-readable: a transient queue
+            // rejection and an oversized query need different client behavior.
+            auto rejection = query_rejection(event.request_id, event.operation, event.code);
+            emit(rejection.event, std::move(rejection.data));
         }));
         subscriptions.emplace_back(events.subscribe<io::PayloadRejectedEvent>([this](const auto& event) {
             if (stopping || shutdown_requested.load()) return;

@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "dataclass/model_io.hpp"
+#include "protocol/wire.hpp"
 
 namespace core {
 /** Reject unsafe session path components before any filesystem access. */
@@ -75,6 +76,20 @@ struct HistoryRequest {
     std::size_t limit = 10;
 };
 HistoryRequest parse_history_request(const nlohmann::json& payload);
+/** The worker message for a query the transport refused before validation. */
+struct QueryRejection {
+    protocol::EventName event = protocol::EventName::history_error;
+    protocol::QueryErrorData data;
+};
+/**
+ * Build the correlated refusal for a rejected query. `operation` selects the
+ * event name, and the transport's machine-readable code (`query_queue_full` or
+ * `query_too_large`) is preserved so a client can tell a transient queue
+ * rejection from an oversized query. Validation failures use QueryErrorData
+ * directly and carry no code: they name no transport-level refusal.
+ */
+QueryRejection query_rejection(const nlohmann::json& request_id,
+                               const std::string& operation, const std::string& code);
 /** Complete UTF-8 JSON history event budget, excluding WebSocket framing. */
 inline constexpr std::size_t history_event_max_bytes = 256 * 1024;
 /** Reserved for the worker envelope, including escaped correlation IDs. */

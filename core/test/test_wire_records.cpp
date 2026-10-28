@@ -219,3 +219,33 @@ BOOST_AUTO_TEST_CASE(confirmation_and_remote_call_envelopes_keep_their_shape) {
                   {"result", {{"revision", 2}, {"unfamiliar", Json::array({1, 2})}}}}}}));
     BOOST_TEST(accepted.data.result->at("unfamiliar").size() == 2);
 }
+
+BOOST_AUTO_TEST_CASE(query_rejections_keep_their_code_and_correlation) {
+    // The transport refuses an oversized query or a full query mailbox before
+    // validation. The refusal must name its reason, and it must answer the
+    // request the caller actually sent.
+    for (const std::string operation : {"history", "answer"}) {
+        const auto expected = operation == "answer" ? protocol::EventName::answer_error
+                                                    : protocol::EventName::history_error;
+        for (const std::string code : {"query_too_large", "query_queue_full"}) {
+            const auto rejection = core::query_rejection(Json("request-9"), operation, code);
+            BOOST_TEST(static_cast<int>(rejection.event) == static_cast<int>(expected));
+            const auto data = protocol::to_json(rejection.data);
+            BOOST_TEST(data.size() == 3u);
+            BOOST_TEST(data.at("request_id") == "request-9");
+            BOOST_TEST(data.at("code") == code);
+            BOOST_TEST(data.at("message")
+                       == "Worker query quota exceeded; retry after the connection drains.");
+            BOOST_CHECK_NO_THROW(protocol::validate_event_data(envelope(rejection.event, data)));
+        }
+    }
+    // A query that reached validation keeps its previous shape: no code key.
+    protocol::QueryErrorData invalid;
+    invalid.request_id = Json(nullptr);
+    invalid.message = "history request is invalid";
+    const auto data = protocol::to_json(invalid);
+    BOOST_TEST(data.size() == 2u);
+    BOOST_TEST(!data.contains("code"));
+    BOOST_CHECK_NO_THROW(protocol::validate_event_data(
+        envelope(protocol::EventName::history_error, data)));
+}
