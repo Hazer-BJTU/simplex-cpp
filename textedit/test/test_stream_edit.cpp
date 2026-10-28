@@ -11,6 +11,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -294,6 +295,53 @@ BOOST_FIXTURE_TEST_CASE(file_edits_match_in_memory_planning_at_every_chunk_edge,
             }
             BOOST_TEST(read_cap == 0u);
         }
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(randomized_edits_match_in_memory_planning, Scratch)
+{
+    // A fixed seed keeps this reproducible: small texts built from raw bytes,
+    // terminators, split CR/LF and multibyte separators, with random matches,
+    // replacements (including deletion and no-op) and context sizes. This is the
+    // case class that produced the preview/coordinate bugs found in review, so
+    // it is worth more than any single hand-written fixture.
+    std::mt19937 rng(20261028);
+    const std::vector<std::string> atoms{
+        "a", "b", "c", "\r", "\n", "\r\n", " ", "\xe2\x80\xa8", "\xc2\x85"};
+    std::uniform_int_distribution<int> atom_count(0, 24);
+    std::uniform_int_distribution<int> atom_pick(0, static_cast<int>(atoms.size()) - 1);
+    std::uniform_int_distribution<int> context_pick(0, 3);
+    for (int round = 0; round < 400; ++round) {
+        std::string text;
+        for (int index = atom_count(rng); index > 0; --index) text += atoms[atom_pick(rng)];
+        std::string old_text;
+        std::string new_text;
+        if (!text.empty()) {
+            std::uniform_int_distribution<int> start(0, static_cast<int>(text.size()) - 1);
+            const auto at = start(rng);
+            std::uniform_int_distribution<int> length(1, static_cast<int>(text.size()) - at);
+            old_text = text.substr(static_cast<std::size_t>(at),
+                                   static_cast<std::size_t>(length(rng)));
+            std::uniform_int_distribution<int> replacement_length(0, 6);
+            for (int index = replacement_length(rng); index > 0; --index) {
+                new_text += atoms[atom_pick(rng)];
+            }
+            if (rng() % 4 == 0) new_text = old_text;
+        } else {
+            old_text = "a";
+        }
+        const auto context = static_cast<std::size_t>(context_pick(rng));
+        const auto plan = textedit::prepare_str_replace(text, old_text, new_text, context);
+        const auto path = write(text);
+        const auto result = textedit::str_replace_file(path, old_text, new_text, context);
+        const auto expected_file = plan.result.status == textedit::EditStatus::Modified
+            ? plan.updated_text
+            : text;
+        require_same(from_file(result, read(path)), from_prepared(plan, expected_file),
+                     "round=" + std::to_string(round) + " size=" + std::to_string(text.size())
+                         + " old=" + hex(old_text) + " new=" + hex(new_text)
+                         + " context=" + std::to_string(context));
+        no_temporary_files();
     }
 }
 
