@@ -1068,15 +1068,17 @@ all delivery or durability ambiguity.
 | `status` | String | Final logical-request outcome listed below. Intermediate automatic-compaction boundaries do not emit this event. |
 | `error` | String | Technical diagnostic, empty when none. |
 | `exchanges` | Unsigned integer | All committed task and compact model responses in this logical request, not HTTP attempts. |
-| `task_exchanges` | Unsigned integer | Committed responses from task runs, including automatic continuation. |
-| `compact_exchanges` | Unsigned integer | Committed manual or automatic summary responses. |
-| `auto_compact` | Object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
+| `task_exchanges` | Optional unsigned integer | Committed responses from task runs, including automatic continuation. |
+| `compact_exchanges` | Optional unsigned integer | Committed manual or automatic summary responses. |
+| `auto_compact` | Optional object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
 | `durable` | Boolean | Whether a final/cancellation state snapshot was recorded, subject to the policy described below. |
 | `failure` | Optional object | Present for `failed`; contains `stage`, `operation` (`task`, `compact`, `auto_compact`) and `can_continue`. |
 | `omitted_display_events` | Optional unsigned integer | Model/tool display events omitted since the previous admitted settlement. Canonical answers are unchanged. |
 | `omitted_query_events` | Optional unsigned integer | Query responses omitted since the previous admitted settlement. |
 | `omitted_feedback_events` | Optional unsigned integer | Rejection feedback omitted since the previous admitted settlement. |
 | `coalesced_metadata_events` | Optional unsigned integer | Replayable metadata events replaced or omitted since the previous admitted settlement. |
+| `rejected_queries` | Optional unsigned integer | Cumulative history/answer quota or envelope rejections for this IO client at settlement. |
+| `unreported_rejections` | Optional unsigned integer | Cumulative rejection notices dropped by a full feedback mailbox at settlement. |
 
 The four omission/coalescing counters are present only when nonzero and settle
 only after the event is admitted to the outbox. They are not lifetime totals or

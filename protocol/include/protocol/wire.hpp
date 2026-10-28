@@ -85,6 +85,9 @@ enum class FailureStage { model_request, other };
 
 enum class ToolStatus { succeeded, rejected };
 
+/** Capability names a worker may advertise in `status.capabilities`. */
+enum class Capability { session_history, context_compact, auto_compact, answer_pages };
+
 template <>
 struct EnumTraits<EnvelopeType> {
     static constexpr std::string_view name = "EnvelopeType";
@@ -295,6 +298,17 @@ struct EnumTraits<ToolStatus> {
     static constexpr std::array values{
         EnumValue{ToolStatus::succeeded, "succeeded"},
         EnumValue{ToolStatus::rejected, "rejected"},
+    };
+};
+
+template <>
+struct EnumTraits<Capability> {
+    static constexpr std::string_view name = "Capability";
+    static constexpr std::array values{
+        EnumValue{Capability::session_history, "session-history"},
+        EnumValue{Capability::context_compact, "context-compact"},
+        EnumValue{Capability::auto_compact, "auto-compact"},
+        EnumValue{Capability::answer_pages, "answer-pages"},
     };
 };
 
@@ -717,7 +731,7 @@ struct StatusData {
     std::optional<EventQueue> event_queue;
     std::optional<MemoryRetention> memory_retention;
     std::optional<AutoCompact> auto_compact;
-    std::vector<std::string> capabilities;
+    std::vector<Capability> capabilities;
     std::optional<LoopProgress> loop;
 
     friend constexpr std::string_view wire_name(const StatusData&) { return "StatusData"; }
@@ -741,8 +755,9 @@ struct StatusData {
                                     "Effective archive retention."),
             record<AutoCompact>("auto_compact", &StatusData::auto_compact,
                                 "Automatic-compaction counters and policy."),
-            texts("capabilities", &StatusData::capabilities,
-                  "Features this binary supports; check before querying an older worker."),
+            enumerations<Capability>("capabilities", &StatusData::capabilities,
+                  "Feature names this binary may serve. A listed name is not a claim that the "
+                  "feature is enabled here; tolerate names you do not know."),
             record<LoopProgress>("loop", &StatusData::loop, "Loop recovery state when available."),
         };
     }
@@ -1339,6 +1354,8 @@ struct RunOutcomeData {
     std::optional<std::uint64_t> omitted_query_events;
     std::optional<std::uint64_t> omitted_feedback_events;
     std::optional<std::uint64_t> coalesced_metadata_events;
+    std::optional<std::uint64_t> rejected_queries;
+    std::optional<std::uint64_t> unreported_rejections;
 
     friend constexpr std::string_view wire_name(const RunOutcomeData&) { return "RunOutcomeData"; }
     friend constexpr std::string_view wire_summary(const RunOutcomeData&) {
@@ -1367,6 +1384,10 @@ struct RunOutcomeData {
                     "Rejection feedback omitted since the previous settlement."),
             integer("coalesced_metadata_events", &RunOutcomeData::coalesced_metadata_events,
                     "Replayable metadata events coalesced since the previous settlement."),
+            integer("rejected_queries", &RunOutcomeData::rejected_queries,
+                    "Cumulative query rejections for this IO client at settlement."),
+            integer("unreported_rejections", &RunOutcomeData::unreported_rejections,
+                    "Rejection notices dropped by a full feedback mailbox at settlement."),
         };
     }
 };
@@ -1377,6 +1398,8 @@ struct ErrorData {
     std::optional<bool> durable;
     std::optional<Json> primary_outcome;
     std::optional<std::string> storage_error;
+    std::optional<std::uint64_t> rejected_queries;
+    std::optional<std::uint64_t> unreported_rejections;
 
     friend constexpr std::string_view wire_name(const ErrorData&) { return "ErrorData"; }
     friend constexpr std::string_view wire_summary(const ErrorData&) {
@@ -1391,6 +1414,10 @@ struct ErrorData {
                    "Status, error and operation of the outcome this failure superseded."),
             text("storage_error", &ErrorData::storage_error,
                  "Describes an uncertain archive mutation."),
+            integer("rejected_queries", &ErrorData::rejected_queries,
+                    "Cumulative query rejections for this IO client at settlement."),
+            integer("unreported_rejections", &ErrorData::unreported_rejections,
+                    "Rejection notices dropped by a full feedback mailbox at settlement."),
         };
     }
 };
