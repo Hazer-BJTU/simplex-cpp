@@ -34,6 +34,8 @@ const char* kind_name(Kind kind) {
         case Kind::record: return "record";
         case Kind::records: return "records";
         case Kind::texts: return "texts";
+        case Kind::text_or_record: return "text_or_record";
+        case Kind::projected_batch: return "projected_batch";
     }
     return "any";
 }
@@ -53,6 +55,7 @@ Json canonical_field(const FieldView& field) {
     if (field.record != nullptr) {
         entry["record"] = field.record->name;
     }
+    if (field.alternative != nullptr) entry["alternative"] = field.alternative->name;
     const auto& constraints = field.constraints;
     if (constraints.min_length) entry["min_length"] = *constraints.min_length;
     if (constraints.max_length) entry["max_length"] = *constraints.max_length;
@@ -125,7 +128,9 @@ inline Json policy_entry(const RecordDescriptor& descriptor) {
         }
         rules.push_back(Json{{"when", Json{{rule.when_field, rule.when_equals}}},
                              {"requires", std::move(required)},
-                             {"forbids", std::move(forbids)}});
+                             {"forbids", std::move(forbids)},
+                             {"closed", rule.closed},
+                             {"ignores", Json(rule.ignores_fields)}});
     }
     if (!rules.empty()) {
         entry["rules"] = std::move(rules);
@@ -146,16 +151,16 @@ Json event_entry(EventName event, const EventDataSpec& spec) {
 }
 
 /** Structural document without prose, used for the fingerprint. */
-Json canonical_document() {
+Json canonical_document(std::span<const RecordDescriptor* const> descriptors = record_registry()) {
     Json document = Json::object();
     document["manifest_format"] = manifest_format;
     document["protocol"] = protocol_name;
 
     Json records = Json::object();
-    for (const auto* descriptor : record_registry()) {
+    for (const auto* descriptor : descriptors) {
         records[std::string(descriptor->name)] = record_entry(*descriptor, false);
     }
-    for (const auto* descriptor : record_registry()) {
+    for (const auto* descriptor : descriptors) {
         records[std::string(descriptor->name)].update(policy_entry(*descriptor));
     }
     document["records"] = std::move(records);
@@ -266,6 +271,21 @@ Json schema_type(const FieldView& field) {
     const auto& constraints = field.constraints;
     Json type = Json::object();
     switch (field.kind) {
+        case Kind::text_or_record:
+            type = Json{{"anyOf", Json::array({Json{{"type", "string"}},
+                Json{{"$ref", "#/$defs/" + std::string(field.record->name)}}})}};
+            break;
+        case Kind::projected_batch: {
+            const Json marker{{"type", "object"}, {"required", Json::array({"display_omitted"})}};
+            type = Json{{"type", "array"},
+                {"items", Json{{"if", marker},
+                    {"then", Json{{"$ref", "#/$defs/" + std::string(field.alternative->name)}}},
+                    {"else", Json{{"$ref", "#/$defs/" + std::string(field.record->name)}}}}},
+                {"contains", marker}, {"minContains", 0}, {"maxContains", 1},
+                {"x-simplex-trailing-marker", "display_omitted"}};
+            break;
+        }
+
         case Kind::text:
             type = Json{{"type", "string"}};
             break;
@@ -324,7 +344,9 @@ Json schema_type(const FieldView& field) {
     return type;
 }
 
-Json canonical_contract() { return canonical_document(); }
+Json canonical_contract(std::span<const RecordDescriptor* const> descriptors) {
+    return canonical_document(descriptors);
+}
 
 Json json_schema() {
     Json definitions = Json::object();
@@ -346,7 +368,7 @@ Json json_schema() {
         Json entry = Json{{"type", "object"},
                           {"description", descriptor->summary},
                           {"additionalProperties", !closed},
-                          {"properties", std::move(properties)}};
+                          {"properties", properties}};
         Json forbidden = Json::array();
         for (const auto name : descriptor->forbidden()) {
             forbidden.push_back(Json{{"required", Json::array({name})}});
@@ -354,9 +376,20 @@ Json json_schema() {
         if (!forbidden.empty()) {
             entry["not"] = Json{{"anyOf", std::move(forbidden)}};
         }
+        // An ignored field must not be typed by the outer schema. Each selected
+        // branch supplies the active types, with its own complete property scope.
+        for (const auto& rule : descriptor->rules()) {
+            for (const auto name : rule.ignores_fields) {
+                entry["properties"][std::string(name)] = Json::object();
+            }
+        }
         Json conditions = Json::array();
         for (const auto& rule : descriptor->rules()) {
-            Json then = Json::object();
+            Json branch_properties = properties;
+            for (const auto name : rule.ignores_fields) {
+                branch_properties[std::string(name)] = Json::object();
+            }
+            Json then{{"properties", std::move(branch_properties)}};
             if (!rule.requires_fields.empty()) {
                 Json required = Json::array();
                 for (const auto name : rule.requires_fields) required.push_back(name);
@@ -438,8 +471,8 @@ Json manifest() {
     return document;
 }
 
-std::string fingerprint() {
-    const std::string canonical = canonical_contract().dump();
+std::string fingerprint(std::span<const RecordDescriptor* const> descriptors) {
+    const std::string canonical = canonical_contract(descriptors).dump();
 
     using Context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
     Context context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);

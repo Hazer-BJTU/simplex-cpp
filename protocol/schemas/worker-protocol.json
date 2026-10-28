@@ -262,7 +262,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "7bdc735fc86422592cdf216639dad82288ffc1f3c2acaf52b9f5ab8f0548277f",
+  "fingerprint": "ac1676a044bd494610cbc0a6e4527ca2300667c1920326f35839481989468391",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -524,7 +524,16 @@
             "minimum": 0,
             "type": "integer"
           },
-          "summary": {}
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/OmissionSummary"
+              }
+            ]
+          }
         },
         "required": [
           "summary",
@@ -1265,6 +1274,30 @@
               ]
             },
             "then": {
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
+              },
               "required": [
                 "content"
               ]
@@ -1290,6 +1323,30 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
               }
             }
           },
@@ -1313,6 +1370,30 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
               }
             }
           },
@@ -1341,6 +1422,41 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "step": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                }
               }
             }
           },
@@ -1386,6 +1502,51 @@
                   }
                 ]
               },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "offset": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/$defs/AnswerSource"
+                },
+                "start": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "step": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
               "required": [
                 "source"
               ]
@@ -1429,15 +1590,8 @@
             },
             "type": "array"
           },
-          "limit": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "offset": {
-            "default": 0,
-            "minimum": 0,
-            "type": "integer"
-          },
+          "limit": {},
+          "offset": {},
           "operation": {
             "$ref": "#/$defs/InputOperation"
           },
@@ -1445,27 +1599,13 @@
             "additionalProperties": true,
             "type": "object"
           },
-          "part": {
-            "default": 0,
-            "minimum": 0,
-            "type": "integer"
-          },
+          "part": {},
           "request_id": {
             "type": "string"
           },
-          "source": {
-            "$ref": "#/$defs/AnswerSource"
-          },
-          "start": {
-            "default": 0,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "step": {
-            "default": 0,
-            "minimum": 0,
-            "type": "integer"
-          }
+          "source": {},
+          "start": {},
+          "step": {}
         },
         "required": [
           "operation",
@@ -1595,7 +1735,32 @@
             "minimum": 0,
             "type": "integer"
           },
-          "invokes": {},
+          "invokes": {
+            "contains": {
+              "required": [
+                "display_omitted"
+              ],
+              "type": "object"
+            },
+            "items": {
+              "else": {
+                "$ref": "#/$defs/Call"
+              },
+              "if": {
+                "required": [
+                  "display_omitted"
+                ],
+                "type": "object"
+              },
+              "then": {
+                "$ref": "#/$defs/OmissionMarker"
+              }
+            },
+            "maxContains": 1,
+            "minContains": 0,
+            "type": "array",
+            "x-simplex-trailing-marker": "display_omitted"
+          },
           "omitted_parts": {
             "minimum": 0,
             "type": "integer"
@@ -1749,6 +1914,14 @@
               ]
             },
             "then": {
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
+              },
               "required": [
                 "run_id"
               ]
@@ -1774,6 +1947,14 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -1797,6 +1978,14 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -1820,6 +2009,14 @@
                     ]
                   }
                 ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -1965,6 +2162,114 @@
       },
       "ToolResponse": {
         "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "error"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ToolError"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "result": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/$defs/ToolStatus"
+                },
+                "worker_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "rejected"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "result"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ToolError"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "result": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/$defs/ToolStatus"
+                },
+                "worker_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          }
+        ],
         "description": "Echoes the identifiers and route. succeeded carries result, rejected carries error.",
         "properties": {
           "error": {
@@ -2367,8 +2672,9 @@
     "CompactFinishedData": {
       "fields": [
         {
-          "kind": "any",
+          "kind": "text_or_record",
           "name": "summary",
+          "record": "OmissionSummary",
           "required": true,
           "summary": "The published summary: a string, or an omission object when it exceeds the 32 KiB budget."
         },
@@ -3266,7 +3572,16 @@
       ],
       "rules": [
         {
+          "closed": false,
           "forbids": [],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
+          ],
           "requires": [
             "content"
           ],
@@ -3275,8 +3590,17 @@
           }
         },
         {
+          "closed": false,
           "forbids": [
             "content"
+          ],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
           ],
           "requires": [],
           "when": {
@@ -3284,8 +3608,17 @@
           }
         },
         {
+          "closed": false,
           "forbids": [
             "content"
+          ],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
           ],
           "requires": [],
           "when": {
@@ -3293,9 +3626,15 @@
           }
         },
         {
+          "closed": false,
           "forbids": [
             "content",
             "options"
+          ],
+          "ignores": [
+            "source",
+            "part",
+            "offset"
           ],
           "requires": [],
           "when": {
@@ -3303,6 +3642,7 @@
           }
         },
         {
+          "closed": true,
           "forbids": [
             "content",
             "options",
@@ -3310,6 +3650,7 @@
             "step",
             "limit"
           ],
+          "ignores": [],
           "requires": [
             "source"
           ],
@@ -3474,8 +3815,10 @@
           "summary": "Provider-reported usage; absence means unavailable, not zero."
         },
         {
-          "kind": "any",
+          "alternative": "OmissionMarker",
+          "kind": "projected_batch",
           "name": "invokes",
+          "record": "Call",
           "required": false,
           "summary": "Array of Call, optionally ending in an omission marker; see parse_batch(). An engaged but empty array is a legitimate projection."
         }
@@ -3629,7 +3972,9 @@
       ],
       "rules": [
         {
+          "closed": false,
           "forbids": [],
+          "ignores": [],
           "requires": [
             "run_id"
           ],
@@ -3638,27 +3983,33 @@
           }
         },
         {
+          "closed": false,
           "forbids": [
             "run_id"
           ],
+          "ignores": [],
           "requires": [],
           "when": {
             "operation": "status"
           }
         },
         {
+          "closed": false,
           "forbids": [
             "run_id"
           ],
+          "ignores": [],
           "requires": [],
           "when": {
             "operation": "options"
           }
         },
         {
+          "closed": false,
           "forbids": [
             "run_id"
           ],
+          "ignores": [],
           "requires": [],
           "when": {
             "operation": "shutdown"
@@ -3872,6 +4223,34 @@
           "object_only": true,
           "required": false,
           "summary": "Opaque result object; interpreted by the consuming tool, not the protocol."
+        }
+      ],
+      "rules": [
+        {
+          "closed": false,
+          "forbids": [
+            "error"
+          ],
+          "ignores": [],
+          "requires": [
+            "result"
+          ],
+          "when": {
+            "status": "succeeded"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "result"
+          ],
+          "ignores": [],
+          "requires": [
+            "error"
+          ],
+          "when": {
+            "status": "rejected"
+          }
         }
       ],
       "summary": "Echoes the identifiers and route. succeeded carries result, rejected carries error.",

@@ -32,11 +32,14 @@ std::span<const Rule> wire_rules(const PayloadRequest&) {
     static const std::array<std::string_view, 5> answer_forbidden{"content", "options", "start",
                                                                   "step", "limit"};
     static const std::array<std::string_view, 1> source{"source"};
+    static const std::array<std::string_view, 6> message_ignored{
+        "start", "step", "limit", "source", "part", "offset"};
+    static const std::array<std::string_view, 3> history_ignored{"source", "part", "offset"};
     static const Rule table[] = {
-        {"operation", "message", content, {}},
-        {"operation", "continue", {}, content},
-        {"operation", "compact", {}, content},
-        {"operation", "history", {}, history_forbidden},
+        {"operation", "message", content, {}, false, message_ignored},
+        {"operation", "continue", {}, content, false, message_ignored},
+        {"operation", "compact", {}, content, false, message_ignored},
+        {"operation", "history", {}, history_forbidden, false, history_ignored},
         {"operation", "answer", source, answer_forbidden, true},
     };
     return table;
@@ -50,30 +53,6 @@ std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&) {
     return forbidden;
 }
 
-bool wire_ignored_field(const PayloadRequest& request, std::string_view name) {
-    // The worker parses a payload per operation and ignores the cursors that
-    // belong to another one, whatever their JSON type happens to be.
-    const bool cursor = name == "start" || name == "step" || name == "limit";
-    const bool answer_only = name == "source" || name == "part" || name == "offset";
-    switch (request.operation) {
-        case InputOperation::message:
-        case InputOperation::continue_request:
-        case InputOperation::compact:
-            return cursor || answer_only;
-        case InputOperation::history:
-            return answer_only;
-        case InputOperation::answer:
-            return false;
-    }
-    return false;
-}
-
-bool wire_reject_unknown(const PayloadRequest& request) {
-    // An answer query has a closed field set; the other operations tolerate
-    // fields that do not belong to them.
-    return request.operation == InputOperation::answer;
-}
-
 std::span<const Rule> wire_rules(const SignalRequest&) {
     static const std::array<std::string_view, 1> run_id{"run_id"};
     static const Rule table[] = {
@@ -85,14 +64,14 @@ std::span<const Rule> wire_rules(const SignalRequest&) {
     return table;
 }
 
-void wire_validate(const ToolResponse& response) {
-    if (response.status == ToolStatus::succeeded) {
-        require(response.result.has_value(), "data.result", "succeeded requires a result object");
-        require(!response.error.has_value(), "data.error", "succeeded must not carry an error");
-    } else {
-        require(response.error.has_value(), "data.error", "rejected requires an error object");
-        require(!response.result.has_value(), "data.result", "rejected must not carry a result");
-    }
+std::span<const Rule> wire_rules(const ToolResponse&) {
+    static const std::array<std::string_view, 1> result{"result"};
+    static const std::array<std::string_view, 1> error{"error"};
+    static const Rule table[] = {
+        {"status", "succeeded", result, error},
+        {"status", "rejected", error, result},
+    };
+    return table;
 }
 
 void wire_validate(const EventEnvelope& envelope) {
@@ -175,13 +154,9 @@ void validate_event_data(const EventEnvelope& envelope) {
         case EventName::input_committed:
             protocol::from_json<EmptyData>(envelope.data, prefix);
             return;
-        case EventName::model_response: {
-            const auto projection = protocol::from_json<ResponseProjection>(envelope.data, prefix);
-            if (projection.invokes) {
-                parse_batch<Call>(*projection.invokes, prefix + ".invokes");
-            }
+        case EventName::model_response:
+            protocol::from_json<ResponseProjection>(envelope.data, prefix);
             return;
-        }
         case EventName::tool_calls:
             parse_batch<Call>(envelope.data, "data");
             return;
@@ -191,16 +166,9 @@ void validate_event_data(const EventEnvelope& envelope) {
         case EventName::persisted:
             protocol::from_json<PersistedData>(envelope.data, prefix);
             return;
-        case EventName::compact_finished: {
-            const auto finished = protocol::from_json<CompactFinishedData>(envelope.data, prefix);
-            if (finished.summary.is_object()) {
-                protocol::from_json<OmissionSummary>(finished.summary, prefix + ".summary");
-            } else if (!finished.summary.is_string()) {
-                throw ValidationError(prefix + ".summary",
-                                      "expected a summary string or an omission object");
-            }
+        case EventName::compact_finished:
+            protocol::from_json<CompactFinishedData>(envelope.data, prefix);
             return;
-        }
         case EventName::export_error:
             protocol::from_json<ExportErrorData>(envelope.data, prefix);
             return;

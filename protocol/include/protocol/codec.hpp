@@ -14,10 +14,9 @@
  *   - closed vocabularies reject unknown spellings instead of silently
  *     accepting them.
  *
- * Records may add `wire_validate()` for cross-field invariants (an operation
- * that requires `content`, a decision that must name one of two values). Those
- * run after structural parsing, so the diagnostic can talk about the
- * combination rather than the field.
+ * Conditional presence, ignored fields and closure come from `Rule` descriptors,
+ * shared with the schema and fingerprint. Fixed JSON unions carry structural
+ * field kinds; opaque tool/provider values remain uninterpreted.
  */
 
 #include "protocol/descriptor.hpp"
@@ -89,19 +88,23 @@ bool field_present(const R& record, std::string_view name);
 /** True when this instance does not parse a field at all (operation scope). */
 template <class R>
 bool ignored_field(const R& record, std::string_view name) {
-    if constexpr (requires { wire_ignored_field(record, name); }) {
-        return wire_ignored_field(record, name);
+    for (const auto& rule : rules<R>()) {
+        if (rule_matches(record, rule)
+            && std::ranges::find(rule.ignores_fields, name) != rule.ignores_fields.end()) {
+            return true;
+        }
     }
     return false;
 }
 
-/** True when this instance closes its field set (answer queries). */
+/** Record-wide or selected operation field-set closure, from the same descriptor. */
 template <class R>
 bool closed_scope(const R& record) {
-    if constexpr (requires { wire_reject_unknown(record); }) {
-        return wire_reject_unknown(record);
+    if (unknown_policy<R>() == UnknownFields::reject) return true;
+    for (const auto& rule : rules<R>()) {
+        if (rule.closed && rule_matches(record, rule)) return true;
     }
-    return unknown_policy<R>() == UnknownFields::reject;
+    return false;
 }
 
 } // namespace detail
@@ -193,6 +196,28 @@ R from_json(const Json& input, const std::string& path = {}) {
 }
 
 namespace detail {
+
+template <class R>
+void validate_text_or_record(const Json& value, const std::string& path) {
+    if (!value.is_string()) protocol::from_json<R>(value, path);
+}
+
+template <class R, class Marker>
+void validate_projected_batch(const Json& value, const std::string& path) {
+    if (!value.is_array()) throw ValidationError(path, "expected an array");
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const auto& item = value[index];
+        const auto here = path + "[" + std::to_string(index) + "]";
+        if (item.is_object() && item.contains("display_omitted")) {
+            if (index + 1 != value.size()) {
+                throw ValidationError(here, "an omission marker must be the final element");
+            }
+            protocol::from_json<Marker>(item, here);
+        } else {
+            protocol::from_json<R>(item, here);
+        }
+    }
+}
 
 template <class M>
 Json encode_one(const M& value) {
@@ -320,6 +345,7 @@ void read_field(R& record, const Json& input, const FieldType& field, const std:
 
 template <class FieldType>
 void check_constraints(const FieldType& field, const Json& value, const std::string& path) {
+    if (field.validate_json != nullptr) field.validate_json(value, path);
     const auto& constraints = field.constraints;
     if ((constraints.object_only || constraints.empty_object) && !value.is_object()) {
         throw ValidationError(path, "expected a JSON object");

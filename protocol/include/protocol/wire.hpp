@@ -35,6 +35,8 @@
 
 namespace protocol {
 
+struct OmissionMarker;
+
 // ---- Enumerations -----------------------------------------------------------
 // Spellings are the exact wire text. `parall_write` is intentionally spelled
 // that way: it is the existing classification the hub and worker already share.
@@ -520,7 +522,7 @@ struct ResponseProjection {
                                  "Exact-answer locator for this committed response."),
             record<Usage>("cost", &ResponseProjection::cost,
                           "Provider-reported usage; absence means unavailable, not zero."),
-            opaque("invokes", &ResponseProjection::invokes,
+            projected_batch<Call, OmissionMarker>("invokes", &ResponseProjection::invokes,
                    "Array of Call, optionally ending in an omission marker; see parse_batch(). "
                    "An engaged but empty array is a legitimate projection."),
         };
@@ -750,7 +752,7 @@ struct StatusData {
 
 /**
  * One payload request. The wire is a single flat object whose required fields
- * depend on `operation`; `wire_validate` encodes those conditions, so a shape
+ * depend on `operation`; `wire_rules` encodes those conditions, so a shape
  * that mixes, say, `history` and `content` fails instead of being half-read.
  */
 struct PayloadRequest {
@@ -796,8 +798,6 @@ struct PayloadRequest {
     }
     friend std::span<const Rule> wire_rules(const PayloadRequest&);
     friend std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&);
-    friend bool wire_ignored_field(const PayloadRequest& request, std::string_view name);
-    friend bool wire_reject_unknown(const PayloadRequest& request);
 };
 
 /** One control signal. Signals have no request ID of their own. */
@@ -953,7 +953,7 @@ struct ToolResponse {
                    "Opaque result object; interpreted by the consuming tool, not the protocol.").object_only(),
         };
     }
-    friend void wire_validate(const ToolResponse& response);
+    friend std::span<const Rule> wire_rules(const ToolResponse&);
 };
 
 // ---- History and answer pages ----------------------------------------------
@@ -1241,7 +1241,7 @@ struct CompactFinishedData {
     }
     friend auto wire_fields(const CompactFinishedData&) {
         return std::tuple{
-            opaque("summary", &CompactFinishedData::summary,
+            text_or_record<OmissionSummary>("summary", &CompactFinishedData::summary,
                    "The published summary: a string, or an omission object when it exceeds "
                    "the 32 KiB budget."),
             text("memory_file", &CompactFinishedData::memory_file, "Memory file written, when any."),
@@ -1569,9 +1569,7 @@ struct Batch {
  */
 template <class R>
 Batch<R> parse_batch(const Json& value, const std::string& path = "data") {
-    if (!value.is_array()) {
-        throw ValidationError(path, "expected an array");
-    }
+    detail::validate_projected_batch<R, OmissionMarker>(value, path);
     Batch<R> batch;
     for (std::size_t index = 0; index < value.size(); ++index) {
         const auto& entry = value.at(index);

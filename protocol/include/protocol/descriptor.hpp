@@ -58,6 +58,8 @@ enum class Kind {
     record,
     records,
     texts,
+    text_or_record,
+    projected_batch,
 };
 
 /** Whether a record tolerates fields it does not describe. */
@@ -98,6 +100,8 @@ struct Rule {
     std::span<const std::string_view> forbids_fields;
     /** True when this scope rejects every field it does not name. */
     bool closed = false;
+    /** Fields accepted without decoding for this selector value. */
+    std::span<const std::string_view> ignores_fields;
 };
 
 struct RecordDescriptor;
@@ -116,6 +120,7 @@ struct FieldView {
     Constraints constraints{};
     /** Published default as JSON text; empty when the field has none. */
     std::string_view default_json;
+    const RecordDescriptor* alternative = nullptr;
 };
 
 /** A described record: a wire name, an explanation and its field views. */
@@ -181,6 +186,8 @@ struct Field {
     Presence presence = Presence::inferred;
     Constraints constraints{};
     const char* default_json = "";
+    const RecordDescriptor* alternative = nullptr;
+    void (*validate_json)(const Json&, const std::string&) = nullptr;
 
     Field& required() & { presence = Presence::required; return *this; }
     Field&& required() && { presence = Presence::required; return std::move(*this); }
@@ -302,6 +309,32 @@ Field<T, M> texts(std::string_view name, M T::*member, std::string_view summary,
     return {name, member, Kind::texts, summary, nullable};
 }
 
+namespace detail {
+template <class R>
+void validate_text_or_record(const Json&, const std::string&);
+template <class R, class Marker>
+void validate_projected_batch(const Json&, const std::string&);
+}
+
+/** A worker-owned union; unlike opaque JSON, both alternatives have fixed shapes. */
+template <class R, class T, class M>
+Field<T, M> text_or_record(std::string_view name, M T::*member, std::string_view summary) {
+    Field<T, M> field{name, member, Kind::text_or_record, summary};
+    field.record = &describe_record<R>();
+    field.validate_json = &detail::validate_text_or_record<R>;
+    return field;
+}
+
+/** A homogeneous projected array with at most one trailing omission notice. */
+template <class R, class Marker, class T, class M>
+Field<T, M> projected_batch(std::string_view name, M T::*member, std::string_view summary) {
+    Field<T, M> field{name, member, Kind::projected_batch, summary};
+    field.record = &describe_record<R>();
+    field.alternative = &describe_record<Marker>();
+    field.validate_json = &detail::validate_projected_batch<R, Marker>;
+    return field;
+}
+
 // ---- Record description -----------------------------------------------------
 
 namespace detail {
@@ -310,7 +343,7 @@ template <class R, class FieldType>
 void append_view(std::vector<FieldView>& views, const FieldType& field) {
     views.push_back(FieldView{field.name, field.kind, is_required(field), field.nullable,
                               field.summary, field.enumeration, field.record,
-                              field.constraints, field.default_json});
+                              field.constraints, field.default_json, field.alternative});
 }
 
 template <class R>

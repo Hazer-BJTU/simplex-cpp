@@ -202,8 +202,19 @@ BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
     BOOST_TEST(request.at("required").dump().find("request_id") != std::string::npos);
     const Json& limit = request.at("properties").at("limit");
     BOOST_TEST(!limit.contains("maximum"));
-    // Unsigned integer representation remains a field type, not a paging quota.
-    BOOST_TEST(limit.at("minimum").get<std::uint64_t>() == 0);
+    // The outer scope cannot type a cursor ignored by a message. The history
+    // branch supplies its unsigned type without imposing a paging quota.
+    BOOST_TEST(limit.empty());
+    bool found_history = false;
+    for (const auto& branch : request.at("allOf")) {
+        if (branch.at("if").at("properties").at("operation").at("const") == "history") {
+            found_history = true;
+            const auto& active = branch.at("then").at("properties").at("limit");
+            BOOST_TEST(active.at("minimum").get<std::uint64_t>() == 0);
+            BOOST_TEST(!active.contains("maximum"));
+        }
+    }
+    BOOST_TEST(found_history);
     const Json& request_id = request.at("properties").at("request_id");
     BOOST_TEST(!request_id.contains("x-simplex-utf8-bytes"));
     BOOST_TEST(!request_id.contains("maxLength"));
@@ -237,4 +248,47 @@ BOOST_AUTO_TEST_CASE(remote_tool_contract_stops_at_the_envelope) {
     const Json& code = schema.at("$defs").at("ToolError").at("properties").at("code");
     BOOST_TEST(code.at("type").get<std::string>() == "string");
     BOOST_TEST(!code.contains("enum"));
+}
+
+namespace {
+// A mutable test-only descriptor exercises the exact codec and fingerprint
+// paths used by production records, without editing production source files.
+bool probe_closed = true;
+bool probe_ignore = false;
+struct PolicyProbe {
+    std::string operation;
+    std::optional<std::uint64_t> cursor;
+    friend std::string_view wire_name(const PolicyProbe&) { return "PolicyProbe"; }
+    friend std::string_view wire_summary(const PolicyProbe&) { return "Test-only policy probe."; }
+    friend auto wire_fields(const PolicyProbe&) {
+        return std::tuple{text("operation", &PolicyProbe::operation, "Selector."),
+                          integer("cursor", &PolicyProbe::cursor, "Cursor.")};
+    }
+    friend std::span<const Rule> wire_rules(const PolicyProbe&) {
+        static const std::array<std::string_view, 1> ignored{"cursor"};
+        static Rule rule;
+        rule = Rule{"operation", "read", {}, {}, probe_closed,
+                    probe_ignore ? std::span<const std::string_view>(ignored)
+                                 : std::span<const std::string_view>{}};
+        return {&rule, 1};
+    }
+};
+}
+
+BOOST_AUTO_TEST_CASE(operation_policy_mutations_change_codec_and_fingerprint) {
+    const RecordDescriptor* registry[] = {&describe_record<PolicyProbe>()};
+    const Json extra{{"operation", "read"}, {"unknown", true}};
+    const Json incidental{{"operation", "read"}, {"cursor", "ignored"}};
+    const auto baseline = fingerprint(registry);
+    BOOST_CHECK_THROW(protocol::from_json<PolicyProbe>(extra), ValidationError);
+    BOOST_CHECK_THROW(protocol::from_json<PolicyProbe>(incidental), ValidationError);
+    probe_closed = false;
+    BOOST_CHECK_NO_THROW(protocol::from_json<PolicyProbe>(extra));
+    BOOST_TEST(fingerprint(registry) != baseline);
+    probe_closed = true;
+    probe_ignore = true;
+    BOOST_CHECK_NO_THROW(protocol::from_json<PolicyProbe>(incidental));
+    BOOST_TEST(fingerprint(registry) != baseline);
+    probe_ignore = false;
+    BOOST_TEST(fingerprint(registry) == baseline);
 }

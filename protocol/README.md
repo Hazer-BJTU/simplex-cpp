@@ -70,8 +70,8 @@ route results are `opaque` (`nlohmann::json`). The manifest describes their
 policy — provider-, tool- or plugin-owned — instead of pretending to constrain
 them. `manifest()` lists those policies in `extension_policies`.
 
-**Conditional requirements are code, not prose.** `PayloadRequest` is one flat
-wire object whose required fields depend on `operation`; `wire_validate()` is
+**Conditional requirements are shared descriptors.** `PayloadRequest` is one flat
+wire object whose required fields depend on `operation`; `wire_rules()` is
 where that lives, so `history` carrying `content` fails rather than being
 half-read.
 
@@ -111,3 +111,27 @@ migration reviewable. Until then, existing wire behaviour is untouched.
 `docs/core/worker-protocol.md` remains the behavioural document. Once the Hub
 checks consume the manifest, the field tables in it will point here instead of
 duplicating an authority that can drift.
+
+## Structural conformance tests
+
+Operation-specific required, forbidden, ignored and closed-field policies live
+in `Rule`. Both the decoder and schema generator use that table; the canonical
+contract includes every policy, so changing field acceptance changes the hash.
+Fixed display unions are described separately from tool-owned opaque JSON.
+
+Run the independent schema tests in a Python virtual environment:
+
+```sh
+python -m pip install -r protocol/test/requirements.txt
+python protocol/test/test_schema.py
+```
+
+CI runs these checks against the committed schema, and the native tests verify
+that the compiled exporter produces that exact artifact. Draft 2020-12 checks
+the projected batch item shapes and permits at most one omission marker. Since
+it cannot express the final position of an optional marker in an unbounded
+array, `x-simplex-trailing-marker` additionally specifies that ordering rule.
+The independent validator implements this keyword; generic validators that
+ignore extensions validate only the standard-schema subset. The batch kind
+and both record references are fingerprinted, and the C++ codec enforces the
+same ordering directly from that field descriptor.

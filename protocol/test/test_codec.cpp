@@ -459,3 +459,37 @@ BOOST_AUTO_TEST_CASE(options_are_preserved_for_runtime_validation) {
     request = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", "10"}};
     BOOST_TEST(rejects_payload(request));
 }
+
+BOOST_AUTO_TEST_CASE(fixed_projection_fields_validate_without_event_dispatch) {
+    Json response = response_projection();
+    response["invokes"] = 42;
+    BOOST_TEST(rejects<ResponseProjection>(response));
+    response["invokes"] = Json::array();
+    BOOST_TEST(!rejects<ResponseProjection>(response));
+    const Json marker{{"display_omitted", true}, {"omitted_items", 2}};
+    response["invokes"] = Json::array({marker, marker});
+    BOOST_TEST(rejects<ResponseProjection>(response));
+    Json compact{{"summary", 42}, {"removed_turns", 0}, {"revision", 0}, {"durable", true}};
+    BOOST_TEST(rejects<CompactFinishedData>(compact));
+    compact["summary"] = "summary";
+    BOOST_TEST(!rejects<CompactFinishedData>(compact));
+}
+
+BOOST_AUTO_TEST_CASE(conditional_envelopes_and_ignored_cursors_share_rules) {
+    const Json base{{"worker_id", "w"}, {"session_id", "s"}, {"run_id", "r"},
+                    {"request_id", "q"}, {"route", "future/route"}};
+    for (const std::string status : {"succeeded", "rejected"}) {
+        Json reply = base;
+        reply["status"] = status;
+        BOOST_TEST(rejects<ToolResponse>(reply));
+        reply["result"] = Json::object();
+        reply["error"] = Json{{"code", "future_code"}, {"message", "reason"}};
+        BOOST_TEST(rejects<ToolResponse>(reply));
+        reply.erase(status == "succeeded" ? "error" : "result");
+        BOOST_TEST(!rejects<ToolResponse>(reply));
+        BOOST_TEST(!rejects<ToolResponseEnvelope>(Json{{"type", "tool_response"}, {"data", reply}}));
+    }
+    BOOST_TEST(!rejects_payload(Json{{"operation", "history"}, {"request_id", "q"}, {"source", 42}}));
+    BOOST_TEST(!rejects_payload(Json{{"operation", "answer"}, {"request_id", "q"},
+                                    {"source", source_json()}, {"part", 0}, {"offset", 0}}));
+}

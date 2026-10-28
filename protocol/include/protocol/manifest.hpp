@@ -44,8 +44,9 @@ std::span<const RecordDescriptor* const> record_registry();
 /** Every closed vocabulary the contract publishes, ordered by name. */
 std::span<const EnumDescriptor* const> enum_registry();
 
-/** Structural document that the fingerprint covers. */
-Json canonical_contract();
+/** Structural document; an explicit registry permits isolated descriptor audits. */
+Json canonical_contract(
+    std::span<const RecordDescriptor* const> descriptors = record_registry());
 
 /** Published manifest: canonical structure plus prose, schema and fingerprint. */
 Json manifest();
@@ -54,6 +55,7 @@ Json manifest();
 Json json_schema();
 
 /** Lowercase hex SHA-256 of `canonical_contract()`. */
-std::string fingerprint();
+std::string fingerprint(
+    std::span<const RecordDescriptor* const> descriptors = record_registry());
 
 } // namespace protocol
