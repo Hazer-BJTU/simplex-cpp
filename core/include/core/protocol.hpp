@@ -1,10 +1,27 @@
 #pragma once
+
+/**
+ * @file core/protocol.hpp
+ * @brief The worker boundary: admission types and the projections they publish.
+ *
+ * The wire shapes themselves live in `protocol/wire.hpp`; this header owns the
+ * application side of the boundary. `parse_input` and `parse_history_request`
+ * decode a request through the protocol codec and then apply the policy only the
+ * application can decide (admission window, resource limits, option categories).
+ * The projection functions keep their display budgets and structural byte
+ * accounting here, and build their output from the protocol records so a field
+ * can only be added in one place.
+ *
+ * Resource limits stay with their owner: they describe how much this worker
+ * sends, not what a conforming worker must accept.
+ */
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "dataclass/model_io.hpp"
+#include "protocol/wire.hpp"
 
 namespace core {
 /** Reject unsafe session path components before any filesystem access. */
@@ -59,6 +76,20 @@ struct HistoryRequest {
     std::size_t limit = 10;
 };
 HistoryRequest parse_history_request(const nlohmann::json& payload);
+/** The worker message for a query the transport refused before validation. */
+struct QueryRejection {
+    protocol::EventName event = protocol::EventName::history_error;
+    protocol::QueryErrorData data;
+};
+/**
+ * Build the correlated refusal for a rejected query. `operation` selects the
+ * event name, and the transport's machine-readable code (`query_queue_full` or
+ * `query_too_large`) is preserved so a client can tell a transient queue
+ * rejection from an oversized query. Validation failures use QueryErrorData
+ * directly and carry no code: they name no transport-level refusal.
+ */
+QueryRejection query_rejection(const nlohmann::json& request_id,
+                               const std::string& operation, const std::string& code);
 /** Complete UTF-8 JSON history event budget, excluding WebSocket framing. */
 inline constexpr std::size_t history_event_max_bytes = 256 * 1024;
 /** Reserved for the worker envelope, including escaped correlation IDs. */

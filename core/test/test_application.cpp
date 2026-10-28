@@ -77,7 +77,7 @@ struct Scratch {
 };
 
 enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
-                  ProtocolFailure, History, ModelFailure, StorageWait };
+                  ProtocolFailure, History, ModelFailure, StorageWait, QueryRejection };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
@@ -149,6 +149,8 @@ sections:
     int rejected = 0;
     bool cancelled = false;
     bool history_during_run = false;
+    bool history_rejected = false;
+    bool answer_rejected = false;
     bool storage_status_requested = false;
     bool storage_status_received = false;
     auto peer = [&]() -> asio::awaitable<void> {
@@ -178,6 +180,19 @@ sections:
                     socket.binary(true);
                     const std::string binary = "invalid application frame";
                     co_await socket.async_write(asio::buffer(binary), asio::use_awaitable);
+                    continue;
+                }
+                if (mode == Mode::QueryRejection) {
+                    // Both envelopes exceed the 16 KiB transport query limit, so
+                    // the worker refuses them before validation and must keep
+                    // the refusal code and the correlation ID.
+                    const std::string padding(17000, 'q');
+                    for (const std::string operation : {"history", "answer"}) {
+                        co_await send(Json{{"type", "payload"}, {"data", {
+                            {"operation", operation},
+                            {"request_id", operation + "-oversized"},
+                            {"padding", padding}}}});
+                    }
                     continue;
                 }
                 Json input = {
@@ -247,6 +262,19 @@ sections:
                 BOOST_TEST(event.at("data").at("turns")[0]["source"]["request_id"] == "one");
                 BOOST_TEST(event.at("data").at("turns")[0]["steps"].empty());
                 history_during_run = completed == 0 && model->active.load() == 1;
+            } else if (mode == Mode::QueryRejection
+                       && (name == "history_error" || name == "answer_error")) {
+                const bool answer = name == "answer_error";
+                const auto& data = event.at("data");
+                // Non-throwing accessors keep a failed assertion from leaving
+                // the peer waiting for a reply that will never arrive.
+                BOOST_TEST(data.value("code", std::string()) == "query_too_large");
+                BOOST_TEST(data.value("request_id", Json())
+                           == (answer ? "answer-oversized" : "history-oversized"));
+                (answer ? answer_rejected : history_rejected) = true;
+                if (history_rejected && answer_rejected)
+                    co_await send(Json{{"type", "signal"},
+                                       {"data", {{"operation", "shutdown"}}}});
             } else if (name == "run_finished") {
                 ++completed;
                 cancelled = event["data"]["status"] == "cancelled";
@@ -382,6 +410,10 @@ sections:
         } else if (mode == Mode::StorageWait) {
             BOOST_TEST(storage_status_received);
             BOOST_TEST(completed == 1);
+        } else if (mode == Mode::QueryRejection) {
+            BOOST_TEST(history_rejected);
+            BOOST_TEST(answer_rejected);
+            BOOST_TEST(model->calls.load() == 0);
         } else if (mode != Mode::Overflow) {
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->calls.load() == 0);
@@ -468,6 +500,9 @@ BOOST_AUTO_TEST_CASE(small_event_queue_reserves_run_settlement) { scenario(Mode:
 BOOST_AUTO_TEST_CASE(required_snapshot_failure_stops_admission) { scenario(Mode::StorageFailure); }
 BOOST_AUTO_TEST_CASE(blocked_restore_never_executes_model) { scenario(Mode::Blocked); }
 BOOST_AUTO_TEST_CASE(history_query_is_answered_while_model_is_pending) { scenario(Mode::History); }
+BOOST_AUTO_TEST_CASE(oversized_history_and_answer_queries_keep_their_refusal_code) {
+    scenario(Mode::QueryRejection);
+}
 
 BOOST_AUTO_TEST_CASE(payload_overflow_rejects_during_model_wait_and_keeps_control_live) {
     Scratch scratch;

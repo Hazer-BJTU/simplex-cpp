@@ -101,10 +101,13 @@ manifest and the SHA-256, using OpenSSL::Crypto, which is already the project's
 hashing dependency behind `openssl_iface`. `display.cpp` hashes answer sources
 the same way.
 
-**Nothing links these yet.** Migrating the worker's producers and consumers, the
-installed `simplex protocol` command, and the Hub drift checks are the next
-changes; keeping this package unlinked for one iteration is what makes that
-migration reviewable. Until then, existing wire behaviour is untouched.
+**The worker now builds its messages here.** `core` links `protocol_lib` and
+constructs event envelopes, metadata events, projections, confirmation requests
+and remote-tool envelopes from these records; `core/wire.hpp` owns the enum
+conversions. Behaviour stays where it was: event classification, budgets,
+sequence allocation and admission policy remain application code, and the
+projection algorithms keep their byte accounting. The installed
+`simplex protocol` command and the remaining Hub checks are the next changes.
 
 ## Relationship to the documentation
 

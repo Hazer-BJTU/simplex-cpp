@@ -1,4 +1,5 @@
 #include "core/protocol.hpp"
+#include "core/wire.hpp"
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
@@ -6,6 +7,17 @@
 #include <limits>
 
 namespace core {
+namespace {
+
+/** A wire cursor is a safe nonnegative integer; a page offset must fit too. */
+std::size_t narrow(std::uint64_t value, const char* what) {
+    if (value > std::numeric_limits<std::size_t>::max())
+        throw std::invalid_argument(std::string(what) + " is out of range");
+    return static_cast<std::size_t>(value);
+}
+
+} // namespace
+
 void validate_session_id(const std::string& id) {
     if (id.empty() || id.size() > 128 || id == "." || id == ".."
         || id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos)
@@ -21,92 +33,56 @@ const char* operation_name(InputOperation operation) {
 }
 
 Input parse_input(const nlohmann::json& payload) {
-    if (!payload.is_object()) throw std::invalid_argument("payload must be an object");
-    Input input;
-    input.request_id = payload.at("request_id").get<std::string>();
-    if (input.request_id.empty() || input.request_id.size() > 128)
-        throw std::invalid_argument("request_id must contain 1..128 bytes");
-    const auto operation = payload.at("operation").get<std::string>();
-    if (operation == "message") {
-        input.operation = InputOperation::Message;
-    } else if (operation == "continue") {
-        input.operation = InputOperation::Continue;
-    } else if (operation == "compact") {
-        input.operation = InputOperation::Compact;
-    } else {
-        throw std::invalid_argument("operation must be message, continue, or compact");
-    }
-    for (const char* field : {"role", "invokes", "invoke_return", "type"})
-        if (payload.contains(field)) throw std::invalid_argument("payload cannot contain message metadata");
-    input.has_message = operation == "message";
-    input.message.role = "user";
-    if (input.has_message) {
-        if (payload.contains("text")) {
-            throw std::invalid_argument("message requires content instead of text");
-        }
-        const auto& parts = payload.at("content");
-        if (!parts.is_array() || parts.empty()) {
-            throw std::invalid_argument("content must be a nonempty array");
-        }
-        input.message.content.reserve(parts.size());
-        for (const auto& part : parts) {
-            if (!part.is_object()) {
-                throw std::invalid_argument("each content part must be an object");
-            }
-            model_io::Content content;
-            const auto type = part.at("type").get<std::string>();
-            // Content's general JSON decoder tolerates unknown enum labels.
-            // The public input boundary must reject them rather than silently
-            // turn an attachment into text.
-            if (type == "text") {
-                content.type = model_io::ContentType::Text;
-            } else if (type == "binary") {
-                content.type = model_io::ContentType::Binary;
-            } else if (type == "external_ref") {
-                content.type = model_io::ContentType::ExternalRef;
-            } else {
-                throw std::invalid_argument("unknown content type");
-            }
-            // The media category is required and must be one of the five
-            // labels: the boundary never infers it from the encoding, and it
-            // never lets an unknown label through as if it were text.
-            const auto modality = part.at("modality").get<std::string>();
-            if (modality == "text") {
-                content.modality = model_io::Modality::Text;
-            } else if (modality == "image") {
-                content.modality = model_io::Modality::Image;
-            } else if (modality == "audio") {
-                content.modality = model_io::Modality::Audio;
-            } else if (modality == "video") {
-                content.modality = model_io::Modality::Video;
-            } else if (modality == "document") {
-                content.modality = model_io::Modality::Document;
-            } else {
-                throw std::invalid_argument("unknown content modality");
-            }
-            content.raw = part.at("raw").get<std::string>();
-            if (content.raw.empty()) {
-                throw std::invalid_argument("content raw must not be empty");
-            }
-            const auto extras = part.find("extras");
-            if (extras != part.end() && !extras->is_object()) {
-                throw std::invalid_argument("content extras must be an object");
-            }
-            if (extras != part.end()) {
-                content.extras = *extras;
-            }
-            input.message.content.push_back(std::move(content));
-        }
-    } else if (payload.contains("content") || payload.contains("text")) {
-        throw std::invalid_argument(operation + " cannot contain content or text");
-    }
-    if (const auto options = payload.find("options"); options != payload.end()) {
-        if (!options->is_object()) {
+    // The category shape is application policy, and its rejection class is part
+    // of the admission contract; decide it before the structural codec runs.
+    if (payload.is_object()) {
+        if (const auto options = payload.find("options"); options != payload.end()
+            && !options->is_object()) {
             throw InputOptionsError("options must be an object");
         }
+    }
+    protocol::PayloadRequest request;
+    try {
+        request = protocol::from_json<protocol::PayloadRequest>(payload);
+    } catch (const protocol::ValidationError& error) {
+        throw std::invalid_argument(error.what());
+    }
+    Input input;
+    input.request_id = std::move(request.request_id);
+    if (input.request_id.empty() || input.request_id.size() > 128)
+        throw std::invalid_argument("request_id must contain 1..128 bytes");
+    switch (request.operation) {
+        case protocol::InputOperation::message:
+            input.operation = InputOperation::Message;
+            break;
+        case protocol::InputOperation::continue_request:
+            input.operation = InputOperation::Continue;
+            break;
+        case protocol::InputOperation::compact:
+            input.operation = InputOperation::Compact;
+            break;
+        case protocol::InputOperation::history:
+        case protocol::InputOperation::answer:
+            // A query is answered by the query path and never admitted as input.
+            throw std::invalid_argument("operation must be message, continue, or compact");
+    }
+    input.has_message = input.operation == InputOperation::Message;
+    input.message.role = "user";
+    if (input.has_message) {
+        // The record guarantees the field for a message; the admission boundary
+        // still refuses an empty batch and an empty part.
+        if (!request.content || request.content->empty())
+            throw std::invalid_argument("content must be a nonempty array");
+        input.message.content.reserve(request.content->size());
+        for (const auto& part : *request.content) {
+            if (part.raw.empty()) throw std::invalid_argument("content raw must not be empty");
+            input.message.content.push_back(model_content(part));
+        }
+    }
+    if (request.options) {
         // Validate every category before any provider is allowed to mutate state.
         // Future category handlers belong at the same serialized admission point.
-        for (const auto& [category, values] : options->items()) {
+        for (const auto& [category, values] : request.options->items()) {
             if (!values.is_object()) {
                 throw InputOptionsError("each options category must be an object");
             }
@@ -117,218 +93,44 @@ Input parse_input(const nlohmann::json& payload) {
                 throw InputOptionsError("unsupported options category: " + category);
             }
         }
-        input.options = *options;
+        input.options = *request.options;
     }
     return input;
 }
 
 HistoryRequest parse_history_request(const nlohmann::json& payload) {
-    if (!payload.is_object() || payload.value("operation", nlohmann::json()) != "history")
+    protocol::PayloadRequest request;
+    try {
+        request = protocol::from_json<protocol::PayloadRequest>(payload);
+    } catch (const protocol::ValidationError& error) {
+        throw std::invalid_argument(error.what());
+    }
+    if (request.operation != protocol::InputOperation::history)
         throw std::invalid_argument("history request must be an object with operation history");
-    HistoryRequest request;
-    request.request_id = payload.at("request_id").get<std::string>();
-    if (request.request_id.empty() || request.request_id.size() > 128)
+    HistoryRequest result;
+    result.request_id = std::move(request.request_id);
+    if (result.request_id.empty() || result.request_id.size() > 128)
         throw std::invalid_argument("request_id must contain 1..128 bytes");
-    for (const char* field : {"content", "options", "text", "role", "invokes",
-                              "invoke_return", "type"}) {
-        if (!payload.contains(field)) continue;
-        throw std::invalid_argument("history request cannot carry message content, options, or metadata");
-    }
-    const auto index = [&](const char* key, std::size_t fallback) {
-        if (!payload.contains(key)) return fallback;
-        const auto& value = payload.at(key);
-        if (value.is_number_unsigned()) {
-            const auto number = value.get<std::uint64_t>();
-            if (number <= std::numeric_limits<std::size_t>::max())
-                return static_cast<std::size_t>(number);
-        } else if (value.is_number_integer()) {
-            const auto number = value.get<std::int64_t>();
-            if (number >= 0 && static_cast<std::uint64_t>(number)
-                    <= std::numeric_limits<std::size_t>::max())
-                return static_cast<std::size_t>(number);
-        }
-        throw std::invalid_argument(std::string("history ") + key
-            + " must be a nonnegative integer");
-    };
-    request.start = index("start", 0);
-    request.step = index("step", 0);
-    request.limit = index("limit", 10);
-    if (request.limit == 0 || request.limit > 10)
+    result.start = narrow(request.start.value_or(0), "history start");
+    result.step = narrow(request.step.value_or(0), "history step");
+    result.limit = narrow(request.limit.value_or(10), "history limit");
+    if (result.limit == 0 || result.limit > 10)
         throw std::invalid_argument("history limit must be between 1 and 10");
-    return request;
-}
-
-namespace {
-std::string clipped(const std::string& raw, std::size_t maximum) {
-    if (raw.size() <= maximum) return raw;
-    auto end = maximum;
-    while (end > 0 && (static_cast<unsigned char>(raw[end]) & 0xc0) == 0x80) --end;
-    return raw.substr(0, end);
-}
-
-nlohmann::json display_content(const model_io::Content& part,
-    std::size_t maximum = 4096) {
-    // The part's encoding and its media category are both projected: the panel
-    // reads `type` for how `raw` is encoded and `modality` for what it is.
-    nlohmann::json value = {{"type", part.type}, {"modality", part.modality}};
-    if (part.type == model_io::ContentType::Binary) {
-        value["raw"] = "";
-        value["omitted"] = true;
-        value["bytes"] = part.raw.size();
-    } else {
-        // The display budget follows the category: a text part may use twice
-        // the room of an attachment reference.
-        if (part.modality != model_io::Modality::Text) maximum = std::min<std::size_t>(maximum, 2048);
-        value["raw"] = clipped(part.raw, maximum);
-        if (part.raw.size() > maximum) {
-            value["truncated"] = true;
-            value["bytes"] = part.raw.size();
-        }
-    }
-    return value;
-}
-
-nlohmann::json display_parts(const std::vector<model_io::Content>& parts) {
-    auto result = nlohmann::json::array();
-    for (std::size_t index = 0; index < std::min<std::size_t>(parts.size(), 4); ++index)
-        result.push_back(display_content(parts[index]));
     return result;
 }
 
-/** Answer preview budget counts escaped JSON across all parts, not each field. */
-nlohmann::json display_step(const model_io::MessageItem& response,
-                            std::size_t index, std::size_t answer_budget = 96 * 1024) {
-    auto parts = nlohmann::json::array();
-    std::size_t remaining = answer_budget;
-    for (const auto& part : response.content) {
-        if (parts.size() >= 128 || remaining < 1024) break;
-        // Probe only a bounded prefix. Measure actual JSON escaping rather
-        // than charging every character the worst-case six bytes.
-        auto maximum = std::min<std::size_t>(part.raw.size(), remaining - 256);
-        auto projected = display_content(part, maximum);
-        if (projected.dump().size() > remaining) {
-            std::size_t low = 0;
-            std::size_t high = maximum;
-            while (low < high) {
-                const auto middle = low + (high - low + 1) / 2;
-                if (display_content(part, middle).dump().size() <= remaining) low = middle;
-                else high = middle - 1;
-            }
-            projected = display_content(part, low);
-        }
-        const auto bytes = projected.dump().size();
-        if (bytes > remaining) break;
-        remaining -= bytes;
-        parts.push_back(std::move(projected));
-    }
-    nlohmann::json step = {{"index", index}, {"content", std::move(parts)},
-        {"tool_calls", response.invokes ? response.invokes->size() : 0}};
-    step["omitted_parts"] = response.content.size() - step["content"].size();
-    if (response.reasoning) step["reasoning"] = display_content(*response.reasoning, 4096);
-    return step;
-}
-} // namespace
-
-nlohmann::json response_preview(const model_io::MessageItem& response,
-    std::size_t step, std::size_t answer_budget) {
-    return display_step(response, step, answer_budget);
+QueryRejection query_rejection(const nlohmann::json& request_id,
+                               const std::string& operation, const std::string& code) {
+    QueryRejection rejection;
+    rejection.event = operation == "answer" ? protocol::EventName::answer_error
+                                            : protocol::EventName::history_error;
+    rejection.data.request_id = request_id;
+    rejection.data.message =
+        "Worker query quota exceeded; retry after the connection drains.";
+    rejection.data.code = code;
+    return rejection;
 }
 
-nlohmann::json history_page(const model_io::AgentInputState& state,
-                            const HistoryRequest& request,
-                            std::uint64_t revision,
-                            const std::string& worker_id) {
-    if (request.start >= state.turns.size() && request.step != 0)
-        throw std::invalid_argument("history step is outside the available turns");
-    const auto start = std::min(request.start, state.turns.size());
-    const auto end = start + std::min(request.limit, state.turns.size() - start);
-    // Reserve the widest possible returned cursors. Final cursor values and
-    // omission counts can only make this conservative serialized total smaller.
-    // Measure each projected object once, rather than repeatedly serializing
-    // the growing page (which would be quadratic for many small steps).
-    nlohmann::json page = {{"request_id", request.request_id}, {"revision", revision},
-        {"start", start}, {"step", request.step}, {"next", state.turns.size()},
-        {"next_step", std::numeric_limits<std::size_t>::max()},
-        {"total", state.turns.size()}, {"turns", nlohmann::json::array()}};
-    auto& turns = page["turns"];
-    auto page_bytes = page.dump().size();
-    if (page_bytes > history_page_max_bytes)
-        throw std::length_error("history page metadata exceeds the display budget");
-    auto next = start;
-    std::size_t next_step = 0;
-    for (auto index = start; index < end; ++index) {
-        const auto& turn = state.turns[index];
-        const auto first_step = index == start ? request.step : 0;
-        if (first_step > turn.agent_loop_step.size())
-            throw std::invalid_argument("history step is outside the selected turn");
-        nlohmann::json projected = {{"index", index},
-            {"user", display_parts(turn.user_input.content)},
-            {"steps", nlohmann::json::array()},
-            {"omitted_user_parts", turn.user_input.content.size()
-                - std::min<std::size_t>(turn.user_input.content.size(), 4)},
-            {"omitted_steps", turn.agent_loop_step.size() - first_step}};
-        // Only host-owned MessageItem metadata can hide an internal input.
-        // Content extras supplied by a user never participate in this check.
-        const auto& metadata = turn.user_input.extras;
-        if (metadata && metadata->is_object() && metadata->contains("simplex.source")) {
-            projected["source"] = metadata->at("simplex.source");
-        }
-        if (metadata && metadata->is_object()
-            && metadata->value("simplex.internal_input", "") == "auto_compact_continue") {
-            projected["user"] = nlohmann::json::array();
-            projected["omitted_user_parts"] = 0;
-            projected["internal_input"] = "auto_compact_continue";
-        }
-        auto& steps = projected["steps"];
-        auto turn_bytes = projected.dump().size();
-        const auto separator_bytes = turns.empty() ? 0u : 1u;
-        if (page_bytes + separator_bytes + turn_bytes > history_page_max_bytes) {
-            if (turns.empty())
-                throw std::length_error("history turn exceeds the display budget");
-            break;
-        }
-        std::size_t step_index = first_step;
-        for (; step_index < turn.agent_loop_step.size(); ++step_index) {
-            auto step = display_step(
-                turn.agent_loop_step[step_index].model_response, step_index);
-            const auto commit = turn.agent_loop_step[step_index].commit_sequence;
-            if (commit != 0) {
-                step["commit_sequence"] = std::to_string(commit);
-                if (!worker_id.empty()) step["answer_source"] = answer_source(
-                    turn.agent_loop_step[step_index], index, step_index, worker_id);
-            }
-            const auto& metadata = turn.agent_loop_step[step_index].extras;
-            if (metadata && metadata->is_object()
-                && metadata->contains("simplex.execution")) {
-                step["execution"] = metadata->at("simplex.execution");
-            }
-            const auto bytes = step.dump().size() + (steps.empty() ? 0u : 1u);
-            if (page_bytes + separator_bytes + turn_bytes + bytes
-                    > history_page_max_bytes) break;
-            turn_bytes += bytes;
-            steps.push_back(std::move(step));
-        }
-        if (step_index == first_step && step_index < turn.agent_loop_step.size()) {
-            // Do not publish a new turn without its first remaining step: the
-            // current cursor cannot express that boundary without stalling.
-            if (turns.empty())
-                throw std::length_error("history step exceeds the display budget");
-            break;
-        }
-        projected["omitted_steps"] = turn.agent_loop_step.size() - step_index;
-        page_bytes += separator_bytes + turn_bytes;
-        turns.push_back(std::move(projected));
-        if (step_index < turn.agent_loop_step.size()) {
-            next = index;
-            next_step = step_index;
-            break;
-        }
-        next = index + 1;
-    }
-    page["next"] = next;
-    page["next_step"] = next_step;
-    return page;
-}
 std::string new_identity() {
     return boost::uuids::to_string(boost::uuids::random_generator()());
 }

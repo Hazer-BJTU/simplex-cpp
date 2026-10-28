@@ -55,6 +55,7 @@ enum class Kind {
     boolean,
     any,
     enumeration,
+    enumerations,
     record,
     records,
     texts,
@@ -307,6 +308,19 @@ template <class T, class M>
 Field<T, M> texts(std::string_view name, M T::*member, std::string_view summary,
                   bool nullable = false) {
     return {name, member, Kind::texts, summary, nullable};
+}
+
+/**
+ * A closed vocabulary spelled as a JSON array of strings.
+ *
+ * The names are the worker's own advertised set, not a claim that a capability
+ * is enabled; a consumer still has to tolerate names it does not know.
+ */
+template <class E, class T, class M>
+    requires is_described_enum<E>
+Field<T, M> enumerations(std::string_view name, M T::*member, std::string_view summary,
+                         bool nullable = false) {
+    return {name, member, Kind::enumerations, summary, nullable, &describe_enum<E>(), nullptr};
 }
 
 namespace detail {

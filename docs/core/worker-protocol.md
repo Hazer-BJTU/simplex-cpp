@@ -917,8 +917,8 @@ may occur in nested dataclass records.
 | `history` | Display history page | Read-only response to a `history` payload; not a run event. |
 | `compact_finished` | `{ "summary": string, "memory_file"?: string, "archive"?: { "session_id": string, "archive_id": string, "storage_kind": "json" \| "sqlite", "restorable": true }, "removed_turns": unsigned integer, "revision": unsigned integer, "durable": true, "archive_cleanup"?: { "removed_archives": unsigned integer, "removed_bytes": unsigned integer }, "archive_cleanup_error"?: string }` | Compacted state was durably published; old history pages must be invalidated. Cleanup success or failure is reported separately. |
 | `answer` | Correlated answer page | Exact read-only content segment; no run admission. |
-| `answer_error` | `{ "request_id": any JSON value or null, "message": string }` | Answer source or cursor is unavailable. |
-| `history_error` | `{ "request_id": any JSON value or null, "message": string }` | Invalid history query. |
+| `answer_error` | `{ "request_id": any JSON value or null, "message": string, "code"?: "query_queue_full" \| "query_too_large" }` | Answer source or cursor is unavailable, or the query was refused before validation. |
+| `history_error` | `{ "request_id": any JSON value or null, "message": string, "code"?: "query_queue_full" \| "query_too_large" }` | Invalid history query, or the query was refused before validation. |
 | `input_admitted` | `{ "operation": string }` | Host admitted `message`, `continue`, or `compact` and assigned its run ID. The operation remains in the replayable transcript, so a continuation is not mistaken for a new user message after request bookkeeping is pruned. Older workers emitted `{}`. |
 | `input_rejected` | `{ "request_id": any JSON value or null, "message": string, "operation"?: "message" \| "continue" \| "compact", "code"?: "invalid_options" \| "payload_queue_full" }` | Input failed host validation or payload queue admission; no run was started for that input. A recognized operation is retained for transcript replay even after request bookkeeping expires. |
 | `run_started` | `{}` | Loop admitted the invocation. |
@@ -1068,15 +1068,17 @@ all delivery or durability ambiguity.
 | `status` | String | Final logical-request outcome listed below. Intermediate automatic-compaction boundaries do not emit this event. |
 | `error` | String | Technical diagnostic, empty when none. |
 | `exchanges` | Unsigned integer | All committed task and compact model responses in this logical request, not HTTP attempts. |
-| `task_exchanges` | Unsigned integer | Committed responses from task runs, including automatic continuation. |
-| `compact_exchanges` | Unsigned integer | Committed manual or automatic summary responses. |
-| `auto_compact` | Object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
+| `task_exchanges` | Optional unsigned integer | Committed responses from task runs, including automatic continuation. |
+| `compact_exchanges` | Optional unsigned integer | Committed manual or automatic summary responses. |
+| `auto_compact` | Optional object | `attempts`, `succeeded`, effective `limit` and token `threshold`, using the same fields as status. |
 | `durable` | Boolean | Whether a final/cancellation state snapshot was recorded, subject to the policy described below. |
 | `failure` | Optional object | Present for `failed`; contains `stage`, `operation` (`task`, `compact`, `auto_compact`) and `can_continue`. |
 | `omitted_display_events` | Optional unsigned integer | Model/tool display events omitted since the previous admitted settlement. Canonical answers are unchanged. |
 | `omitted_query_events` | Optional unsigned integer | Query responses omitted since the previous admitted settlement. |
 | `omitted_feedback_events` | Optional unsigned integer | Rejection feedback omitted since the previous admitted settlement. |
 | `coalesced_metadata_events` | Optional unsigned integer | Replayable metadata events replaced or omitted since the previous admitted settlement. |
+| `rejected_queries` | Optional unsigned integer | Cumulative history/answer quota or envelope rejections for this IO client at settlement. |
+| `unreported_rejections` | Optional unsigned integer | Cumulative rejection notices dropped by a full feedback mailbox at settlement. |
 
 The four omission/coalescing counters are present only when nonzero and settle
 only after the event is admitted to the outbox. They are not lifetime totals or

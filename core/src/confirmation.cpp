@@ -1,5 +1,7 @@
 #include "core/confirmation.hpp"
 #include "core/protocol.hpp"
+#include "core/wire.hpp"
+#include "protocol/wire.hpp"
 #include "intercom/cancellable_exchange.hpp"
 #include "intercom/message_limits.hpp"
 
@@ -82,11 +84,13 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
     }
     if (!endpoint) co_return event;
     const auto id = new_identity();
-    nlohmann::json request = {{"type", "confirmation_request"}, {"data", {
-        {"worker_id", worker_id}, {"session_id", session_id},
-        {"run_id", run_id}, {"confirmation_id", id},
-        {"call", event.query}}}};
-    const auto encoded_request = request.dump();
+    protocol::ConfirmationRequestEnvelope request;
+    request.data.worker_id = worker_id;
+    request.data.session_id = session_id;
+    request.data.run_id = run_id;
+    request.data.confirmation_id = id;
+    request.data.call = wire_call(event.query);
+    const auto encoded_request = protocol::to_json(request).dump();
     if (encoded_request.size() > 1024 * 1024) {
         event.reason = "confirmation request exceeds the 1 MiB transport budget; invocation denied";
         co_return event;
@@ -96,20 +100,17 @@ boost::asio::awaitable<tools::InvokeConfirmEvent> confirm(
             executor, *endpoint, encoded_request, timeout,
             scope->token(), endpoint::get_global_ssl_context(),
             intercom::confirmation_reply_max_bytes);
-        const auto reply = nlohmann::json::parse(wire);
-        const auto& data = reply.at("data");
-        if (reply.at("type") != "confirmation_response"
-            || data.at("worker_id") != worker_id
-            || data.at("session_id") != session_id || data.at("run_id") != run_id
-            || data.at("confirmation_id") != id)
+        const auto reply = protocol::from_json<protocol::ConfirmationResponseEnvelope>(
+            nlohmann::json::parse(wire));
+        const auto& data = reply.data;
+        if (data.worker_id != worker_id || data.session_id != session_id
+            || data.run_id != run_id || data.confirmation_id != id)
             throw std::invalid_argument("confirmation correlation mismatch");
-        const auto decision = data.at("decision").get<std::string>();
-        if (decision != "approved" && decision != "denied")
-            throw std::invalid_argument("invalid confirmation decision");
-        event.reason = data.value("reason", std::string("operator decision"));
-        if (scope->settle_approval(decision == "approved"))
+        const bool approved = data.decision == protocol::ConfirmationDecision::approved;
+        event.reason = data.reason.value_or(std::string("operator decision"));
+        if (scope->settle_approval(approved))
             event.decision = tools::ConfirmDecision::Approved;
-        else if (decision == "approved" || scope->token().stop_requested())
+        else if (approved || scope->token().stop_requested())
             event.reason = "run cancelled during confirmation";
     } catch (const std::exception& error) {
         event.reason = std::string("confirmation failed: ") + error.what();

@@ -36,6 +36,7 @@ const char* kind_name(Kind kind) {
         case Kind::texts: return "texts";
         case Kind::text_or_record: return "text_or_record";
         case Kind::projected_batch: return "projected_batch";
+        case Kind::enumerations: return "enumerations";
     }
     return "any";
 }
@@ -263,6 +264,7 @@ std::span<const EnumDescriptor* const> enum_registry() {
         &describe_enum<RejectionCode>(),
         &describe_enum<FailureStage>(),
         &describe_enum<ToolStatus>(),
+        &describe_enum<Capability>(),
     };
     return enums;
 }
@@ -285,6 +287,11 @@ Json schema_type(const FieldView& field) {
                 {"x-simplex-trailing-marker", "display_omitted"}};
             break;
         }
+        case Kind::enumerations:
+            type = Json{{"type", "array"},
+                        {"items", Json{{"$ref", "#/$defs/"
+                                                   + std::string(field.enumeration->name)}}}};
+            break;
 
         case Kind::text:
             type = Json{{"type", "string"}};

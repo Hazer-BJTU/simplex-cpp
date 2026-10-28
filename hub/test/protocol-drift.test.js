@@ -13,9 +13,10 @@
  * reformatted beyond what this parser understands, it fails too — with a
  * message that says which of the two to fix.
  *
- * It reads the repository's documentation and, for Worker-owned fields, the
- * C++ emission/serialization sites. A standalone copy of `hub/` without those
- * files skips the corresponding checks instead of failing.
+ * It reads the repository's documentation, the generated protocol manifest and
+ * one persisted-enum serializer that the manifest does not describe. A
+ * standalone copy of `hub/` without those files skips the corresponding checks
+ * instead of failing.
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -36,13 +37,11 @@ import {
 } from '../src/protocol/messages.ts';
 
 const DOC_PATH = join(hubRoot, '..', 'docs', 'core', 'worker-protocol.md');
+const MANIFEST_PATH = join(hubRoot, '..', 'protocol', 'schemas', 'worker-protocol.json');
 const available = existsSync(DOC_PATH);
 const skip = available ? false : `core documentation not present at ${DOC_PATH}`;
-const WORKER_PATH = join(hubRoot, '..', 'core', 'src', 'application.cpp');
 const MODEL_IO_PATH = join(hubRoot, '..', 'dataclass', 'include', 'dataclass', 'model_io.hpp');
-const OUTBOX_PATH = join(hubRoot, '..', 'core', 'include', 'core', 'event_outbox.hpp');
-const PROTOCOL_PATH = join(hubRoot, '..', 'core', 'src', 'protocol.cpp');
-const workerSkip = [WORKER_PATH, MODEL_IO_PATH, OUTBOX_PATH].every(existsSync)
+const workerSkip = existsSync(MODEL_IO_PATH)
     ? false : 'Worker C++ sources are not present in this standalone Hub';
 
 /** Hint appended to every parse failure. */
@@ -52,6 +51,19 @@ const PARSER_HINT = 'The document was reformatted or the vocabulary moved. Updat
 /** Read the authoritative document. */
 function readDocument() {
     return readFileSync(DOC_PATH, 'utf8');
+}
+
+/**
+ * Read the generated structural contract.
+ *
+ * A full checkout always has it: a missing or unparsable artifact is a broken
+ * build step, never a reason to skip a conformance check.
+ */
+function readManifest() {
+    assert.ok(existsSync(MANIFEST_PATH),
+        `generated protocol manifest is missing at ${MANIFEST_PATH};`
+        + ' rebuild protocol_manifest_export and commit the artifact');
+    return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
 }
 
 /**
@@ -121,30 +133,24 @@ function sourceFragment(text, pattern, label) {
 }
 
 describe('worker protocol drift', { skip }, () => {
-    it('documents history turn and response fields from their actual projection sites', {
-        skip: existsSync(PROTOCOL_PATH) ? false : 'Worker projection source is not present',
-    }, () => {
-        const protocol = readFileSync(PROTOCOL_PATH, 'utf8');
+    it('documents the history fields the generated manifest publishes', { skip }, () => {
+        const manifest = readManifest();
         const markdown = readDocument();
-        const history = sourceFragment(protocol, /nlohmann::json history_page\(([\s\S]*?)\n\}/, 'history page projection');
-        const turn = sourceFragment(history, /nlohmann::json projected = \{([\s\S]*?)\};/, 'history turn initialization');
-        const step = sourceFragment(protocol, /nlohmann::json step = \{([\s\S]*?)\};/, 'history step initialization');
-        const keys = text => [...text.matchAll(/\{"([a-z_]+)",/g)].map(match => match[1]);
-        const assigned = (text, name) => [...text.matchAll(new RegExp(`${name}\\["([a-z_]+)"\\] =`, 'g'))]
-            .map(match => match[1]);
-        function check(heading, required, optional) {
-            assert.ok(required.length > 0 && optional.length > 0, PARSER_HINT);
+        function check(heading, record) {
+            const published = manifest.records[record].fields;
+            assert.ok(published && published.length > 0, `no ${record} fields in the manifest`);
             const rows = firstTable(section(markdown, heading), heading);
-            assert.deepEqual(rows.map(row => identifier(row[0])).sort(), [...new Set([...required, ...optional])].sort());
+            assert.deepEqual(rows.map(row => identifier(row[0])).sort(),
+                published.map(field => field.name).sort(),
+                `${heading} and the generated manifest disagree`);
             for (const row of rows) {
-                assert.equal(row[1].startsWith('Optional'), !required.includes(identifier(row[0])),
+                const field = published.find(entry => entry.name === identifier(row[0]));
+                assert.equal(row[1].startsWith('Optional'), !field.required,
                     `incorrect optionality for ${heading} ${row[0]}`);
             }
         }
-        check('#### History turn fields', keys(turn), assigned(history, 'projected'));
-        const required = [...keys(step), 'omitted_parts'];
-        check('#### History step fields', required,
-            [...assigned(protocol, 'step')].filter(key => !required.includes(key)));
+        check('#### History turn fields', 'HistoryTurn');
+        check('#### History step fields', 'HistoryStep');
         const turns = section(markdown, '#### History turn fields');
         const steps = section(markdown, '#### History step fields');
         assert.match(turns, /preserved across Continue/i);
@@ -152,15 +158,13 @@ describe('worker protocol drift', { skip }, () => {
         assert.match(steps, /Optional decimal string/);
     });
 
-    it('keeps status capability examples and glossary aligned with the Worker', { skip: workerSkip }, () => {
-        const worker = readFileSync(WORKER_PATH, 'utf8');
-        const capabilities = sourceFragment(worker,
-            /\{"capabilities", Json::array\(\{([^}]+)\}\)\}/, 'status capabilities');
-        const supported = [...capabilities.matchAll(/"([a-z-]+)"/g)].map(match => match[1]).sort();
-        assert.ok(supported.length > 0, PARSER_HINT);
+    it('keeps status capability examples aligned with the generated vocabulary', { skip }, () => {
+        const manifest = readManifest();
+        const supported = [...manifest.enumerations.Capability.spellings].sort();
         const status = section(readDocument(), '### Status object');
         const example = JSON.parse(sourceFragment(status, /```json\s*([\s\S]*?)```/, 'status JSON example'));
-        assert.deepEqual(example.capabilities.sort(), supported);
+        assert.deepEqual(example.capabilities.sort(), supported,
+            'the status example and the generated capability vocabulary disagree');
         const rows = firstTable(status, 'status fields');
         const row = rows.find(entry => identifier(entry[0]) === 'capabilities');
         assert.ok(row, PARSER_HINT);
@@ -185,21 +189,18 @@ describe('worker protocol drift', { skip }, () => {
         assert.match(row[2], /not a queued action/);
     });
 
-    it('documents all run_finished emission fields and optional outbox counters', { skip: workerSkip }, () => {
-        const worker = readFileSync(WORKER_PATH, 'utf8');
-        const finished = sourceFragment(worker, /Json finished = \{([\s\S]*?)\};/, 'run_finished data');
-        const required = [...finished.matchAll(/\{"([a-z_]+)",/g)].map(match => match[1]);
-        assert.ok(required.length > 0, PARSER_HINT);
-        const conditional = [...worker.matchAll(/finished\["([a-z_]+)"\]/g)].map(match => match[1]);
-        const outbox = readFileSync(OUTBOX_PATH, 'utf8');
-        const counters = [...outbox.matchAll(/message\["data"\]\["([a-z_]+)"\]/g)].map(match => match[1]);
-        assert.ok(conditional.length > 0 && counters.length > 0, PARSER_HINT);
-        const optional = [...new Set([...conditional, ...counters])];
-        const rows = firstTable(section(readDocument(), '### Run outcome and persistence events'), 'run outcome fields');
-        const documented = rows.map(row => identifier(row[0]));
-        assert.deepEqual(documented.sort(), [...required, ...optional].sort());
+    it('documents the run outcome fields the generated manifest publishes', { skip }, () => {
+        const manifest = readManifest();
+        const published = manifest.records.RunOutcomeData.fields;
+        assert.ok(published.length > 0, 'no RunOutcomeData fields in the manifest');
+        const rows = firstTable(section(readDocument(), '### Run outcome and persistence events'),
+            'run outcome fields');
+        assert.deepEqual(rows.map(row => identifier(row[0])).sort(),
+            published.map(field => field.name).sort(),
+            'the run outcome table and the generated manifest disagree');
         for (const row of rows) {
-            assert.equal(row[1].startsWith('Optional'), optional.includes(identifier(row[0])),
+            const field = published.find(entry => entry.name === identifier(row[0]));
+            assert.equal(row[1].startsWith('Optional'), !field.required,
                 `incorrect optionality for ${row[0]}`);
         }
     });

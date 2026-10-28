@@ -378,6 +378,23 @@ BOOST_AUTO_TEST_CASE(producer_shapes_validate_without_loss) {
     BOOST_CHECK_NO_THROW(validate_event_data(envelope));
 }
 
+BOOST_AUTO_TEST_CASE(capabilities_are_a_closed_vocabulary) {
+    // The worker advertises names a consumer can match; a listed name is not a
+    // claim that the feature is enabled for this configuration.
+    const Json status = Json{{"active", false}, {"stopping", false}, {"storage_failed", false},
+                             {"rejected_payloads", 0},
+                             {"capabilities", Json::array({"session-history", "answer-pages"})}};
+    const StatusData parsed = protocol::from_json<StatusData>(status);
+    BOOST_TEST(parsed.capabilities.size() == 2);
+    BOOST_TEST(protocol::to_json(parsed) == status);
+
+    // An unknown spelling is refused here, so a new capability has to reach the
+    // contract before it can be advertised.
+    Json unknown = status;
+    unknown["capabilities"] = Json::array({"session-history", "telepathy"});
+    BOOST_CHECK_THROW(protocol::from_json<StatusData>(unknown), ValidationError);
+}
+
 BOOST_AUTO_TEST_CASE(invalid_event_data_is_rejected_with_a_path) {
     EventEnvelope envelope;
     envelope.event = EventName::run_finished;

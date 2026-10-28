@@ -14,6 +14,14 @@
         "trusted"
       ]
     },
+    "Capability": {
+      "spellings": [
+        "session-history",
+        "context-compact",
+        "auto-compact",
+        "answer-pages"
+      ]
+    },
     "ConfirmationDecision": {
       "spellings": [
         "approved",
@@ -262,7 +270,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "ac1676a044bd494610cbc0a6e4527ca2300667c1920326f35839481989468391",
+  "fingerprint": "8c4ea7a439f7252d252723df0b6dcff3d9c615c03fdd56dd4f475b2bad7b7217",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -484,6 +492,15 @@
           "default_deny",
           "require_confirm",
           "trusted"
+        ],
+        "type": "string"
+      },
+      "Capability": {
+        "enum": [
+          "session-history",
+          "context-compact",
+          "auto-compact",
+          "answer-pages"
         ],
         "type": "string"
       },
@@ -716,8 +733,16 @@
             "type": "string"
           },
           "primary_outcome": {},
+          "rejected_queries": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "storage_error": {
             "type": "string"
+          },
+          "unreported_rejections": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -1660,8 +1685,11 @@
       },
       "QueryErrorData": {
         "additionalProperties": true,
-        "description": "Query failure. request_id echoes whatever the query carried, including null.",
+        "description": "Query failure. request_id echoes whatever the query carried, including null. code is present only when the query was refused before validation.",
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "message": {
             "type": "string"
           },
@@ -1847,10 +1875,18 @@
             "minimum": 0,
             "type": "integer"
           },
+          "rejected_queries": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "status": {
             "$ref": "#/$defs/RunStatus"
           },
           "task_exchanges": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unreported_rejections": {
             "minimum": 0,
             "type": "integer"
           }
@@ -2047,7 +2083,7 @@
           },
           "capabilities": {
             "items": {
-              "type": "string"
+              "$ref": "#/$defs/Capability"
             },
             "type": "array"
           },
@@ -2946,6 +2982,18 @@
           "name": "storage_error",
           "required": false,
           "summary": "Describes an uncertain archive mutation."
+        },
+        {
+          "kind": "integer",
+          "name": "rejected_queries",
+          "required": false,
+          "summary": "Cumulative query rejections for this IO client at settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "unreported_rejections",
+          "required": false,
+          "summary": "Rejection notices dropped by a full feedback mailbox at settlement."
         }
       ],
       "summary": "Control-validation or storage diagnostic, not a universal fatal notification. A terminal storage failure always carries primary_outcome.",
@@ -3709,9 +3757,15 @@
           "name": "message",
           "required": true,
           "summary": "Diagnostic text."
+        },
+        {
+          "kind": "text",
+          "name": "code",
+          "required": false,
+          "summary": "Machine-readable refusal code such as query_queue_full or query_too_large; absent when the query reached validation."
         }
       ],
-      "summary": "Query failure. request_id echoes whatever the query carried, including null.",
+      "summary": "Query failure. request_id echoes whatever the query carried, including null. code is present only when the query was refused before validation.",
       "unknown_fields": "ignore"
     },
     "RequestContent": {
@@ -3928,6 +3982,18 @@
           "name": "coalesced_metadata_events",
           "required": false,
           "summary": "Replayable metadata events coalesced since the previous settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "rejected_queries",
+          "required": false,
+          "summary": "Cumulative query rejections for this IO client at settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "unreported_rejections",
+          "required": false,
+          "summary": "Rejection notices dropped by a full feedback mailbox at settlement."
         }
       ],
       "summary": "Settled invocation outcome. Omission counters appear only when nonzero and are not lifetime totals or delivery acknowledgements.",
@@ -4079,10 +4145,11 @@
           "summary": "Automatic-compaction counters and policy."
         },
         {
-          "kind": "texts",
+          "enumeration": "Capability",
+          "kind": "enumerations",
           "name": "capabilities",
           "required": true,
-          "summary": "Features this binary supports; check before querying an older worker."
+          "summary": "Feature names this binary may serve. A listed name is not a claim that the feature is enabled here; tolerate names you do not know."
         },
         {
           "kind": "record",

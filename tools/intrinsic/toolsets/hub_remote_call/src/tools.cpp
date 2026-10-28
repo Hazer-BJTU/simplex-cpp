@@ -1,5 +1,6 @@
 #include "tools/intrinsic/hub_remote_call/tools.hpp"
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
+#include "protocol/wire.hpp"
 #include "tools/invoke_exception.hpp"
 #include "tools/intrinsic/hub_remote_call/schemas.hpp"
 #include "tools/intrinsic/hub_remote_call/subagents.hpp"
@@ -129,15 +130,13 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     if (path == "/") path.clear();
     target.target = path + "/" + route + suffix;
     const auto request_id = boost::uuids::to_string(boost::uuids::random_generator()());
-    const Json envelope = {
-        {"type", "tool_request"},
-        {"data", {
-            {"worker_id", worker_id}, {"session_id", session_id},
-            {"run_id", run_id}, {"request_id", request_id},
-            {"arguments", query.arguments}
-        }}
-    };
-    const auto encoded_request = envelope.dump();
+    protocol::ToolRequestEnvelope envelope;
+    envelope.data.worker_id = worker_id;
+    envelope.data.session_id = session_id;
+    envelope.data.run_id = run_id;
+    envelope.data.request_id = request_id;
+    envelope.data.arguments = query.arguments;
+    const auto encoded_request = protocol::to_json(envelope).dump();
     if (encoded_request.size() > 1024 * 1024) {
         throw InvokeException(InvokeException::Stage::Invoke,
             "remote request exceeds the 1 MiB transport budget", query);
@@ -159,19 +158,22 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
             "hub remote call transport failed", query);
     }
     try {
-        const auto reply = Json::parse(wire);
-        const auto& data = reply.at("data");
-        if (reply.at("type") != "tool_response" || !data.is_object()
-            || data.at("worker_id") != worker_id || data.at("session_id") != session_id
-            || data.at("run_id") != run_id || data.at("request_id") != request_id
-            || data.at("route") != route
-            || !((data.at("status") == "succeeded" && data.at("result").is_object() && !data.contains("error"))
-                || (data.at("status") == "rejected" && !data.contains("result")
-                    && data.at("error").at("code").is_string()
-                    && data.at("error").at("message").is_string()))) {
+        const auto parsed = Json::parse(wire);
+        const auto reply = protocol::from_json<protocol::ToolResponseEnvelope>(parsed);
+        const auto& data = reply.data;
+        // Route arguments and results stay opaque; only the shared envelope and
+        // the success/rejection alternative are checked here.
+        const bool succeeded = data.status == protocol::ToolStatus::succeeded
+            && data.result && data.result->is_object() && !data.error;
+        const bool rejected = data.status == protocol::ToolStatus::rejected
+            && !data.result && data.error && !data.error->code.empty()
+            && !data.error->message.empty();
+        if (data.worker_id != worker_id || data.session_id != session_id
+            || data.run_id != run_id || data.request_id != request_id
+            || data.route != route || !(succeeded || rejected)) {
             throw std::invalid_argument("invalid response");
         }
-        co_return data;
+        co_return parsed.at("data");
     } catch (const std::exception&) {
         throw InvokeException(InvokeException::Stage::Invoke,
             "invalid or mismatched hub remote call response", query);
