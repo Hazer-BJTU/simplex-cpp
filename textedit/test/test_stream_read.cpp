@@ -3,6 +3,10 @@
 
 #include "textedit/read.hpp"
 
+// White-box case: the sink's retention invariant is not visible through the
+// result, because the rendered text is capped independently of it.
+#include "stream_read_sinks.hpp"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -360,6 +364,29 @@ BOOST_FIXTURE_TEST_CASE(large_dense_file_stays_bounded_with_final_counts, Scratc
     BOOST_TEST(hex.output_truncated);
     BOOST_TEST(hex.text.size() <= 4096u);
     BOOST_TEST(hex.text.starts_with("\\x0A\\x0A"));
+}
+
+BOOST_AUTO_TEST_CASE(indexed_rows_charge_empty_lines_to_the_display_budget)
+{
+    // An empty row has no content, so nothing used to reach the budget check:
+    // a file of nothing but newlines retained one separator and one terminator
+    // per row and grew without bound. The sink itself is the place to prove the
+    // invariant, because the result text is capped either way.
+    constexpr std::size_t kBudget = 4096;
+    textedit::detail::RowSelectionSink sink(0, all, kBudget);
+    constexpr std::size_t kRows = 100000;
+    for (std::size_t line = 0; line < kRows; ++line) {
+        sink.begin_row(line, line);
+        sink.terminator(line, "\n");
+    }
+    sink.finish(kRows);
+    BOOST_TEST(sink.clipped);
+    BOOST_TEST(sink.stored_content.size() <= kBudget);
+    BOOST_TEST(sink.stored == sink.stored_content.size());
+    // One terminator entry per stored row; bounded because a stored row always
+    // costs at least its separator.
+    BOOST_TEST(sink.terminators.size() <= kBudget);
+    BOOST_TEST(sink.terminators.size() < kRows);
 }
 
 BOOST_FIXTURE_TEST_CASE(reads_scan_the_source_exactly_once, Scratch)
