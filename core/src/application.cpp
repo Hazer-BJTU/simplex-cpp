@@ -9,6 +9,7 @@
 #include "core/compact.hpp"
 #include "logging/logger.hpp"
 #include "core/event_outbox.hpp"
+#include "core/wire.hpp"
 #include "load/plugins.hpp"
 #include "persistence/store.hpp"
 #include "loop/loop.hpp"
@@ -149,12 +150,116 @@ std::string run_status(loop::RunStatus status) {
     throw std::invalid_argument("invalid run status");
 }
 
-const char* failure_stage(loop::RunFailureStage stage) {
+// ---- Application-owned vocabularies ---------------------------------------
+// The protocol package publishes these spellings; these converters keep the
+// application from restating them at each emission site.
+
+protocol::RunStatus wire_status(loop::RunStatus status) {
+    switch (status) {
+        case loop::RunStatus::Completed: return protocol::RunStatus::completed;
+        case loop::RunStatus::Cancelled: return protocol::RunStatus::cancelled;
+        case loop::RunStatus::ExchangeLimit: return protocol::RunStatus::exchange_limit;
+        case loop::RunStatus::Failed: return protocol::RunStatus::failed;
+        case loop::RunStatus::AutoCompactRequired:
+            // auto_compact_required is an intermediate boundary: the host always
+            // resolves it before a terminal outcome is published.
+            throw std::logic_error("auto_compact_required is not a terminal outcome");
+    }
+    throw std::invalid_argument("invalid run status");
+}
+
+protocol::FailureStage wire_stage(loop::RunFailureStage stage) {
     switch (stage) {
-        case loop::RunFailureStage::Other: return "other";
-        case loop::RunFailureStage::ModelRequest: return "model_request";
+        case loop::RunFailureStage::Other: return protocol::FailureStage::other;
+        case loop::RunFailureStage::ModelRequest: return protocol::FailureStage::model_request;
     }
     throw std::invalid_argument("invalid run failure stage");
+}
+
+protocol::PersistBoundary wire_boundary(persistence::Boundary boundary) {
+    switch (boundary) {
+        case persistence::Boundary::BeforeTools: return protocol::PersistBoundary::before_tools;
+        case persistence::Boundary::ResultsReady: return protocol::PersistBoundary::results_ready;
+        case persistence::Boundary::StepFinished: return protocol::PersistBoundary::step_finished;
+        case persistence::Boundary::RunFinished: return protocol::PersistBoundary::run_finished;
+        case persistence::Boundary::Cancelled: return protocol::PersistBoundary::cancelled;
+        case persistence::Boundary::Shutdown: return protocol::PersistBoundary::shutdown;
+        case persistence::Boundary::Compaction: return protocol::PersistBoundary::compact;
+    }
+    throw std::invalid_argument("invalid persistence boundary");
+}
+
+protocol::StorageKind wire_backend(persistence::Backend backend) {
+    switch (backend) {
+        case persistence::Backend::Json: return protocol::StorageKind::json;
+        case persistence::Backend::Sqlite: return protocol::StorageKind::sqlite;
+    }
+    throw std::invalid_argument("invalid storage backend");
+}
+
+protocol::InputOperation wire_operation(InputOperation operation) {
+    switch (operation) {
+        case InputOperation::Message: return protocol::InputOperation::message;
+        case InputOperation::Continue: return protocol::InputOperation::continue_request;
+        case InputOperation::Compact: return protocol::InputOperation::compact;
+    }
+    throw std::invalid_argument("invalid input operation");
+}
+
+/** The input operation with this spelling, or nothing for any other request. */
+std::optional<protocol::InputOperation> input_operation(const std::string& name) {
+    if (name == "message") return protocol::InputOperation::message;
+    if (name == "continue") return protocol::InputOperation::continue_request;
+    if (name == "compact") return protocol::InputOperation::compact;
+    return std::nullopt;
+}
+
+protocol::LoopStatus wire_loop_status(model_io::LoopStatus status) {
+    switch (status) {
+        case model_io::LoopStatus::Idle: return protocol::LoopStatus::idle;
+        case model_io::LoopStatus::Running: return protocol::LoopStatus::running;
+        case model_io::LoopStatus::Completed: return protocol::LoopStatus::completed;
+        case model_io::LoopStatus::Cancelled: return protocol::LoopStatus::cancelled;
+        case model_io::LoopStatus::ExchangeLimit: return protocol::LoopStatus::exchange_limit;
+        case model_io::LoopStatus::Failed: return protocol::LoopStatus::failed;
+        case model_io::LoopStatus::AutoCompactRequired:
+            return protocol::LoopStatus::auto_compact_required;
+    }
+    throw std::invalid_argument("invalid loop status");
+}
+
+protocol::LoopPhase wire_loop_phase(model_io::LoopPhase phase) {
+    switch (phase) {
+        case model_io::LoopPhase::Ready: return protocol::LoopPhase::ready;
+        case model_io::LoopPhase::Model: return protocol::LoopPhase::model;
+        case model_io::LoopPhase::Tools: return protocol::LoopPhase::tools;
+        case model_io::LoopPhase::Projection: return protocol::LoopPhase::projection;
+        case model_io::LoopPhase::Blocked: return protocol::LoopPhase::blocked;
+    }
+    throw std::invalid_argument("invalid loop phase");
+}
+
+/** Provider descriptors are owned metadata; they must match the published shape. */
+std::vector<protocol::OptionChoice> choices(const Json& available) {
+    std::vector<protocol::OptionChoice> result;
+    if (!available.is_array()) return result;
+    result.reserve(available.size());
+    for (const auto& entry : available) {
+        result.push_back(protocol::from_json<protocol::OptionChoice>(entry));
+    }
+    return result;
+}
+
+/** Recovery state as the wire reports it; pending results stay open JSON. */
+protocol::LoopProgress loop_progress(const model_io::LoopProgress& loop) {
+    protocol::LoopProgress value;
+    value.status = wire_loop_status(loop.status);
+    value.phase = wire_loop_phase(loop.phase);
+    value.completed_exchanges = loop.completed_exchanges;
+    value.committed_response_sequence = loop.committed_response_sequence;
+    value.error = loop.error;
+    value.pending_results = Json(loop.pending_results);
+    return value;
 }
 }
 
@@ -288,31 +393,74 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         control_messages.close();
     }
 
+    /** Admission class of one event; a message type alone cannot decide this. */
+    EventOutbox::Kind classify(protocol::EventName name, const Json& data) const {
+        using protocol::EventName;
+        switch (name) {
+            case EventName::model_response:
+            case EventName::tool_calls:
+            case EventName::tool_results:
+                return EventOutbox::Kind::Preview;
+            case EventName::history:
+            case EventName::answer:
+            case EventName::history_error:
+            case EventName::answer_error:
+                return EventOutbox::Kind::Query;
+            case EventName::persisted:
+            case EventName::status:
+            case EventName::options:
+            case EventName::export_error:
+            case EventName::error:
+                // A terminal storage failure is a lifecycle boundary; every other
+                // error is a replayable diagnostic.
+                return storage_failed ? EventOutbox::Kind::Lifecycle : EventOutbox::Kind::Metadata;
+            case EventName::compact_finished:
+                // Automatic compaction is latest-value metadata; a manual result is
+                // a lifecycle event the transcript must retain.
+                return data.value("origin", std::string()) == "automatic"
+                    ? EventOutbox::Kind::Metadata : EventOutbox::Kind::Lifecycle;
+            case EventName::ready:
+            case EventName::input_admitted:
+            case EventName::run_started:
+            case EventName::input_committed:
+            case EventName::run_finished:
+                return EventOutbox::Kind::Lifecycle;
+            case EventName::input_rejected:
+                break;
+        }
+        return EventOutbox::Kind::Feedback;
+    }
+
+    /** A described record is serialized; open event data is used as it is. */
+    template <class Data>
+    static Json wire_data(Data data) {
+        if constexpr (protocol::DescribedRecord<Data>) {
+            return protocol::to_json(data);
+        } else {
+            return data;
+        }
+    }
+
+    /** Bounded projection events are trimmed by their producer, never here. */
+    static bool is_projected(protocol::EventName name) {
+        using protocol::EventName;
+        return name == EventName::model_response || name == EventName::tool_calls
+            || name == EventName::tool_results || name == EventName::history
+            || name == EventName::answer;
+    }
+
     /** Noncritical congestion is bounded and observable, never a run failure. */
-    void emit(std::string name, Json data,
-              const std::string& event_request, const std::string& event_run) {
-        if (name == "run_finished" || (name == "error" && storage_failed)) {
-            data["rejected_queries"] = client.rejected_queries();
-            data["unreported_rejections"] = client.unreported_rejections();
-        }
-        auto kind = EventOutbox::Kind::Feedback;
-        if (name == "model_response" || name == "tool_calls" || name == "tool_results") {
-            kind = EventOutbox::Kind::Preview;
-        } else if (name == "history" || name == "answer" || name == "history_error" || name == "answer_error") {
-            kind = EventOutbox::Kind::Query;
-        } else if (name == "persisted" || name == "status" || name == "options" || name == "export_error"
-                   || (name == "error" && !storage_failed)
-                   || (name == "compact_finished" && data.value("origin", std::string()) == "automatic")) {
-            kind = EventOutbox::Kind::Metadata;
-        } else if (name == "ready" || name == "input_admitted" || name == "run_started"
-                   || name == "input_committed" || name == "run_finished" || name == "compact_finished"
-                   || (name == "error" && storage_failed)) {
-            kind = EventOutbox::Kind::Lifecycle;
-        }
-        Json message = {{"type", "event"}, {"event", std::move(name)},
-            {"session_id", session_id}, {"worker_id", worker_id},
-            {"request_id", event_request}, {"run_id", event_run}, {"data", std::move(data)}};
-        const auto admission = outgoing.admit(std::move(message), kind, client.queued_write_bytes());
+    void publish(protocol::EventName name, Json data,
+                 const std::string& event_request, const std::string& event_run) {
+        const auto kind = classify(name, data);
+        protocol::EventEnvelope envelope;
+        envelope.event = name;
+        envelope.session_id = session_id;
+        envelope.worker_id = worker_id;
+        envelope.request_id = event_request;
+        envelope.run_id = event_run;
+        envelope.data = std::move(data);
+        const auto admission = outgoing.admit(std::move(envelope), kind, client.queued_write_bytes());
         if (admission == EventOutbox::Admission::Omitted && kind == EventOutbox::Kind::Lifecycle) {
             throw std::runtime_error("application lifecycle event admission failed");
         }
@@ -321,35 +469,60 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
+    /** One event with explicit correlation; data may be a record or open JSON. */
+    template <class Data>
+    void emit(protocol::EventName name, Data data,
+              const std::string& event_request, const std::string& event_run) {
+        publish(name, wire_data(std::move(data)), event_request, event_run);
+    }
+
     /** Ordinary events belong to the current run; rejected inputs never do. */
-    void emit(std::string name, Json data = Json::object()) {
-        if (name == "compact_finished") {
-            data = display_compact(std::move(data));
-        } else if (name != "model_response" && name != "tool_calls" && name != "tool_results"
-                   && name != "history" && name != "answer") {
-            data = display_value(data);
+    template <class Data>
+    void emit(protocol::EventName name, Data data) {
+        Json value = wire_data(std::move(data));
+        if (name == protocol::EventName::compact_finished) {
+            value = display_compact(std::move(value));
+        } else if (!is_projected(name)) {
+            value = display_value(value);
         }
-        emit(std::move(name), std::move(data), request_id, run_id);
+        publish(name, std::move(value), request_id, run_id);
+    }
+
+    /** One persistence receipt as the wire reports it. */
+    static protocol::PersistedData persisted(persistence::Boundary boundary,
+                                             const persistence::CommitReceipt& receipt) {
+        protocol::PersistedData value;
+        value.boundary = wire_boundary(boundary);
+        value.backend = wire_backend(receipt.backend);
+        if (receipt.revision) value.revision = *receipt.revision;
+        value.operation_id = receipt.operation_id;
+        return value;
     }
 
     /** Report a rejected request without borrowing the active run's identity. */
-    void reject_input(Json rejection) {
-        const auto& id = rejection.at("request_id");
-        const auto event_request = id.is_string() ? id.get<std::string>() : std::string();
-        emit("input_rejected", std::move(rejection), event_request, "");
+    void reject_input(protocol::InputRejectedData rejection) {
+        const auto event_request = rejection.request_id.is_string()
+            ? rejection.request_id.get<std::string>() : std::string();
+        emit(protocol::EventName::input_rejected, std::move(rejection), event_request, "");
     }
 
-    Json status() const {
-        Json value = {{"active", active}, {"stopping", stopping},
-            {"storage_failed", storage_failed}, {"rejected_payloads", client.rejected_payloads()},
-            {"rejected_queries", client.rejected_queries()},
-            {"unreported_rejections", client.unreported_rejections()},
-            {"event_queue", {{"count", outgoing.size()}, {"bytes", outgoing.bytes()},
-                             {"transport_bytes", client.queued_write_bytes()}}},
-            {"capabilities", Json::array({"session-history", "context-compact", "auto-compact", "answer-pages"})}};
-        value["memory_retention"] = {{"max_archives", config.memory_retention.max_archives}};
-        value["auto_compact"] = compact_counters();
-        if (state.loop) value["loop"] = *state.loop;
+    protocol::StatusData status() const {
+        protocol::StatusData value;
+        value.active = active;
+        value.stopping = stopping;
+        value.storage_failed = storage_failed;
+        value.rejected_payloads = client.rejected_payloads();
+        value.rejected_queries = client.rejected_queries();
+        value.unreported_rejections = client.unreported_rejections();
+        value.event_queue = protocol::EventQueue{outgoing.size(), outgoing.bytes(),
+                                                 client.queued_write_bytes()};
+        value.memory_retention = protocol::MemoryRetention{config.memory_retention.max_archives};
+        value.auto_compact = compact_counters();
+        value.capabilities = {protocol::Capability::session_history,
+                              protocol::Capability::context_compact,
+                              protocol::Capability::auto_compact,
+                              protocol::Capability::answer_pages};
+        if (state.loop) value.loop = loop_progress(*state.loop);
         return value;
     }
 
@@ -357,19 +530,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      * Read-only capability and current-selection snapshot. Empty reserved
      * categories do not imply that tools are disabled.
      */
-    Json options() const {
+    protocol::OptionsData options() const {
         const llm::LLMModel& provider = *driver_model;
-        return {
-            {"model", {
-                {"available", provider.get_options()},
-                {"current", provider.get_current_options()}
-            }},
-            {"tools", {{"available", Json::array()}, {"current", Json::object()}}},
-            {"confirmation", {
-                {"available", confirmation_options.get_options()},
-                {"current", confirmation_options.get_current_options()}
-            }}
-        };
+        protocol::OptionsData value;
+        value.model = protocol::OptionCategory{choices(provider.get_options()),
+                                               provider.get_current_options()};
+        value.tools = protocol::OptionCategory{{}, Json::object()};
+        value.confirmation = protocol::OptionCategory{
+            choices(confirmation_options.get_options()),
+            confirmation_options.get_current_options()};
+        return value;
     }
 
     /**
@@ -403,10 +573,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         if (boundary == persistence::Boundary::RunFinished
             || boundary == persistence::Boundary::Cancelled) run_saved = true;
-        emit("persisted", {{"boundary", persistence::boundary_name(boundary)},
-            {"backend", persistence::backend_name(receipt.backend)},
-            {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
-            {"operation_id", receipt.operation_id}});
+        emit(protocol::EventName::persisted, persisted(boundary, receipt));
     }
 
     /** Initialize resources before admission; restored history is never replayed. */
@@ -601,20 +768,20 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             const auto& message = state.turns.back().user_input;
             if (!message.extras || message.extras->value("simplex.internal_input", "")
                 != "auto_compact_continue") {
-                emit("input_committed");
+                emit(protocol::EventName::input_committed, protocol::EmptyData{});
             }
         }));
         subscriptions.emplace_back(events.subscribe<loop::ModelCommitted>([this](const auto& event) {
             ++history_revision;
             Json projected = project_response(event.state, event.state.turns.size() - 1,
                 event.state.turns.back().agent_loop_step.size() - 1, worker_id);
-            emit("model_response", std::move(projected));
+            emit(protocol::EventName::model_response, std::move(projected));
         }));
         subscriptions.emplace_back(events.subscribe<loop::BeforeToolBatch>([this](const auto& event) {
-            emit("tool_calls", display_calls(event.calls));
+            emit(protocol::EventName::tool_calls, display_calls(event.calls));
         }));
         subscriptions.emplace_back(events.subscribe<loop::ToolResultsCommitted>([this](const auto& event) {
-            emit("tool_results", display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
+            emit(protocol::EventName::tool_results, display_results(*event.state.turns.back().agent_loop_step.back().invoke_returns));
         }));
         // Metadata edits belong to writable transactions, never to the
         // read-only checkpoint observers. Recovery snapshots retain the last
@@ -662,27 +829,31 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             const bool answer = payload.value("operation", Json()) == "answer";
             try {
                 if (answer) {
-                    emit("answer", answer_page(state, payload, worker_id));
+                    emit(protocol::EventName::answer, answer_page(state, payload, worker_id));
                 } else {
                     auto request = parse_history_request(payload);
-                    emit("history", history_page(state, request, history_revision, worker_id));
+                    emit(protocol::EventName::history, history_page(state, request, history_revision, worker_id));
                 }
             } catch (const std::exception& error) {
-                emit(answer ? "answer_error" : "history_error", {
-                    {"request_id", payload.value("request_id", Json())}, {"message", error.what()}});
+                emit(answer ? protocol::EventName::answer_error : protocol::EventName::history_error,
+                    protocol::QueryErrorData{payload.value("request_id", Json()), error.what()});
             }
         }));
         subscriptions.emplace_back(events.subscribe<io::PayloadQueryRejectedEvent>([this](const auto& event) {
-            emit(event.operation == "answer" ? "answer_error" : "history_error", {
-                {"request_id", event.request_id}, {"code", event.code},
-                {"message", "Worker query quota exceeded; retry after the connection drains."}});
+            emit(event.operation == "answer" ? protocol::EventName::answer_error
+                                          : protocol::EventName::history_error,
+                protocol::QueryErrorData{event.request_id,
+                    "Worker query quota exceeded; retry after the connection drains."});
         }));
         subscriptions.emplace_back(events.subscribe<io::PayloadRejectedEvent>([this](const auto& event) {
             if (stopping || shutdown_requested.load()) return;
-            Json rejection = {{"request_id", event.request_id}, {"code", "payload_queue_full"},
-                {"message", "Worker input queue is full. Wait for current work to finish, then retry."}};
-            if (event.operation == "message" || event.operation == "continue" || event.operation == "compact") {
-                rejection["operation"] = event.operation;
+            protocol::InputRejectedData rejection;
+            rejection.request_id = event.request_id;
+            rejection.message = "Worker input queue is full. Wait for current work to finish, then retry.";
+            rejection.code = protocol::RejectionCode::payload_queue_full;
+            if (event.operation.is_string()) {
+                const std::string operation = event.operation;
+                rejection.operation = input_operation(operation);
             }
             reject_input(std::move(rejection));
         }));
@@ -696,21 +867,31 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 asio::redirect_error(asio::use_awaitable, error));
             if (error || stopping) co_return;
             try {
-                const auto operation = signal.at("operation").get<std::string>();
-                if (operation == "cancel") {
-                    if (signal.at("run_id").get<std::string>().empty()) {
-                        throw std::invalid_argument("cancel requires run_id");
-                    }
-                    emit("status", status());
-                } else if (operation == "status") {
-                    emit("status", status());
-                } else if (operation == "options") {
-                    emit("options", options());
-                } else {
-                    throw std::invalid_argument("unknown signal operation");
+                protocol::SignalRequest request;
+                try {
+                    request = protocol::from_json<protocol::SignalRequest>(signal);
+                } catch (const protocol::ValidationError& error) {
+                    throw std::invalid_argument(error.what());
+                }
+                switch (request.operation) {
+                    case protocol::SignalOperation::cancel:
+                        if (!request.run_id || request.run_id->empty()) {
+                            throw std::invalid_argument("cancel requires run_id");
+                        }
+                        emit(protocol::EventName::status, status());
+                        break;
+                    case protocol::SignalOperation::status:
+                        emit(protocol::EventName::status, status());
+                        break;
+                    case protocol::SignalOperation::options:
+                        emit(protocol::EventName::options, options());
+                        break;
+                    case protocol::SignalOperation::shutdown:
+                        // Shutdown is handled before the bounded control mailbox.
+                        throw std::invalid_argument("unknown signal operation");
                 }
             } catch (const std::exception& error) {
-                emit("error", {{"message", error.what()}});
+                emit(protocol::EventName::error, protocol::ErrorData{error.what()});
             }
         }
     }
@@ -825,10 +1006,12 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         } catch (const persistence::StoreError& error) {
             latch_optional_storage_failure(error);
             logging::Logger::warning("compact archive cleanup failed: {}", error.what());
-            emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
+            emit(protocol::EventName::export_error,
+                protocol::ExportErrorData{"archive_cleanup", error.what()});
         } catch (const std::exception& error) {
             logging::Logger::warning("compact archive cleanup failed: {}", error.what());
-            emit("export_error", {{"operation", "archive_cleanup"}, {"message", error.what()}});
+            emit(protocol::EventName::export_error,
+                protocol::ExportErrorData{"archive_cleanup", error.what()});
         }
     }
 
@@ -1029,17 +1212,18 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         const auto removed_turns = state.turns.size();
         // Allocate the success event before committing so construction failures
         // cannot be mistaken for an uncommitted operation.
-        Json completed = {{"summary", std::move(preview.summary)},
-            {"archive", {{"session_id", archive.session_id}, {"archive_id", archive.archive_id},
-                {"storage_kind", persistence::backend_name(archive.backend)},
-                {"restorable", archive.restorable()}}},
-            {"removed_turns", removed_turns}, {"revision", history_revision + 1},
-            {"durable", true}};
-        if (!archive.payload.empty()) completed["memory_file"] = archive.payload.string();
+        protocol::CompactFinishedData completed;
+        completed.summary = std::move(preview.summary);
+        completed.archive = protocol::ArchiveRef{archive.session_id, archive.archive_id,
+                                                 wire_backend(archive.backend), archive.restorable()};
+        completed.removed_turns = removed_turns;
+        completed.revision = history_revision + 1;
+        completed.durable = true;
+        if (!archive.payload.empty()) completed.memory_file = archive.payload.string();
         if (mode == CompactMode::Automatic) {
-            completed["origin"] = "automatic";
-            completed["cycle"] = compact_attempts;
-            completed["call_id"] = call_id;
+            completed.origin = "automatic";
+            completed.cycle = compact_attempts;
+            completed.call_id = call_id;
         }
         if (stop.stop_requested()) {
             result.status = loop::RunStatus::Cancelled;
@@ -1106,11 +1290,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         // A durable commit settles its own attempt, so success is never a second
         // fallible step. The archive itself stays immutable evidence.
-        emit("persisted", {
-            {"boundary", persistence::boundary_name(persistence::Boundary::Compaction)},
-            {"backend", persistence::backend_name(receipt.backend)},
-            {"revision", receipt.revision ? Json(*receipt.revision) : Json()},
-            {"operation_id", receipt.operation_id}});
+        emit(protocol::EventName::persisted,
+            persisted(persistence::Boundary::Compaction, receipt));
         // Retention sees the committed replacement. The outer coroutine handles
         // failed/cancelled attempts against the unchanged authoritative state.
         try {
@@ -1118,15 +1299,15 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 [&]() -> asio::awaitable<persistence::CleanupResult> {
                     co_return cleanup_archive(memory_directory, archive);
                 }, asio::use_awaitable);
-            completed["archive_cleanup"] = {{"removed_archives", cleaned.removed_archives},
-                {"removed_bytes", cleaned.removed_bytes}};
+            completed.archive_cleanup = protocol::ArchiveCleanup{
+                cleaned.removed_archives, cleaned.removed_bytes};
         } catch (const persistence::StoreError& error) {
             latch_optional_storage_failure(error);
-            completed["archive_cleanup_error"] = error.what();
+            completed.archive_cleanup_error = error.what();
         } catch (const std::exception& error) {
-            completed["archive_cleanup_error"] = error.what();
+            completed.archive_cleanup_error = error.what();
         }
-        emit("compact_finished", std::move(completed));
+        emit(protocol::EventName::compact_finished, std::move(completed));
         co_return result;
     }
 
@@ -1138,10 +1319,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         total += count;
     }
 
-    Json compact_counters() const {
-        return {{"attempts", compact_attempts}, {"succeeded", compact_successes},
-            {"limit", config.max_auto_compactions},
-            {"threshold", config.auto_compact_threshold}};
+    protocol::AutoCompact compact_counters() const {
+        return {compact_attempts, compact_successes, config.max_auto_compactions,
+                config.auto_compact_threshold};
     }
 
     /** Only settled host memory allows continuing an otherwise empty session. */
@@ -1267,7 +1447,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             query.security = model_io::InvokeSecurity::Trusted;
             query.arguments = std::move(trigger);
             query.extras = Json{{"origin", "worker"}, {"operation", "auto_compact"}};
-            emit("tool_calls", display_calls({query}));
+            emit(protocol::EventName::tool_calls, display_calls({query}));
             try {
                 result = co_await compact(CompactMode::Automatic, query.id);
             } catch (const std::exception& error) {
@@ -1290,7 +1470,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             returned.role = "tool";
             returned.content.push_back(record.output);
             returned.invoke_return = std::move(record);
-            emit("tool_results", display_results({returned}));
+            emit(protocol::EventName::tool_results, display_results({returned}));
             if (result.status != loop::RunStatus::Completed || storage_failed) {
                 finish_controller(result);
                 co_return result;
@@ -1326,7 +1506,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     /** Serialized payload admission and loop execution; never overlaps runs. */
     asio::awaitable<void> consume() {
         auto payloads = client.subscribe_payload();
-        emit("ready", status());
+        emit(protocol::EventName::ready, status());
         while (!stopping) {
             auto payload = co_await payloads.next();
             co_await wait_for_admission();
@@ -1369,22 +1549,19 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 }
                 confirmation_options = next_confirmation;
             } catch (const std::exception& error) {
-                Json rejection = {
-                    {"request_id", payload.is_object() ? payload.value("request_id", Json()) : Json()},
-                    {"message", error.what()}
-                };
+                protocol::InputRejectedData rejection;
+                rejection.request_id = payload.is_object()
+                    ? payload.value("request_id", Json()) : Json();
+                rejection.message = error.what();
                 // Keep the requested operation in the replayable event. Hub
                 // request records can expire before the transcript does.
                 if (payload.is_object() && payload.contains("operation")
                     && payload.at("operation").is_string()) {
-                    const auto operation = payload.at("operation").get<std::string>();
-                    if (operation == "message" || operation == "continue"
-                        || operation == "compact") {
-                        rejection["operation"] = operation;
-                    }
+                    rejection.operation =
+                        input_operation(payload.at("operation").get<std::string>());
                 }
                 if (applying_options || dynamic_cast<const InputOptionsError*>(&error)) {
-                    rejection["code"] = "invalid_options";
+                    rejection.code = protocol::RejectionCode::invalid_options;
                 }
                 reject_input(std::move(rejection));
                 continue;
@@ -1416,8 +1593,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             run_saved = false;
             task_exchanges = compact_exchanges = compact_attempts = compact_successes = 0;
             failure_operation = input->operation == InputOperation::Compact ? "compact" : "task";
-            emit("input_admitted", {{"operation", operation_name(input->operation)}});
-            emit("run_started");
+            emit(protocol::EventName::input_admitted,
+                protocol::InputAdmittedData{wire_operation(input->operation)});
+            emit(protocol::EventName::run_started, protocol::EmptyData{});
             loop::RunResult result;
             try {
                 if (input->operation == InputOperation::Compact) {
@@ -1457,31 +1635,37 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             if (storage_failed) {
                 // Preserve the last known recovery file; never overwrite failure evidence.
                 stopping = true;
-                Json diagnostic = {
-                    {"message", optional_storage_failure
-                        ? "archive storage outcome is uncertain; worker is stopping"
-                        : "required snapshot failed; worker is stopping"},
-                    {"durable", false},
-                    {"primary_outcome", {
-                        {"status", run_status(result.status)},
-                        {"error", result.error},
-                        {"operation", failure_operation}}}};
-                if (optional_storage_failure) diagnostic["storage_error"] = *optional_storage_failure;
-                emit("error", std::move(diagnostic));
+                protocol::ErrorData diagnostic;
+                diagnostic.message = optional_storage_failure
+                    ? "archive storage outcome is uncertain; worker is stopping"
+                    : "required snapshot failed; worker is stopping";
+                diagnostic.durable = false;
+                // An opaque record: the superseded outcome keeps its own shape.
+                diagnostic.primary_outcome = Json{{"status", run_status(result.status)},
+                    {"error", result.error}, {"operation", failure_operation}};
+                if (optional_storage_failure) diagnostic.storage_error = *optional_storage_failure;
+                diagnostic.rejected_queries = client.rejected_queries();
+                diagnostic.unreported_rejections = client.unreported_rejections();
+                emit(protocol::EventName::error, std::move(diagnostic));
             } else {
-                Json finished = {{"status", run_status(result.status)},
-                    {"error", result.error}, {"exchanges", result.completed_exchanges},
-                    {"durable", run_saved}, {"task_exchanges", task_exchanges},
-                    {"compact_exchanges", compact_exchanges}, {"auto_compact", compact_counters()}};
+                protocol::RunOutcomeData finished;
+                finished.status = wire_status(result.status);
+                finished.error = result.error;
+                finished.exchanges = result.completed_exchanges;
+                finished.task_exchanges = task_exchanges;
+                finished.compact_exchanges = compact_exchanges;
+                finished.auto_compact = compact_counters();
+                finished.durable = run_saved;
                 if (result.status == loop::RunStatus::Failed) {
-                    finished["failure"] = {
-                        {"stage", failure_stage(result.failure_stage)},
-                        {"operation", failure_operation},
-                        {"can_continue", can_continue_memory() || (!state.turns.empty() && state.loop
-                            && state.loop->phase == model_io::LoopPhase::Ready)}
-                    };
+                    finished.failure = protocol::FailureData{
+                        wire_stage(result.failure_stage), failure_operation,
+                        can_continue_memory() || (!state.turns.empty() && state.loop
+                            && state.loop->phase == model_io::LoopPhase::Ready)};
                 }
-                emit("run_finished", std::move(finished));
+                // The terminal settlement also reports what this client dropped.
+                finished.rejected_queries = client.rejected_queries();
+                finished.unreported_rejections = client.unreported_rejections();
+                emit(protocol::EventName::run_finished, std::move(finished));
             }
         }
     }

@@ -1,4 +1,20 @@
 #pragma once
+
+/**
+ * @file core/protocol.hpp
+ * @brief The worker boundary: admission types and the projections they publish.
+ *
+ * The wire shapes themselves live in `protocol/wire.hpp`; this header owns the
+ * application side of the boundary. `parse_input` and `parse_history_request`
+ * decode a request through the protocol codec and then apply the policy only the
+ * application can decide (admission window, resource limits, option categories).
+ * The projection functions keep their display budgets and structural byte
+ * accounting here, and build their output from the protocol records so a field
+ * can only be added in one place.
+ *
+ * Resource limits stay with their owner: they describe how much this worker
+ * sends, not what a conforming worker must accept.
+ */
 #include <cstddef>
 #include <cstdint>
 #include <string>

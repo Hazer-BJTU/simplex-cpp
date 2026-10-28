@@ -257,11 +257,11 @@ BOOST_AUTO_TEST_CASE(invalid_content_is_rejected_without_mutating_the_input) {
     for (const auto* field : {"type", "raw", "modality"}) {
         auto part = text_part();
         part.erase(field);
-        BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), Json::exception);
+        BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), std::invalid_argument);
         for (const auto& value : {Json(nullptr), Json(1), Json::object()}) {
             part = text_part();
             part[field] = value;
-            BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), Json::exception);
+            BOOST_CHECK_THROW(core::parse_input(payload(Json::array({part}))), std::invalid_argument);
         }
         part = text_part();
         part[field] = "";

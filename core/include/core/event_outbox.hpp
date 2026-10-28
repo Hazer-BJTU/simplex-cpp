@@ -7,6 +7,7 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "core/protocol.hpp"
+#include "protocol/wire.hpp"
 #include "intercom/message_limits.hpp"
 
 namespace core {
@@ -63,25 +64,29 @@ public:
     /** Commit sequence, bytes and omission settlement only on successful admission.
      * Failed or closed admission leaves the ledger intact. The caller supplies
      * transport reservations, including its active write, for the shared bound.
+     * The envelope arrives typed; this ledger owns the sequence number and the
+     * settlement counters, which are admission facts rather than message fields.
      */
-    Admission admit(nlohmann::json message, Kind kind, std::size_t transport_bytes = 0) {
-        const bool settlement = message.at("event") == "run_finished"
-            || (message.at("event") == "error" && message["data"].value("durable", true) == false);
+    Admission admit(protocol::EventEnvelope envelope, Kind kind, std::size_t transport_bytes = 0) {
+        const bool settlement = envelope.event == protocol::EventName::run_finished
+            || (envelope.event == protocol::EventName::error
+                && envelope.data.value("durable", true) == false);
         if (settlement) {
             if (omitted_display_) {
-                message["data"]["omitted_display_events"] = omitted_display_;
+                envelope.data["omitted_display_events"] = omitted_display_;
             }
             if (omitted_queries_) {
-                message["data"]["omitted_query_events"] = omitted_queries_;
+                envelope.data["omitted_query_events"] = omitted_queries_;
             }
             if (coalesced_metadata_) {
-                message["data"]["coalesced_metadata_events"] = coalesced_metadata_;
+                envelope.data["coalesced_metadata_events"] = coalesced_metadata_;
             }
             if (omitted_feedback_) {
-                message["data"]["omitted_feedback_events"] = omitted_feedback_;
+                envelope.data["omitted_feedback_events"] = omitted_feedback_;
             }
         }
-        message["sequence"] = sequence_ + 1;
+        envelope.sequence = sequence_ + 1;
+        nlohmann::json message = protocol::to_json(envelope);
         auto bytes = message.dump().size();
         if (bytes > display_event_max_bytes) {
             throw std::length_error("display event exceeds the transport budget");
