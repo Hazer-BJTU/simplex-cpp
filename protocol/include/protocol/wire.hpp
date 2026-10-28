@@ -398,7 +398,8 @@ struct AnswerSource {
             text("commit_sequence", &AnswerSource::commit_sequence,
                  "Nonzero commit sequence as a decimal string, never a JSON number."),
             text("fingerprint", &AnswerSource::fingerprint,
-                 "SHA-256 over the ordered canonical answer parts of this response."),
+                 "SHA-256 over the ordered canonical answer parts of this response.")
+                .min_length(1),
         };
     }
 };
@@ -431,6 +432,7 @@ struct Call {
     Json arguments = Json::object();
     CallScheduling type = CallScheduling::read_only;
     CallSecurity security = CallSecurity::trusted;
+    std::optional<Json> extras;
 
     friend constexpr std::string_view wire_name(const Call&) { return "Call"; }
     friend constexpr std::string_view wire_summary(const Call&) {
@@ -445,6 +447,8 @@ struct Call {
                                         "Scheduling classification; parall_write is the exact spelling."),
             enumeration<CallSecurity>("security", &Call::security,
                                       "Security classification decided before dispatch."),
+            opaque("extras", &Call::extras,
+                   "Bounded annotations (status, loop_skipped, error preview) copied before arguments."),
         };
     }
 };
@@ -469,41 +473,110 @@ struct Result {
     }
 };
 
-/** One conversation record: user input, response, or tool-return message. */
-struct Message {
+/** One request content part: stricter than a display part. */
+struct RequestContent {
+    ContentType type = ContentType::text;
+    Modality modality = Modality::text;
+    std::string raw;
+    std::optional<Json> extras;
+
+    friend constexpr std::string_view wire_name(const RequestContent&) { return "RequestContent"; }
+    friend constexpr std::string_view wire_summary(const RequestContent&) {
+        return "One admitted user part. raw must be nonempty and extras, when present, an object.";
+    }
+    friend auto wire_fields(const RequestContent&) {
+        return std::tuple{
+            enumeration<ContentType>("type", &RequestContent::type,
+                                     "Encoding of raw; an unknown label is rejected, never inferred."),
+            enumeration<Modality>("modality", &RequestContent::modality,
+                                  "Media category, required and never inferred from type."),
+            text("raw", &RequestContent::raw, "The part body; empty text is rejected.").min_length(1),
+            opaque("extras", &RequestContent::extras,
+                   "Optional metadata object; an array or scalar is rejected.").object_only(),
+        };
+    }
+};
+
+/**
+ * One bounded model-response projection, exactly as `core::project_response()`
+ * builds it: the preview fields plus the committed-response cursor.
+ */
+struct ResponseProjection {
+    std::uint64_t index = 0;
     MessageType type = MessageType::model_response;
     std::string role;
     std::vector<Content> content;
+    std::uint64_t tool_calls = 0;
+    std::uint64_t omitted_parts = 0;
     std::optional<Content> reasoning;
-    std::optional<Content> action_status;
-    std::optional<std::vector<Call>> invokes;
+    std::optional<std::string> commit_sequence;
+    std::optional<AnswerSource> answer_source;
     std::optional<Usage> cost;
+    /** Array of Call, optionally ending in an OmissionMarker. */
+    std::optional<Json> invokes;
+
+    friend constexpr std::string_view wire_name(const ResponseProjection&) {
+        return "ResponseProjection";
+    }
+    friend constexpr std::string_view wire_summary(const ResponseProjection&) {
+        return "A committed response as displayed: bounded content with its cursor fields. "
+               "Exact text is read through answer pages.";
+    }
+    friend auto wire_fields(const ResponseProjection&) {
+        return std::tuple{
+            integer("index", &ResponseProjection::index, "Zero-based step index within its turn."),
+            enumeration<MessageType>("type", &ResponseProjection::type,
+                                     "Conversation record kind; model_response for committed responses."),
+            text("role", &ResponseProjection::role, "Conversation role of the response."),
+            records<Content>("content", &ResponseProjection::content,
+                             "Ordered answer preview; parts beyond the budget are counted."),
+            integer("tool_calls", &ResponseProjection::tool_calls,
+                    "Number of proposed calls, whether or not they are displayed."),
+            integer("omitted_parts", &ResponseProjection::omitted_parts,
+                    "Response parts outside this preview."),
+            record<Content>("reasoning", &ResponseProjection::reasoning,
+                            "Bounded reasoning preview, never part of exact answers."),
+            text("commit_sequence", &ResponseProjection::commit_sequence,
+                 "Nonzero commit sequence as a decimal string; omitted when uncommitted."),
+            record<AnswerSource>("answer_source", &ResponseProjection::answer_source,
+                                 "Exact-answer locator for this committed response."),
+            record<Usage>("cost", &ResponseProjection::cost,
+                          "Provider-reported usage; absence means unavailable, not zero."),
+            opaque("invokes", &ResponseProjection::invokes,
+                   "Array of Call, optionally ending in an omission marker; see parse_batch().")
+                .non_empty(),
+        };
+    }
+};
+
+/** One projected tool-result message, as `core::display_results()` builds it. */
+struct ToolResultMessage {
+    MessageType type = MessageType::invoke_return;
+    std::string role;
+    std::vector<Content> content;
+    std::optional<std::uint64_t> omitted_parts;
     std::optional<Result> invoke_return;
     std::optional<Json> extras;
-    std::optional<std::uint64_t> omitted_parts;
 
-    friend constexpr std::string_view wire_name(const Message&) { return "Message"; }
-    friend constexpr std::string_view wire_summary(const Message&) {
-        return "One conversation record as it appears in events and history; display projections "
-               "may omit native extras and mark shortened parts.";
+    friend constexpr std::string_view wire_name(const ToolResultMessage&) {
+        return "ToolResultMessage";
     }
-    friend auto wire_fields(const Message&) {
+    friend constexpr std::string_view wire_summary(const ToolResultMessage&) {
+        return "One returned batch entry: the message projection carrying its invoke_return provenance.";
+    }
+    friend auto wire_fields(const ToolResultMessage&) {
         return std::tuple{
-            enumeration<MessageType>("type", &Message::type, "Kind of conversation record."),
-            text("role", &Message::role, "Conversation role, normally assistant for responses."),
-            records<Content>("content", &Message::content, "Ordered content parts."),
-            record<Content>("reasoning", &Message::reasoning,
-                            "Bounded reasoning preview; never part of exact answers."),
-            record<Content>("action_status", &Message::action_status,
-                            "Provider-supplied action-status content."),
-            records<Call>("invokes", &Message::invokes, "Tool calls proposed by this response."),
-            record<Usage>("cost", &Message::cost,
-                          "Provider-reported usage; absence means unavailable, not zero."),
-            record<Result>("invoke_return", &Message::invoke_return,
-                           "Provenance of a tool-result message."),
-            opaque("extras", &Message::extras, "Provider metadata; never a command."),
-            integer("omitted_parts", &Message::omitted_parts,
-                    "Display marker: response parts outside this preview."),
+            enumeration<MessageType>("type", &ToolResultMessage::type,
+                                     "invoke_return for a tool result."),
+            text("role", &ToolResultMessage::role, "Conversation role, normally tool."),
+            records<Content>("content", &ToolResultMessage::content,
+                             "Bounded tool output; at most four parts are projected."),
+            integer("omitted_parts", &ToolResultMessage::omitted_parts,
+                    "Output parts outside this projection."),
+            record<Result>("invoke_return", &ToolResultMessage::invoke_return,
+                           "The call this result answers plus its bounded output."),
+            opaque("extras", &ToolResultMessage::extras,
+                   "Bounded message annotations; error stage/message are projected separately."),
         };
     }
 };
@@ -544,12 +617,15 @@ struct Options {
     friend auto wire_fields(const Options&) {
         return std::tuple{
             opaque("model", &Options::model,
-                   "Provider-defined keys and values; the adapter validates what it supports."),
-            opaque("tools", &Options::tools, "Reserved category; it must be an empty object."),
+                   "Provider-defined keys and values; the adapter validates what it supports.")
+                .object_only(),
+            opaque("tools", &Options::tools, "Reserved category; it must be an empty object.")
+                .object_only().empty_object(),
             record<ConfirmationOptions>("confirmation", &Options::confirmation,
                                         "Confirmation policy for this and later runs."),
         };
     }
+    friend UnknownFields wire_unknown_fields(const Options&) { return UnknownFields::reject; }
 };
 
 /** One advertised choice list within a category. */
@@ -747,7 +823,7 @@ struct StatusData {
 struct PayloadRequest {
     InputOperation operation = InputOperation::message;
     std::string request_id;
-    std::optional<std::vector<Content>> content;
+    std::optional<std::vector<RequestContent>> content;
     std::optional<Options> options;
     std::optional<std::uint64_t> start;
     std::optional<std::uint64_t> step;
@@ -766,21 +842,29 @@ struct PayloadRequest {
             enumeration<InputOperation>("operation", &PayloadRequest::operation,
                                         "Selects the request family and its required fields."),
             text("request_id", &PayloadRequest::request_id,
-                 "Client-chosen correlation identity; nonempty and at most 128 UTF-8 bytes."),
-            records<Content>("content", &PayloadRequest::content,
-                             "Ordered user parts; required and nonempty for message only."),
+                 "Client-chosen correlation identity; 1 to 128 UTF-8 bytes.")
+                .min_length(1).max_length(128),
+            records<RequestContent>("content", &PayloadRequest::content,
+                                    "Ordered user parts; required for message and refused elsewhere.")
+                .non_empty(),
             record<Options>("options", &PayloadRequest::options,
-                            "Applied at the next run boundary; accepted for message, continue and compact."),
-            integer("start", &PayloadRequest::start, "History turn cursor; defaults to 0."),
-            integer("step", &PayloadRequest::step, "First step within the history turn; defaults to 0."),
-            integer("limit", &PayloadRequest::limit, "History turn count, 1 to 10; defaults to 10."),
+                            "Applied at the next run boundary; refused for history and answer."),
+            integer("start", &PayloadRequest::start, "History turn cursor.").default_value("0"),
+            integer("step", &PayloadRequest::step, "First step within the history turn.")
+                .default_value("0"),
+            integer("limit", &PayloadRequest::limit,
+                    "History turn count; 1 to 10, applied to the history operation only.")
+                .minimum(1).maximum(10).default_value("10"),
             record<AnswerSource>("source", &PayloadRequest::source,
                                  "Exact-answer locator; required for answer only."),
-            integer("part", &PayloadRequest::part, "Answer part index; required for answer only."),
-            integer("offset", &PayloadRequest::offset, "Byte offset within the answer part."),
+            integer("part", &PayloadRequest::part, "Answer part index, defaulted to 0.")
+                .default_value("0"),
+            integer("offset", &PayloadRequest::offset, "Byte offset within the part, defaulted to 0.")
+                .default_value("0"),
         };
     }
-    friend void wire_validate(const PayloadRequest& request);
+    friend std::span<const Rule> wire_rules(const PayloadRequest&);
+    friend std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&);
 };
 
 /** One control signal. Signals have no request ID of their own. */
@@ -800,7 +884,7 @@ struct SignalRequest {
                  "Required for cancel and rejected otherwise; a stale ID changes nothing."),
         };
     }
-    friend void wire_validate(const SignalRequest& request);
+    friend std::span<const Rule> wire_rules(const SignalRequest&);
 };
 
 // ---- Confirmation -----------------------------------------------------------
@@ -935,6 +1019,92 @@ struct ToolResponse {
         };
     }
     friend void wire_validate(const ToolResponse& response);
+};
+
+/** Arguments of `plan/read`. */
+struct PlanReadArguments {
+    std::string operation = "read";
+
+    friend constexpr std::string_view wire_name(const PlanReadArguments&) {
+        return "PlanReadArguments";
+    }
+    friend constexpr std::string_view wire_summary(const PlanReadArguments&) {
+        return "Arguments of plan/read: the operation is the literal read.";
+    }
+    friend auto wire_fields(const PlanReadArguments&) {
+        return std::tuple{
+            text("operation", &PlanReadArguments::operation, "Literal read.")
+                .constant("read"),
+        };
+    }
+};
+
+/** Arguments of `plan/replace`. */
+struct PlanReplaceArguments {
+    std::string operation = "replace";
+    std::string markdown;
+
+    friend constexpr std::string_view wire_name(const PlanReplaceArguments&) {
+        return "PlanReplaceArguments";
+    }
+    friend constexpr std::string_view wire_summary(const PlanReplaceArguments&) {
+        return "Arguments of plan/replace: replace plus at most 64 KiB of markdown.";
+    }
+    friend auto wire_fields(const PlanReplaceArguments&) {
+        return std::tuple{
+            text("operation", &PlanReplaceArguments::operation, "Literal replace.")
+                .constant("replace"),
+            text("markdown", &PlanReplaceArguments::markdown,
+                 "Plan text; empty or whitespace-only clears the plan.")
+                .max_length(64 * 1024),
+        };
+    }
+};
+
+/** Result of `plan/read`. */
+struct PlanReadResult {
+    std::string markdown;
+    std::uint64_t revision = 0;
+    Json updated_at = nullptr;
+
+    friend constexpr std::string_view wire_name(const PlanReadResult&) { return "PlanReadResult"; }
+    friend constexpr std::string_view wire_summary(const PlanReadResult&) {
+        return "Current plan text, its revision and timestamp; the initial plan is revision 0 with null time.";
+    }
+    friend auto wire_fields(const PlanReadResult&) {
+        return std::tuple{
+            text("markdown", &PlanReadResult::markdown, "Current plan text."),
+            integer("revision", &PlanReadResult::revision,
+                    "Revision incremented by each changed replacement."),
+            opaque("updated_at", &PlanReadResult::updated_at,
+                   "ISO-8601 timestamp of the last change, or null for the initial plan.")
+                .required().nullable_value(),
+        };
+    }
+};
+
+/** Result of `plan/replace`. */
+struct PlanReplaceResult {
+    std::uint64_t revision = 0;
+    Json updated_at = nullptr;
+    bool changed = false;
+
+    friend constexpr std::string_view wire_name(const PlanReplaceResult&) {
+        return "PlanReplaceResult";
+    }
+    friend constexpr std::string_view wire_summary(const PlanReplaceResult&) {
+        return "Outcome of a replacement: unchanged content does not increment the revision.";
+    }
+    friend auto wire_fields(const PlanReplaceResult&) {
+        return std::tuple{
+            integer("revision", &PlanReplaceResult::revision, "Revision after the attempt."),
+            opaque("updated_at", &PlanReplaceResult::updated_at,
+                   "ISO-8601 timestamp of the change, or null while the plan is empty.")
+                .required().nullable_value(),
+            boolean("changed", &PlanReplaceResult::changed,
+                    "True when the stored plan changed."),
+        };
+    }
 };
 
 // ---- History and answer pages ----------------------------------------------
@@ -1179,14 +1349,40 @@ struct ArchiveCleanup {
     }
 };
 
+/** Oversized or unavailable summary, reported instead of a truncated prefix. */
+struct OmissionSummary {
+    bool display_omitted = true;
+    std::uint64_t bytes = 0;
+    std::string reason;
+
+    friend constexpr std::string_view wire_name(const OmissionSummary&) {
+        return "OmissionSummary";
+    }
+    friend constexpr std::string_view wire_summary(const OmissionSummary&) {
+        return "An explicit omission instead of an apparently complete summary prefix.";
+    }
+    friend auto wire_fields(const OmissionSummary&) {
+        return std::tuple{
+            boolean("display_omitted", &OmissionSummary::display_omitted,
+                    "Always true when present."),
+            integer("bytes", &OmissionSummary::bytes, "Original UTF-8 byte length of the summary."),
+            text("reason", &OmissionSummary::reason, "Why the summary is not shown here."),
+        };
+    }
+};
+
 /** Data of `compact_finished`. */
 struct CompactFinishedData {
-    std::string summary;
+    /** The summary string, or an OmissionSummary object for an oversized one. */
+    Json summary = std::string();
     std::optional<std::string> memory_file;
     std::optional<ArchiveRef> archive;
     std::uint64_t removed_turns = 0;
     std::uint64_t revision = 0;
     bool durable = true;
+    std::optional<std::string> origin;
+    std::optional<std::uint64_t> cycle;
+    std::optional<std::string> call_id;
     std::optional<ArchiveCleanup> archive_cleanup;
     std::optional<std::string> archive_cleanup_error;
 
@@ -1198,12 +1394,20 @@ struct CompactFinishedData {
     }
     friend auto wire_fields(const CompactFinishedData&) {
         return std::tuple{
-            text("summary", &CompactFinishedData::summary, "The published summary, bounded by its budget."),
+            opaque("summary", &CompactFinishedData::summary,
+                   "The published summary: a string, or an omission object when it exceeds "
+                   "the 32 KiB budget."),
             text("memory_file", &CompactFinishedData::memory_file, "Memory file written, when any."),
             record<ArchiveRef>("archive", &CompactFinishedData::archive, "Archive the summary came from."),
             integer("removed_turns", &CompactFinishedData::removed_turns, "Turns replaced by the summary."),
             integer("revision", &CompactFinishedData::revision, "Display revision after compaction."),
             boolean("durable", &CompactFinishedData::durable, "Whether the replacement was published."),
+            text("origin", &CompactFinishedData::origin,
+                 "automatic for an automatic compaction; absent for a manual one."),
+            integer("cycle", &CompactFinishedData::cycle,
+                    "Automatic attempt number that produced this summary."),
+            text("call_id", &CompactFinishedData::call_id,
+                 "Call that triggered the automatic compaction."),
             record<ArchiveCleanup>("archive_cleanup", &CompactFinishedData::archive_cleanup,
                                    "Cleanup counters on success."),
             text("archive_cleanup_error", &CompactFinishedData::archive_cleanup_error,
@@ -1228,7 +1432,9 @@ struct PersistedData {
             enumeration<PersistBoundary>("boundary", &PersistedData::boundary, "Checkpoint that completed."),
             enumeration<StorageKind>("backend", &PersistedData::backend, "Backend that wrote it."),
             integer("revision", &PersistedData::revision,
-                    "Backend revision; null when the backend does not expose one.", true),
+                    "Backend revision; the key is always present and null when the backend "
+                    "does not expose one.", true)
+                .required(),
             text("operation_id", &PersistedData::operation_id, "Write operation identity."),
         };
     }
@@ -1378,7 +1584,7 @@ struct EventEnvelope {
     }
     friend auto wire_fields(const EventEnvelope&) {
         return std::tuple{
-            enumeration<EnvelopeType>("type", &EventEnvelope::type, "Always \"event\"."),
+            enumeration<EnvelopeType>("type", &EventEnvelope::type, "Always \"event\".").constant("event"),
             enumeration<EventName>("event", &EventEnvelope::event, "Event name."),
             text("session_id", &EventEnvelope::session_id, "Worker session."),
             text("worker_id", &EventEnvelope::worker_id, "Worker incarnation that emitted it."),
@@ -1403,7 +1609,7 @@ struct PayloadEnvelope {
     }
     friend auto wire_fields(const PayloadEnvelope&) {
         return std::tuple{
-            enumeration<EnvelopeType>("type", &PayloadEnvelope::type, "Always \"payload\"."),
+            enumeration<EnvelopeType>("type", &PayloadEnvelope::type, "Always \"payload\".").constant("payload"),
             record<PayloadRequest>("data", &PayloadEnvelope::data, "The request."),
         };
     }
@@ -1420,7 +1626,7 @@ struct SignalEnvelope {
     }
     friend auto wire_fields(const SignalEnvelope&) {
         return std::tuple{
-            enumeration<EnvelopeType>("type", &SignalEnvelope::type, "Always \"signal\"."),
+            enumeration<EnvelopeType>("type", &SignalEnvelope::type, "Always \"signal\".").constant("signal"),
             record<SignalRequest>("data", &SignalEnvelope::data, "The signal."),
         };
     }
@@ -1440,7 +1646,7 @@ struct ConfirmationRequestEnvelope {
     friend auto wire_fields(const ConfirmationRequestEnvelope&) {
         return std::tuple{
             enumeration<EnvelopeType>("type", &ConfirmationRequestEnvelope::type,
-                                      "Always \"confirmation_request\"."),
+                                      "Always \"confirmation_request\".").constant("confirmation_request"),
             record<ConfirmationRequest>("data", &ConfirmationRequestEnvelope::data, "The request."),
         };
     }
@@ -1459,7 +1665,7 @@ struct ConfirmationResponseEnvelope {
     friend auto wire_fields(const ConfirmationResponseEnvelope&) {
         return std::tuple{
             enumeration<EnvelopeType>("type", &ConfirmationResponseEnvelope::type,
-                                      "Always \"confirmation_response\"."),
+                                      "Always \"confirmation_response\".").constant("confirmation_response"),
             record<ConfirmationResponse>("data", &ConfirmationResponseEnvelope::data, "The decision."),
         };
     }
@@ -1478,7 +1684,7 @@ struct ToolRequestEnvelope {
     friend auto wire_fields(const ToolRequestEnvelope&) {
         return std::tuple{
             enumeration<EnvelopeType>("type", &ToolRequestEnvelope::type,
-                                      "Always \"tool_request\"."),
+                                      "Always \"tool_request\".").constant("tool_request"),
             record<ToolRequest>("data", &ToolRequestEnvelope::data, "The request."),
         };
     }
@@ -1497,11 +1703,55 @@ struct ToolResponseEnvelope {
     friend auto wire_fields(const ToolResponseEnvelope&) {
         return std::tuple{
             enumeration<EnvelopeType>("type", &ToolResponseEnvelope::type,
-                                      "Always \"tool_response\"."),
+                                      "Always \"tool_response\".").constant("tool_response"),
             record<ToolResponse>("data", &ToolResponseEnvelope::data, "The response."),
         };
     }
 };
+
+/** A projected batch: entries plus the optional trailing omission count. */
+template <class R>
+struct Batch {
+    std::vector<R> items;
+    std::optional<OmissionMarker> omitted;
+};
+
+/**
+ * Parse a batch array. The trailing omission marker is the only non-entry
+ * element the producers emit, and only in the final position.
+ */
+template <class R>
+Batch<R> parse_batch(const Json& value, const std::string& path = "data") {
+    if (!value.is_array()) {
+        throw ValidationError(path, "expected an array");
+    }
+    Batch<R> batch;
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const auto& entry = value.at(index);
+        const std::string here = path + "[" + std::to_string(index) + "]";
+        if (entry.is_object() && entry.contains("display_omitted")) {
+            if (index + 1 != value.size()) {
+                throw ValidationError(here, "an omission marker must be the final element");
+            }
+            batch.omitted = protocol::from_json<OmissionMarker>(entry, here);
+            continue;
+        }
+        batch.items.push_back(protocol::from_json<R>(entry, here));
+    }
+    return batch;
+}
+
+/** One published built-in remote-tool route. */
+struct RouteSpec {
+    std::string_view route;
+    /** Arguments record, or nullptr when the route is owned by the Hub contract. */
+    const RecordDescriptor* arguments;
+    /** Result record, or nullptr when the route is owned by the Hub contract. */
+    const RecordDescriptor* result;
+    std::string_view summary;
+};
+
+std::span<const RouteSpec> route_registry();
 
 // ---- Cross-record rules -----------------------------------------------------
 

@@ -226,7 +226,7 @@
     },
     "model_response": {
       "array": false,
-      "data": "Message",
+      "data": "ResponseProjection",
       "name": "model_response"
     },
     "options": {
@@ -266,7 +266,7 @@
     },
     "tool_results": {
       "array": true,
-      "data": "Result",
+      "data": "ToolResultMessage",
       "name": "tool_results"
     }
   },
@@ -277,7 +277,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "c0585693d2b3ca9f39698296c8bfdba1891196c0793dff167b78838ce070881e",
+  "fingerprint": "fefaddc1fbb517e5bc850e64e8c708fa1dcbffcaf0aa9ed2f44b0e61fe16f1f9",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -355,6 +355,7 @@
             "type": "string"
           },
           "fingerprint": {
+            "minLength": 1,
             "type": "string"
           },
           "step": {
@@ -456,6 +457,7 @@
         "description": "A proposed tool call. Arguments are tool-owned; the classifications are not.",
         "properties": {
           "arguments": {},
+          "extras": {},
           "id": {
             "type": "string"
           },
@@ -507,10 +509,20 @@
           "archive_cleanup_error": {
             "type": "string"
           },
+          "call_id": {
+            "type": "string"
+          },
+          "cycle": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "durable": {
             "type": "boolean"
           },
           "memory_file": {
+            "type": "string"
+          },
+          "origin": {
             "type": "string"
           },
           "removed_turns": {
@@ -521,9 +533,7 @@
             "minimum": 0,
             "type": "integer"
           },
-          "summary": {
-            "type": "string"
-          }
+          "summary": {}
         },
         "required": [
           "summary",
@@ -595,7 +605,8 @@
             "$ref": "#/$defs/ConfirmationRequest"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "confirmation_request"
           }
         },
         "required": [
@@ -644,7 +655,8 @@
             "$ref": "#/$defs/ConfirmationResponse"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "confirmation_response"
           }
         },
         "required": [
@@ -753,7 +765,8 @@
             "type": "string"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "event"
           },
           "worker_id": {
             "type": "string"
@@ -1134,53 +1147,6 @@
         ],
         "type": "object"
       },
-      "Message": {
-        "additionalProperties": true,
-        "description": "One conversation record as it appears in events and history; display projections may omit native extras and mark shortened parts.",
-        "properties": {
-          "action_status": {
-            "$ref": "#/$defs/Content"
-          },
-          "content": {
-            "items": {
-              "$ref": "#/$defs/Content"
-            },
-            "type": "array"
-          },
-          "cost": {
-            "$ref": "#/$defs/Usage"
-          },
-          "extras": {},
-          "invoke_return": {
-            "$ref": "#/$defs/Result"
-          },
-          "invokes": {
-            "items": {
-              "$ref": "#/$defs/Call"
-            },
-            "type": "array"
-          },
-          "omitted_parts": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "reasoning": {
-            "$ref": "#/$defs/Content"
-          },
-          "role": {
-            "type": "string"
-          },
-          "type": {
-            "$ref": "#/$defs/MessageType"
-          }
-        },
-        "required": [
-          "type",
-          "role",
-          "content"
-        ],
-        "type": "object"
-      },
       "MessageType": {
         "enum": [
           "user_input",
@@ -1214,6 +1180,28 @@
         "required": [
           "display_omitted",
           "omitted_items"
+        ],
+        "type": "object"
+      },
+      "OmissionSummary": {
+        "additionalProperties": true,
+        "description": "An explicit omission instead of an apparently complete summary prefix.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "display_omitted": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_omitted",
+          "bytes",
+          "reason"
         ],
         "type": "object"
       },
@@ -1262,8 +1250,13 @@
           "confirmation": {
             "$ref": "#/$defs/ConfirmationOptions"
           },
-          "model": {},
-          "tools": {}
+          "model": {
+            "additionalProperties": true
+          },
+          "tools": {
+            "additionalProperties": false,
+            "maxProperties": 0
+          }
         },
         "type": "object"
       },
@@ -1291,7 +1284,8 @@
             "$ref": "#/$defs/PayloadRequest"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "payload"
           }
         },
         "required": [
@@ -1306,12 +1300,14 @@
         "properties": {
           "content": {
             "items": {
-              "$ref": "#/$defs/Content"
+              "$ref": "#/$defs/RequestContent"
             },
+            "minItems": 1,
             "type": "array"
           },
           "limit": {
-            "minimum": 0,
+            "maximum": 10,
+            "minimum": 1,
             "type": "integer"
           },
           "offset": {
@@ -1329,6 +1325,8 @@
             "type": "integer"
           },
           "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "type": "string"
           },
           "source": {
@@ -1389,7 +1387,95 @@
         "required": [
           "boundary",
           "backend",
+          "revision",
           "operation_id"
+        ],
+        "type": "object"
+      },
+      "PlanReadArguments": {
+        "additionalProperties": true,
+        "description": "Arguments of plan/read: the operation is the literal read.",
+        "properties": {
+          "operation": {
+            "const": "read",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "PlanReadResult": {
+        "additionalProperties": true,
+        "description": "Current plan text, its revision and timestamp; the initial plan is revision 0 with null time.",
+        "properties": {
+          "markdown": {
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "markdown",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PlanReplaceArguments": {
+        "additionalProperties": true,
+        "description": "Arguments of plan/replace: replace plus at most 64 KiB of markdown.",
+        "properties": {
+          "markdown": {
+            "maxLength": 65536,
+            "type": "string"
+          },
+          "operation": {
+            "const": "replace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "markdown"
+        ],
+        "type": "object"
+      },
+      "PlanReplaceResult": {
+        "additionalProperties": true,
+        "description": "Outcome of a replacement: unchanged content does not increment the revision.",
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "updated_at",
+          "changed"
         ],
         "type": "object"
       },
@@ -1421,6 +1507,85 @@
           "payload_queue_full"
         ],
         "type": "string"
+      },
+      "RequestContent": {
+        "additionalProperties": true,
+        "description": "One admitted user part. raw must be nonempty and extras, when present, an object.",
+        "properties": {
+          "extras": {
+            "additionalProperties": true
+          },
+          "modality": {
+            "$ref": "#/$defs/Modality"
+          },
+          "raw": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/ContentType"
+          }
+        },
+        "required": [
+          "type",
+          "modality",
+          "raw"
+        ],
+        "type": "object"
+      },
+      "ResponseProjection": {
+        "additionalProperties": true,
+        "description": "A committed response as displayed: bounded content with its cursor fields. Exact text is read through answer pages.",
+        "properties": {
+          "answer_source": {
+            "$ref": "#/$defs/AnswerSource"
+          },
+          "commit_sequence": {
+            "type": "string"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/$defs/Usage"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "invokes": {
+            "minItems": 1
+          },
+          "omitted_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasoning": {
+            "$ref": "#/$defs/Content"
+          },
+          "role": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "$ref": "#/$defs/MessageType"
+          }
+        },
+        "required": [
+          "index",
+          "type",
+          "role",
+          "content",
+          "tool_calls",
+          "omitted_parts"
+        ],
+        "type": "object"
       },
       "Result": {
         "additionalProperties": true,
@@ -1513,7 +1678,8 @@
             "$ref": "#/$defs/SignalRequest"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "signal"
           }
         },
         "required": [
@@ -1668,7 +1834,8 @@
             "$ref": "#/$defs/ToolRequest"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "tool_request"
           }
         },
         "required": [
@@ -1722,12 +1889,45 @@
             "$ref": "#/$defs/ToolResponse"
           },
           "type": {
-            "$ref": "#/$defs/EnvelopeType"
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "tool_response"
           }
         },
         "required": [
           "type",
           "data"
+        ],
+        "type": "object"
+      },
+      "ToolResultMessage": {
+        "additionalProperties": true,
+        "description": "One returned batch entry: the message projection carrying its invoke_return provenance.",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          },
+          "extras": {},
+          "invoke_return": {
+            "$ref": "#/$defs/Result"
+          },
+          "omitted_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/MessageType"
+          }
+        },
+        "required": [
+          "type",
+          "role",
+          "content"
         ],
         "type": "object"
       },
@@ -1879,7 +2079,8 @@
           "summary": "True for the last part."
         }
       ],
-      "summary": "Exact answer bytes with the cursor to continue; binary parts are unavailable."
+      "summary": "Exact answer bytes with the cursor to continue; binary parts are unavailable.",
+      "unknown_fields": "ignore"
     },
     "AnswerSource": {
       "fields": [
@@ -1909,12 +2110,14 @@
         },
         {
           "kind": "text",
+          "min_length": 1,
           "name": "fingerprint",
           "required": true,
           "summary": "SHA-256 over the ordered canonical answer parts of this response."
         }
       ],
-      "summary": "Locator for exact-answer pagination. Every field must be copied unchanged."
+      "summary": "Locator for exact-answer pagination. Every field must be copied unchanged.",
+      "unknown_fields": "ignore"
     },
     "ArchiveCleanup": {
       "fields": [
@@ -1931,7 +2134,8 @@
           "summary": "Bytes reclaimed."
         }
       ],
-      "summary": "Archives removed after a successful compaction."
+      "summary": "Archives removed after a successful compaction.",
+      "unknown_fields": "ignore"
     },
     "ArchiveRef": {
       "fields": [
@@ -1961,7 +2165,8 @@
           "summary": "Whether the archive can be restored."
         }
       ],
-      "summary": "Storage evidence of a compaction archive; never an answer-paging source."
+      "summary": "Storage evidence of a compaction archive; never an answer-paging source.",
+      "unknown_fields": "ignore"
     },
     "AutoCompact": {
       "fields": [
@@ -1990,7 +2195,8 @@
           "summary": "Token threshold; zero disables the automatic policy."
         }
       ],
-      "summary": "Attempt/success counters for the current request plus the startup policy; a zero threshold disables it."
+      "summary": "Attempt/success counters for the current request plus the startup policy; a zero threshold disables it.",
+      "unknown_fields": "ignore"
     },
     "Call": {
       "fields": [
@@ -2025,17 +2231,24 @@
           "name": "security",
           "required": true,
           "summary": "Security classification decided before dispatch."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Bounded annotations (status, loop_skipped, error preview) copied before arguments."
         }
       ],
-      "summary": "A proposed tool call. Arguments are tool-owned; the classifications are not."
+      "summary": "A proposed tool call. Arguments are tool-owned; the classifications are not.",
+      "unknown_fields": "ignore"
     },
     "CompactFinishedData": {
       "fields": [
         {
-          "kind": "text",
+          "kind": "any",
           "name": "summary",
           "required": true,
-          "summary": "The published summary, bounded by its budget."
+          "summary": "The published summary: a string, or an omission object when it exceeds the 32 KiB budget."
         },
         {
           "kind": "text",
@@ -2069,6 +2282,24 @@
           "summary": "Whether the replacement was published."
         },
         {
+          "kind": "text",
+          "name": "origin",
+          "required": false,
+          "summary": "automatic for an automatic compaction; absent for a manual one."
+        },
+        {
+          "kind": "integer",
+          "name": "cycle",
+          "required": false,
+          "summary": "Automatic attempt number that produced this summary."
+        },
+        {
+          "kind": "text",
+          "name": "call_id",
+          "required": false,
+          "summary": "Call that triggered the automatic compaction."
+        },
+        {
           "kind": "record",
           "name": "archive_cleanup",
           "record": "ArchiveCleanup",
@@ -2082,7 +2313,8 @@
           "summary": "Cleanup diagnostic on failure; the run outcome is unaffected."
         }
       ],
-      "summary": "Compacted state was durably published; old history pages must be invalidated."
+      "summary": "Compacted state was durably published; old history pages must be invalidated.",
+      "unknown_fields": "ignore"
     },
     "ConfirmationOptions": {
       "fields": [
@@ -2094,7 +2326,8 @@
           "summary": "ask requests approval, approve grants locally, deny refuses locally."
         }
       ],
-      "summary": "Per-run confirmation policy; only mode is remotely configurable."
+      "summary": "Per-run confirmation policy; only mode is remotely configurable.",
+      "unknown_fields": "ignore"
     },
     "ConfirmationRequest": {
       "fields": [
@@ -2130,11 +2363,13 @@
           "summary": "The call as settled, not an earlier model proposal."
         }
       ],
-      "summary": "One confirmation request. Correlate by all four identifiers plus the authenticated connection; there is no request ID or event sequence."
+      "summary": "One confirmation request. Correlate by all four identifiers plus the authenticated connection; there is no request ID or event sequence.",
+      "unknown_fields": "ignore"
     },
     "ConfirmationRequestEnvelope": {
       "fields": [
         {
+          "constant": "confirmation_request",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -2149,7 +2384,8 @@
           "summary": "The request."
         }
       ],
-      "summary": "Worker-to-hub confirmation request on its own connection."
+      "summary": "Worker-to-hub confirmation request on its own connection.",
+      "unknown_fields": "ignore"
     },
     "ConfirmationResponse": {
       "fields": [
@@ -2191,11 +2427,13 @@
           "summary": "Optional operator text; defaults to \"operator decision\"."
         }
       ],
-      "summary": "One decision for one request. A mismatched identifier denies the call."
+      "summary": "One decision for one request. A mismatched identifier denies the call.",
+      "unknown_fields": "ignore"
     },
     "ConfirmationResponseEnvelope": {
       "fields": [
         {
+          "constant": "confirmation_response",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -2210,7 +2448,8 @@
           "summary": "The decision."
         }
       ],
-      "summary": "Hub-to-worker decision, sent once on the same confirmation connection."
+      "summary": "Hub-to-worker decision, sent once on the same confirmation connection.",
+      "unknown_fields": "ignore"
     },
     "Content": {
       "fields": [
@@ -2259,11 +2498,13 @@
           "summary": "Display marker: the value is not shown here."
         }
       ],
-      "summary": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them."
+      "summary": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them.",
+      "unknown_fields": "ignore"
     },
     "EmptyData": {
       "fields": [],
-      "summary": "An empty object. Older workers may omit fields; nothing is required."
+      "summary": "An empty object. Older workers may omit fields; nothing is required.",
+      "unknown_fields": "ignore"
     },
     "ErrorData": {
       "fields": [
@@ -2292,11 +2533,13 @@
           "summary": "Describes an uncertain archive mutation."
         }
       ],
-      "summary": "Control-validation or storage diagnostic, not a universal fatal notification. A terminal storage failure always carries primary_outcome."
+      "summary": "Control-validation or storage diagnostic, not a universal fatal notification. A terminal storage failure always carries primary_outcome.",
+      "unknown_fields": "ignore"
     },
     "EventEnvelope": {
       "fields": [
         {
+          "constant": "event",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -2347,7 +2590,8 @@
           "summary": "Event data; its shape is registered per event name."
         }
       ],
-      "summary": "An emitted event. data carries the shape registered for this event name."
+      "summary": "An emitted event. data carries the shape registered for this event name.",
+      "unknown_fields": "ignore"
     },
     "EventQueue": {
       "fields": [
@@ -2370,7 +2614,8 @@
           "summary": "Bytes still held by the transport write queue."
         }
       ],
-      "summary": "Queue and transport byte snapshot; a snapshot is not a delivery receipt."
+      "summary": "Queue and transport byte snapshot; a snapshot is not a delivery receipt.",
+      "unknown_fields": "ignore"
     },
     "ExecutionIdentity": {
       "fields": [
@@ -2393,7 +2638,8 @@
           "summary": "Run that executed or committed it."
         }
       ],
-      "summary": "Worker, request and run identity of an input or a committed response."
+      "summary": "Worker, request and run identity of an input or a committed response.",
+      "unknown_fields": "ignore"
     },
     "ExportErrorData": {
       "fields": [
@@ -2410,7 +2656,8 @@
           "summary": "Diagnostic text."
         }
       ],
-      "summary": "Optional archive-cleanup diagnostic; it never changes the run outcome."
+      "summary": "Optional archive-cleanup diagnostic; it never changes the run outcome.",
+      "unknown_fields": "ignore"
     },
     "FailureData": {
       "fields": [
@@ -2434,7 +2681,8 @@
           "summary": "True when a turn or valid host memory exists and the phase is ready."
         }
       ],
-      "summary": "Where a run failed and whether an explicit continue may be admitted."
+      "summary": "Where a run failed and whether an explicit continue may be admitted.",
+      "unknown_fields": "ignore"
     },
     "HistoryPage": {
       "fields": [
@@ -2488,7 +2736,8 @@
           "summary": "Turns on this page."
         }
       ],
-      "summary": "One history page. All pages of a load must agree on worker, revision and total."
+      "summary": "One history page. All pages of a load must agree on worker, revision and total.",
+      "unknown_fields": "ignore"
     },
     "HistoryStep": {
       "fields": [
@@ -2545,7 +2794,8 @@
           "summary": "Execution that produced this response."
         }
       ],
-      "summary": "One bounded response preview. Exact text is read through answer pages."
+      "summary": "One bounded response preview. Exact text is read through answer pages.",
+      "unknown_fields": "ignore"
     },
     "HistoryTurn": {
       "fields": [
@@ -2595,7 +2845,8 @@
           "summary": "auto_compact_continue for the hidden host-owned continuation input."
         }
       ],
-      "summary": "One canonical turn with a repeated user projection; steps are admitted whole."
+      "summary": "One canonical turn with a repeated user projection; steps are admitted whole.",
+      "unknown_fields": "ignore"
     },
     "InputAdmittedData": {
       "fields": [
@@ -2607,7 +2858,8 @@
           "summary": "message, continue or compact."
         }
       ],
-      "summary": "Admitted operation retained for transcript replay; older workers emitted an empty object."
+      "summary": "Admitted operation retained for transcript replay; older workers emitted an empty object.",
+      "unknown_fields": "ignore"
     },
     "InputRejectedData": {
       "fields": [
@@ -2639,7 +2891,8 @@
           "summary": "invalid_options or payload_queue_full."
         }
       ],
-      "summary": "An input that failed validation or queue admission; no run was started for it."
+      "summary": "An input that failed validation or queue admission; no run was started for it.",
+      "unknown_fields": "ignore"
     },
     "LoopProgress": {
       "fields": [
@@ -2682,7 +2935,8 @@
           "summary": "Results awaiting projection during recovery; normally an empty array."
         }
       ],
-      "summary": "Current or most recent loop outcome and recovery boundary, unrelated to event sequence."
+      "summary": "Current or most recent loop outcome and recovery boundary, unrelated to event sequence.",
+      "unknown_fields": "ignore"
     },
     "MemoryRetention": {
       "fields": [
@@ -2693,79 +2947,8 @@
           "summary": "Archives kept after compaction; zero disables cleanup."
         }
       ],
-      "summary": "Effective archive retention; zero disables cleanup."
-    },
-    "Message": {
-      "fields": [
-        {
-          "enumeration": "MessageType",
-          "kind": "enumeration",
-          "name": "type",
-          "required": true,
-          "summary": "Kind of conversation record."
-        },
-        {
-          "kind": "text",
-          "name": "role",
-          "required": true,
-          "summary": "Conversation role, normally assistant for responses."
-        },
-        {
-          "kind": "records",
-          "name": "content",
-          "record": "Content",
-          "required": true,
-          "summary": "Ordered content parts."
-        },
-        {
-          "kind": "record",
-          "name": "reasoning",
-          "record": "Content",
-          "required": false,
-          "summary": "Bounded reasoning preview; never part of exact answers."
-        },
-        {
-          "kind": "record",
-          "name": "action_status",
-          "record": "Content",
-          "required": false,
-          "summary": "Provider-supplied action-status content."
-        },
-        {
-          "kind": "records",
-          "name": "invokes",
-          "record": "Call",
-          "required": false,
-          "summary": "Tool calls proposed by this response."
-        },
-        {
-          "kind": "record",
-          "name": "cost",
-          "record": "Usage",
-          "required": false,
-          "summary": "Provider-reported usage; absence means unavailable, not zero."
-        },
-        {
-          "kind": "record",
-          "name": "invoke_return",
-          "record": "Result",
-          "required": false,
-          "summary": "Provenance of a tool-result message."
-        },
-        {
-          "kind": "any",
-          "name": "extras",
-          "required": false,
-          "summary": "Provider metadata; never a command."
-        },
-        {
-          "kind": "integer",
-          "name": "omitted_parts",
-          "required": false,
-          "summary": "Display marker: response parts outside this preview."
-        }
-      ],
-      "summary": "One conversation record as it appears in events and history; display projections may omit native extras and mark shortened parts."
+      "summary": "Effective archive retention; zero disables cleanup.",
+      "unknown_fields": "ignore"
     },
     "OmissionMarker": {
       "fields": [
@@ -2782,7 +2965,32 @@
           "summary": "Entries left out of this batch."
         }
       ],
-      "summary": "Counts a batch suffix that was not projected; it is not a call or a result."
+      "summary": "Counts a batch suffix that was not projected; it is not a call or a result.",
+      "unknown_fields": "ignore"
+    },
+    "OmissionSummary": {
+      "fields": [
+        {
+          "kind": "boolean",
+          "name": "display_omitted",
+          "required": true,
+          "summary": "Always true when present."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": true,
+          "summary": "Original UTF-8 byte length of the summary."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": true,
+          "summary": "Why the summary is not shown here."
+        }
+      ],
+      "summary": "An explicit omission instead of an apparently complete summary prefix.",
+      "unknown_fields": "ignore"
     },
     "OptionCategory": {
       "fields": [
@@ -2800,7 +3008,8 @@
           "summary": "Effective values, never a patch to apply; hubs tolerate unknown names."
         }
       ],
-      "summary": "Advertised choices and effective current values; an absent key means no selection."
+      "summary": "Advertised choices and effective current values; an absent key means no selection.",
+      "unknown_fields": "ignore"
     },
     "OptionChoice": {
       "fields": [
@@ -2817,19 +3026,23 @@
           "summary": "Advertised values; empty when unknown."
         }
       ],
-      "summary": "An option name with its advertised values, in display order."
+      "summary": "An option name with its advertised values, in display order.",
+      "unknown_fields": "ignore"
     },
     "Options": {
       "fields": [
         {
           "kind": "any",
           "name": "model",
+          "object_only": true,
           "required": false,
           "summary": "Provider-defined keys and values; the adapter validates what it supports."
         },
         {
+          "empty_object": true,
           "kind": "any",
           "name": "tools",
+          "object_only": true,
           "required": false,
           "summary": "Reserved category; it must be an empty object."
         },
@@ -2841,7 +3054,8 @@
           "summary": "Confirmation policy for this and later runs."
         }
       ],
-      "summary": "Optional payload categories applied at the next run boundary; unknown categories are rejected."
+      "summary": "Optional payload categories applied at the next run boundary; unknown categories are rejected.",
+      "unknown_fields": "reject"
     },
     "OptionsData": {
       "fields": [
@@ -2867,11 +3081,13 @@
           "summary": "Confirmation mode choices."
         }
       ],
-      "summary": "Available choices and current selections grouped by category."
+      "summary": "Available choices and current selections grouped by category.",
+      "unknown_fields": "ignore"
     },
     "PayloadEnvelope": {
       "fields": [
         {
+          "constant": "payload",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -2886,7 +3102,8 @@
           "summary": "The request."
         }
       ],
-      "summary": "Hub-to-worker payload envelope."
+      "summary": "Hub-to-worker payload envelope.",
+      "unknown_fields": "ignore"
     },
     "PayloadRequest": {
       "fields": [
@@ -2899,41 +3116,49 @@
         },
         {
           "kind": "text",
+          "max_length": 128,
+          "min_length": 1,
           "name": "request_id",
           "required": true,
-          "summary": "Client-chosen correlation identity; nonempty and at most 128 UTF-8 bytes."
+          "summary": "Client-chosen correlation identity; 1 to 128 UTF-8 bytes."
         },
         {
           "kind": "records",
           "name": "content",
-          "record": "Content",
+          "non_empty": true,
+          "record": "RequestContent",
           "required": false,
-          "summary": "Ordered user parts; required and nonempty for message only."
+          "summary": "Ordered user parts; required for message and refused elsewhere."
         },
         {
           "kind": "record",
           "name": "options",
           "record": "Options",
           "required": false,
-          "summary": "Applied at the next run boundary; accepted for message, continue and compact."
+          "summary": "Applied at the next run boundary; refused for history and answer."
         },
         {
+          "default": 0,
           "kind": "integer",
           "name": "start",
           "required": false,
-          "summary": "History turn cursor; defaults to 0."
+          "summary": "History turn cursor."
         },
         {
+          "default": 0,
           "kind": "integer",
           "name": "step",
           "required": false,
-          "summary": "First step within the history turn; defaults to 0."
+          "summary": "First step within the history turn."
         },
         {
+          "default": 10,
           "kind": "integer",
+          "maximum": 10,
+          "minimum": 1,
           "name": "limit",
           "required": false,
-          "summary": "History turn count, 1 to 10; defaults to 10."
+          "summary": "History turn count; 1 to 10, applied to the history operation only."
         },
         {
           "kind": "record",
@@ -2943,19 +3168,80 @@
           "summary": "Exact-answer locator; required for answer only."
         },
         {
+          "default": 0,
           "kind": "integer",
           "name": "part",
           "required": false,
-          "summary": "Answer part index; required for answer only."
+          "summary": "Answer part index, defaulted to 0."
         },
         {
+          "default": 0,
           "kind": "integer",
           "name": "offset",
           "required": false,
-          "summary": "Byte offset within the answer part."
+          "summary": "Byte offset within the part, defaulted to 0."
         }
       ],
-      "summary": "A message, continuation, compaction, history query or answer query; the operation decides which fields are required."
+      "forbidden_fields": [
+        "role",
+        "invokes",
+        "invoke_return",
+        "type",
+        "text"
+      ],
+      "rules": [
+        {
+          "forbids": [],
+          "requires": [
+            "content"
+          ],
+          "when": {
+            "operation": "message"
+          }
+        },
+        {
+          "forbids": [
+            "content"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "continue"
+          }
+        },
+        {
+          "forbids": [
+            "content"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "compact"
+          }
+        },
+        {
+          "forbids": [
+            "content",
+            "options"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "history"
+          }
+        },
+        {
+          "forbids": [
+            "content",
+            "options"
+          ],
+          "requires": [
+            "source"
+          ],
+          "when": {
+            "operation": "answer"
+          }
+        }
+      ],
+      "summary": "A message, continuation, compaction, history query or answer query; the operation decides which fields are required.",
+      "unknown_fields": "ignore"
     },
     "PersistedData": {
       "fields": [
@@ -2977,8 +3263,8 @@
           "kind": "integer",
           "name": "revision",
           "nullable": true,
-          "required": false,
-          "summary": "Backend revision; null when the backend does not expose one."
+          "required": true,
+          "summary": "Backend revision; the key is always present and null when the backend does not expose one."
         },
         {
           "kind": "text",
@@ -2987,7 +3273,91 @@
           "summary": "Write operation identity."
         }
       ],
-      "summary": "A required snapshot write completed at the named boundary; notifications may be coalesced."
+      "summary": "A required snapshot write completed at the named boundary; notifications may be coalesced.",
+      "unknown_fields": "ignore"
+    },
+    "PlanReadArguments": {
+      "fields": [
+        {
+          "constant": "read",
+          "kind": "text",
+          "name": "operation",
+          "required": true,
+          "summary": "Literal read."
+        }
+      ],
+      "summary": "Arguments of plan/read: the operation is the literal read.",
+      "unknown_fields": "ignore"
+    },
+    "PlanReadResult": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "markdown",
+          "required": true,
+          "summary": "Current plan text."
+        },
+        {
+          "kind": "integer",
+          "name": "revision",
+          "required": true,
+          "summary": "Revision incremented by each changed replacement."
+        },
+        {
+          "kind": "any",
+          "name": "updated_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 timestamp of the last change, or null for the initial plan."
+        }
+      ],
+      "summary": "Current plan text, its revision and timestamp; the initial plan is revision 0 with null time.",
+      "unknown_fields": "ignore"
+    },
+    "PlanReplaceArguments": {
+      "fields": [
+        {
+          "constant": "replace",
+          "kind": "text",
+          "name": "operation",
+          "required": true,
+          "summary": "Literal replace."
+        },
+        {
+          "kind": "text",
+          "max_length": 65536,
+          "name": "markdown",
+          "required": true,
+          "summary": "Plan text; empty or whitespace-only clears the plan."
+        }
+      ],
+      "summary": "Arguments of plan/replace: replace plus at most 64 KiB of markdown.",
+      "unknown_fields": "ignore"
+    },
+    "PlanReplaceResult": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "revision",
+          "required": true,
+          "summary": "Revision after the attempt."
+        },
+        {
+          "kind": "any",
+          "name": "updated_at",
+          "nullable": true,
+          "required": true,
+          "summary": "ISO-8601 timestamp of the change, or null while the plan is empty."
+        },
+        {
+          "kind": "boolean",
+          "name": "changed",
+          "required": true,
+          "summary": "True when the stored plan changed."
+        }
+      ],
+      "summary": "Outcome of a replacement: unchanged content does not increment the revision.",
+      "unknown_fields": "ignore"
     },
     "QueryErrorData": {
       "fields": [
@@ -3005,7 +3375,120 @@
           "summary": "Diagnostic text."
         }
       ],
-      "summary": "Query failure. request_id echoes whatever the query carried, including null."
+      "summary": "Query failure. request_id echoes whatever the query carried, including null.",
+      "unknown_fields": "ignore"
+    },
+    "RequestContent": {
+      "fields": [
+        {
+          "enumeration": "ContentType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Encoding of raw; an unknown label is rejected, never inferred."
+        },
+        {
+          "enumeration": "Modality",
+          "kind": "enumeration",
+          "name": "modality",
+          "required": true,
+          "summary": "Media category, required and never inferred from type."
+        },
+        {
+          "kind": "text",
+          "min_length": 1,
+          "name": "raw",
+          "required": true,
+          "summary": "The part body; empty text is rejected."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "object_only": true,
+          "required": false,
+          "summary": "Optional metadata object; an array or scalar is rejected."
+        }
+      ],
+      "summary": "One admitted user part. raw must be nonempty and extras, when present, an object.",
+      "unknown_fields": "ignore"
+    },
+    "ResponseProjection": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Zero-based step index within its turn."
+        },
+        {
+          "enumeration": "MessageType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Conversation record kind; model_response for committed responses."
+        },
+        {
+          "kind": "text",
+          "name": "role",
+          "required": true,
+          "summary": "Conversation role of the response."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "Content",
+          "required": true,
+          "summary": "Ordered answer preview; parts beyond the budget are counted."
+        },
+        {
+          "kind": "integer",
+          "name": "tool_calls",
+          "required": true,
+          "summary": "Number of proposed calls, whether or not they are displayed."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_parts",
+          "required": true,
+          "summary": "Response parts outside this preview."
+        },
+        {
+          "kind": "record",
+          "name": "reasoning",
+          "record": "Content",
+          "required": false,
+          "summary": "Bounded reasoning preview, never part of exact answers."
+        },
+        {
+          "kind": "text",
+          "name": "commit_sequence",
+          "required": false,
+          "summary": "Nonzero commit sequence as a decimal string; omitted when uncommitted."
+        },
+        {
+          "kind": "record",
+          "name": "answer_source",
+          "record": "AnswerSource",
+          "required": false,
+          "summary": "Exact-answer locator for this committed response."
+        },
+        {
+          "kind": "record",
+          "name": "cost",
+          "record": "Usage",
+          "required": false,
+          "summary": "Provider-reported usage; absence means unavailable, not zero."
+        },
+        {
+          "kind": "any",
+          "name": "invokes",
+          "non_empty": true,
+          "required": false,
+          "summary": "Array of Call, optionally ending in an omission marker; see parse_batch()."
+        }
+      ],
+      "summary": "A committed response as displayed: bounded content with its cursor fields. Exact text is read through answer pages.",
+      "unknown_fields": "ignore"
     },
     "Result": {
       "fields": [
@@ -3030,7 +3513,8 @@
           "summary": "Machine-readable annotations; error.stage and loop_skipped are recognized."
         }
       ],
-      "summary": "A tool result. Recognized extras markers include error, cause_query and loop_skipped."
+      "summary": "A tool result. Recognized extras markers include error, cause_query and loop_skipped.",
+      "unknown_fields": "ignore"
     },
     "RunOutcomeData": {
       "fields": [
@@ -3110,11 +3594,13 @@
           "summary": "Replayable metadata events coalesced since the previous settlement."
         }
       ],
-      "summary": "Settled invocation outcome. Omission counters appear only when nonzero and are not lifetime totals or delivery acknowledgements."
+      "summary": "Settled invocation outcome. Omission counters appear only when nonzero and are not lifetime totals or delivery acknowledgements.",
+      "unknown_fields": "ignore"
     },
     "SignalEnvelope": {
       "fields": [
         {
+          "constant": "signal",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -3129,7 +3615,8 @@
           "summary": "The signal."
         }
       ],
-      "summary": "Hub-to-worker signal envelope; it uses a separate queue from payloads."
+      "summary": "Hub-to-worker signal envelope; it uses a separate queue from payloads.",
+      "unknown_fields": "ignore"
     },
     "SignalRequest": {
       "fields": [
@@ -3147,7 +3634,46 @@
           "summary": "Required for cancel and rejected otherwise; a stale ID changes nothing."
         }
       ],
-      "summary": "Control signal; additional fields are ignored and no request ID is echoed."
+      "rules": [
+        {
+          "forbids": [],
+          "requires": [
+            "run_id"
+          ],
+          "when": {
+            "operation": "cancel"
+          }
+        },
+        {
+          "forbids": [
+            "run_id"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "status"
+          }
+        },
+        {
+          "forbids": [
+            "run_id"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "options"
+          }
+        },
+        {
+          "forbids": [
+            "run_id"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "shutdown"
+          }
+        }
+      ],
+      "summary": "Control signal; additional fields are ignored and no request ID is echoed.",
+      "unknown_fields": "ignore"
     },
     "StatusData": {
       "fields": [
@@ -3222,7 +3748,8 @@
           "summary": "Loop recovery state when available."
         }
       ],
-      "summary": "State snapshot. Optional fields are omitted by older workers and must be tolerated."
+      "summary": "State snapshot. Optional fields are omitted by older workers and must be tolerated.",
+      "unknown_fields": "ignore"
     },
     "ToolError": {
       "fields": [
@@ -3240,7 +3767,8 @@
           "summary": "Diagnostic text; not a stable machine code."
         }
       ],
-      "summary": "Machine-readable rejection code with a diagnostic message."
+      "summary": "Machine-readable rejection code with a diagnostic message.",
+      "unknown_fields": "ignore"
     },
     "ToolRequest": {
       "fields": [
@@ -3275,11 +3803,13 @@
           "summary": "Route-specific arguments; open object."
         }
       ],
-      "summary": "One remote-tool request. Routes are an open registry; the first segment names the family."
+      "summary": "One remote-tool request. Routes are an open registry; the first segment names the family.",
+      "unknown_fields": "ignore"
     },
     "ToolRequestEnvelope": {
       "fields": [
         {
+          "constant": "tool_request",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -3294,7 +3824,8 @@
           "summary": "The request."
         }
       ],
-      "summary": "One-shot remote-tool request; the route is the connection path."
+      "summary": "One-shot remote-tool request; the route is the connection path.",
+      "unknown_fields": "ignore"
     },
     "ToolResponse": {
       "fields": [
@@ -3349,11 +3880,13 @@
           "summary": "Route-specific result object; present for succeeded only."
         }
       ],
-      "summary": "Echoes the identifiers and route. succeeded carries result, rejected carries error."
+      "summary": "Echoes the identifiers and route. succeeded carries result, rejected carries error.",
+      "unknown_fields": "ignore"
     },
     "ToolResponseEnvelope": {
       "fields": [
         {
+          "constant": "tool_response",
           "enumeration": "EnvelopeType",
           "kind": "enumeration",
           "name": "type",
@@ -3368,7 +3901,53 @@
           "summary": "The response."
         }
       ],
-      "summary": "Terminal remote-tool answer; the connection closes after it."
+      "summary": "Terminal remote-tool answer; the connection closes after it.",
+      "unknown_fields": "ignore"
+    },
+    "ToolResultMessage": {
+      "fields": [
+        {
+          "enumeration": "MessageType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "invoke_return for a tool result."
+        },
+        {
+          "kind": "text",
+          "name": "role",
+          "required": true,
+          "summary": "Conversation role, normally tool."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "Content",
+          "required": true,
+          "summary": "Bounded tool output; at most four parts are projected."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_parts",
+          "required": false,
+          "summary": "Output parts outside this projection."
+        },
+        {
+          "kind": "record",
+          "name": "invoke_return",
+          "record": "Result",
+          "required": false,
+          "summary": "The call this result answers plus its bounded output."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Bounded message annotations; error stage/message are projected separately."
+        }
+      ],
+      "summary": "One returned batch entry: the message projection carrying its invoke_return provenance.",
+      "unknown_fields": "ignore"
     },
     "Usage": {
       "fields": [
@@ -3391,7 +3970,35 @@
           "summary": "Prompt tokens served from cache; do not add them to a total."
         }
       ],
-      "summary": "Provider-reported token cost; cache_hit counts tokens inside prompt."
+      "summary": "Provider-reported token cost; cache_hit counts tokens inside prompt.",
+      "unknown_fields": "ignore"
     }
-  }
+  },
+  "routes": [
+    {
+      "arguments": "PlanReadArguments",
+      "result": "PlanReadResult",
+      "route": "plan/read"
+    },
+    {
+      "arguments": "PlanReplaceArguments",
+      "result": "PlanReplaceResult",
+      "route": "plan/replace"
+    },
+    {
+      "arguments": null,
+      "result": null,
+      "route": "subagent/clean-fork"
+    },
+    {
+      "arguments": null,
+      "result": null,
+      "route": "subagent/send"
+    },
+    {
+      "arguments": null,
+      "result": null,
+      "route": "subagent/receive"
+    }
+  ]
 }

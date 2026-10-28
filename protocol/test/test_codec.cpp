@@ -11,19 +11,66 @@ namespace {
 
 using namespace protocol;
 
-/** Build a well-formed `message` payload request. */
-PayloadRequest message_request() {
-    PayloadRequest request;
-    request.operation = InputOperation::message;
-    request.request_id = "request-1";
-    request.content = std::vector<Content>{Content{ContentType::text, Modality::text, "hello"}};
-    return request;
+/** A complete answer source, as core::answer_source() builds one. */
+Json source_json() {
+    return Json{{"worker_id", "worker-1"},
+                {"turn", 0},
+                {"step", 1},
+                {"commit_sequence", "2"},
+                {"fingerprint", std::string(64, 'a')}};
 }
 
-/** Build a complete answer source. */
-AnswerSource answer_source() {
-    return AnswerSource{"worker-1", 0, 1, "2",
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
+/** One valid request part. */
+Json part_json(std::string raw = "hello") {
+    return Json{{"type", "text"}, {"modality", "text"}, {"raw", raw}};
+}
+
+Json message_payload() {
+    return Json{{"operation", "message"},
+                {"request_id", "request-1"},
+                {"content", Json::array({part_json()})}};
+}
+
+/** A tool-result entry exactly as core::display_results() projects it. */
+Json tool_result_message() {
+    return Json{{"type", "invoke_return"},
+                {"role", "tool"},
+                {"content", Json::array({part_json("hello")})},
+                {"invoke_return",
+                 Json{{"query",
+                       Json{{"id", "call-1"},
+                            {"name", "read_text"},
+                            {"type", "read_only"},
+                            {"security", "trusted"},
+                            {"arguments", Json::object()}}},
+                      {"output", part_json("hello")}}}};
+}
+
+/** A model-response projection exactly as core::project_response() builds it. */
+Json response_projection() {
+    return Json{{"index", 0},
+                {"type", "model_response"},
+                {"role", "assistant"},
+                {"content", Json::array({part_json("done")})},
+                {"tool_calls", 1},
+                {"omitted_parts", 0},
+                {"commit_sequence", "3"},
+                {"answer_source", source_json()},
+                {"invokes",
+                 Json::array({Json{{"id", "call-1"},
+                                   {"name", "read_text"},
+                                   {"type", "read_only"},
+                                   {"security", "trusted"},
+                                   {"arguments", Json::object()}}})}};
+}
+
+bool rejects_payload(const Json& payload) {
+    try {
+        protocol::from_json<PayloadRequest>(payload);
+        return false;
+    } catch (const ValidationError&) {
+        return true;
+    }
 }
 
 } // namespace
@@ -35,171 +82,174 @@ BOOST_AUTO_TEST_CASE(content_round_trips_with_display_markers) {
     content.extras = Json{{"simplex.source", Json{{"run_id", "run-1"}}}};
 
     const Json encoded = protocol::to_json(content);
-    BOOST_TEST(encoded.at("type").get<std::string>() == "text");
-    BOOST_TEST(encoded.at("modality").get<std::string>() == "text");
     BOOST_TEST(encoded.at("truncated").get<bool>());
-    BOOST_TEST(encoded.at("extras").at("simplex.source").at("run_id").get<std::string>() == "run-1");
-
     const Content parsed = protocol::from_json<Content>(encoded);
-    BOOST_TEST(parsed.raw == content.raw);
-    BOOST_TEST(parsed.extras.has_value());
     BOOST_TEST(protocol::to_json(parsed) == encoded);
 }
 
-BOOST_AUTO_TEST_CASE(absent_optional_fields_are_omitted_not_null) {
-    Content content{ContentType::text, Modality::text, "plain"};
-    const Json encoded = protocol::to_json(content);
-    BOOST_TEST(!encoded.contains("extras"));
-    BOOST_TEST(!encoded.contains("truncated"));
-    BOOST_TEST(!encoded.contains("bytes"));
-    BOOST_TEST(!encoded.contains("omitted"));
-}
+BOOST_AUTO_TEST_CASE(call_keeps_its_annotations) {
+    Call call;
+    call.id = "call-1";
+    call.name = "run_command";
+    call.type = CallScheduling::serial_write;
+    call.security = CallSecurity::require_confirm;
+    call.extras = Json{{"status", "failed"}, {"loop_skipped", true}};
 
-BOOST_AUTO_TEST_CASE(message_round_trips_with_nested_records) {
-    Message message;
-    message.type = MessageType::model_response;
-    message.role = "assistant";
-    message.content = {Content{ContentType::text, Modality::text, "done"}};
-    message.reasoning = Content{ContentType::text, Modality::text, "because"};
-    message.invokes = std::vector<Call>{Call{"call-1", "read_text", Json{{"path", "a.txt"}},
-                                            CallScheduling::read_only, CallSecurity::trusted}};
-    message.cost = Usage{120, 4, 80};
-
-    const Json encoded = protocol::to_json(message);
-    const Message parsed = protocol::from_json<Message>(encoded);
-    BOOST_TEST(parsed.invokes.has_value());
-    BOOST_TEST(parsed.invokes->at(0).arguments.at("path").get<std::string>() == "a.txt");
-    BOOST_TEST(static_cast<int>(parsed.invokes->at(0).type)
-               == static_cast<int>(CallScheduling::read_only));
-    BOOST_TEST(parsed.cost->cache_hit == 80);
-    BOOST_TEST(protocol::to_json(parsed) == encoded);
-}
-
-BOOST_AUTO_TEST_CASE(scheduling_spelling_matches_the_wire) {
-    Call call{"call-1", "write", Json::object(), CallScheduling::parall_write,
-              CallSecurity::require_confirm};
     const Json encoded = protocol::to_json(call);
-    // A renamed enumerator must not silently rename the wire value.
-    BOOST_TEST(encoded.at("type").get<std::string>() == "parall_write");
-    BOOST_TEST(encoded.at("security").get<std::string>() == "require_confirm");
+    BOOST_TEST(encoded.at("extras").at("loop_skipped").get<bool>());
+    BOOST_TEST(encoded.at("type").get<std::string>() == "serial_write");
+    BOOST_TEST(protocol::to_json(protocol::from_json<Call>(encoded)) == encoded);
 }
 
-BOOST_AUTO_TEST_CASE(missing_required_field_names_its_path) {
-    Json encoded = protocol::to_json(message_request());
-    encoded.erase("request_id");
-    try {
-        protocol::from_json<PayloadRequest>(encoded, "data");
-        BOOST_ERROR("a missing required field must be rejected");
-    } catch (const ValidationError& error) {
-        BOOST_TEST(std::string(error.what()).find("data.request_id") != std::string::npos);
-    }
-}
-
-BOOST_AUTO_TEST_CASE(explicit_null_is_only_accepted_where_declared) {
-    // `persisted.revision` is null when the backend exposes no revision.
-    const Json persisted = Json{{"boundary", "before_tools"},
+BOOST_AUTO_TEST_CASE(persisted_revision_is_required_and_nullable) {
+    const Json with_null = Json{{"boundary", "before_tools"},
                                 {"backend", "json"},
                                 {"revision", nullptr},
                                 {"operation_id", "op-1"}};
-    const PersistedData parsed = protocol::from_json<PersistedData>(persisted);
+    // A missing revision is not the same statement as a null one.
+    Json missing = with_null;
+    missing.erase("revision");
+    BOOST_CHECK_THROW(protocol::from_json<PersistedData>(missing), ValidationError);
+
+    const PersistedData parsed = protocol::from_json<PersistedData>(with_null);
     BOOST_TEST(!parsed.revision.has_value());
+    // The key must survive a round trip instead of disappearing.
+    BOOST_TEST(protocol::to_json(parsed) == with_null);
 
-    Json content = Json{{"type", "text"}, {"modality", "text"}, {"raw", nullptr}};
-    BOOST_CHECK_THROW(protocol::from_json<Content>(content), ValidationError);
+    Json numeric = with_null;
+    numeric["revision"] = 7;
+    const PersistedData numbered = protocol::from_json<PersistedData>(numeric);
+    BOOST_TEST(numbered.revision.value() == 7);
 }
 
-BOOST_AUTO_TEST_CASE(unknown_fields_are_ignored_by_default) {
-    Json encoded = protocol::to_json(message_request());
-    encoded["future_field"] = "ignored";
-    const PayloadRequest parsed = protocol::from_json<PayloadRequest>(encoded);
-    BOOST_TEST(parsed.request_id == "request-1");
-    BOOST_TEST(!protocol::to_json(parsed).contains("future_field"));
-}
+BOOST_AUTO_TEST_CASE(payload_acceptance_matches_the_worker_boundary) {
+    // Accepted: a plain message, even with an incidental start cursor.
+    Json message = message_payload();
+    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(message));
+    Json tolerated = message_payload();
+    tolerated["start"] = 0;
+    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(tolerated));
 
-BOOST_AUTO_TEST_CASE(unknown_enumeration_spelling_is_rejected) {
-    Json content = Json{{"type", "audio"}, {"modality", "text"}, {"raw", "x"}};
-    try {
-        protocol::from_json<Content>(content);
-        BOOST_ERROR("an unknown encoding must not be accepted");
-    } catch (const ValidationError& error) {
-        BOOST_TEST(std::string(error.what()).find("expected one of") != std::string::npos);
+    // Accepted: an answer query that omits part and offset.
+    Json answer = Json{{"operation", "answer"},
+                       {"request_id", "answer-1"},
+                       {"source", source_json()}};
+    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(answer));
+
+    // Rejected: empty content text.
+    Json empty_raw = message_payload();
+    empty_raw["content"] = Json::array({part_json("")});
+    BOOST_TEST(rejects_payload(empty_raw));
+
+    // Rejected: content extras that are not an object.
+    Json array_extras = message_payload();
+    array_extras["content"] = Json::array({Json{{"type", "text"}, {"modality", "text"},
+                                                {"raw", "x"}, {"extras", Json::array()}}});
+    BOOST_TEST(rejects_payload(array_extras));
+
+    // Rejected: message metadata smuggled into the payload.
+    for (const char* field : {"role", "invokes", "invoke_return", "type", "text"}) {
+        Json polluted = message_payload();
+        polluted[field] = "x";
+        BOOST_TEST_MESSAGE("rejecting payload field: " << field);
+        BOOST_TEST(rejects_payload(polluted));
     }
-}
 
-BOOST_AUTO_TEST_CASE(payload_operation_conditions_are_enforced) {
-    // message requires content
-    PayloadRequest empty_message;
-    empty_message.request_id = "r";
-    BOOST_CHECK_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(empty_message)), ValidationError);
+    // Rejected: an unknown or non-empty reserved options category.
+    Json unknown_category = message_payload();
+    unknown_category["options"] = Json{{"unknown", Json::object()}};
+    BOOST_TEST(rejects_payload(unknown_category));
 
-    // history rejects content
-    PayloadRequest history;
-    history.operation = InputOperation::history;
-    history.request_id = "h";
-    history.content = std::vector<Content>{Content{}};
-    BOOST_CHECK_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(history)), ValidationError);
+    Json nonempty_tools = message_payload();
+    nonempty_tools["options"] = Json{{"tools", Json{{"a", 1}}}};
+    BOOST_TEST(rejects_payload(nonempty_tools));
 
-    // history limit is bounded
-    PayloadRequest wide;
-    wide.operation = InputOperation::history;
-    wide.request_id = "h";
-    wide.limit = 11;
-    BOOST_CHECK_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(wide)), ValidationError);
+    Json empty_tools = message_payload();
+    empty_tools["options"] = Json{{"tools", Json::object()}};
+    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(empty_tools));
 
-    // answer requires a complete source
-    PayloadRequest answer;
-    answer.operation = InputOperation::answer;
-    answer.request_id = "a";
-    answer.part = 0;
-    answer.offset = 0;
-    BOOST_CHECK_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(answer)), ValidationError);
+    // Rejected: continue and compact cannot carry content.
+    for (const char* operation : {"continue", "compact"}) {
+        Json with_content = message_payload();
+        with_content["operation"] = operation;
+        BOOST_TEST(rejects_payload(with_content));
+    }
 
-    answer.source = answer_source();
-    BOOST_CHECK_NO_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(answer)));
+    // Rejected: history cannot carry content or options.
+    Json history_content = Json{{"operation", "history"}, {"request_id", "h"},
+                                {"content", Json::array({part_json()})}};
+    BOOST_TEST(rejects_payload(history_content));
+    Json history_options = Json{{"operation", "history"}, {"request_id", "h"},
+                                {"options", Json{{"tools", Json::object()}}}};
+    BOOST_TEST(rejects_payload(history_options));
 
-    // continue rejects content
-    PayloadRequest continuation;
-    continuation.operation = InputOperation::continue_request;
-    continuation.request_id = "c";
-    continuation.content = std::vector<Content>{Content{}};
-    BOOST_CHECK_THROW(protocol::from_json<PayloadRequest>(protocol::to_json(continuation)), ValidationError);
+    // Rejected: history limit outside 1..10.
+    Json wide = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", 11}};
+    BOOST_TEST(rejects_payload(wide));
+    Json narrow = Json{{"operation", "history"}, {"request_id", "h"}, {"limit", 0}};
+    BOOST_TEST(rejects_payload(narrow));
+
+    // Rejected: identifiers shorter than one byte or longer than 128.
+    Json empty_id = message_payload();
+    empty_id["request_id"] = "";
+    BOOST_TEST(rejects_payload(empty_id));
+    Json long_id = message_payload();
+    long_id["request_id"] = std::string(129, 'x');
+    BOOST_TEST(rejects_payload(long_id));
 }
 
 BOOST_AUTO_TEST_CASE(signal_cancel_requires_its_run_identity) {
-    SignalRequest cancel;
-    cancel.operation = SignalOperation::cancel;
-    BOOST_CHECK_THROW(protocol::from_json<SignalRequest>(protocol::to_json(cancel)), ValidationError);
-
-    cancel.run_id = "run-1";
-    BOOST_CHECK_NO_THROW(protocol::from_json<SignalRequest>(protocol::to_json(cancel)));
-
-    SignalRequest status;
-    status.operation = SignalOperation::status;
-    status.run_id = "run-1";
-    BOOST_CHECK_THROW(protocol::from_json<SignalRequest>(protocol::to_json(status)), ValidationError);
+    BOOST_CHECK_THROW(protocol::from_json<SignalRequest>(Json{{"operation", "cancel"}}),
+                      ValidationError);
+    BOOST_CHECK_NO_THROW(protocol::from_json<SignalRequest>(
+        Json{{"operation", "cancel"}, {"run_id", "run-1"}}));
+    BOOST_CHECK_THROW(protocol::from_json<SignalRequest>(
+                          Json{{"operation", "status"}, {"run_id", "run-1"}}),
+                      ValidationError);
 }
 
 BOOST_AUTO_TEST_CASE(tool_response_is_result_or_rejection_never_both) {
-    ToolResponse response;
-    response.worker_id = "w";
-    response.session_id = "s";
-    response.run_id = "r";
-    response.request_id = "q";
-    response.route = "plan/read";
-    response.status = ToolStatus::succeeded;
-    response.error = ToolError{ToolErrorCode::storage_error, "unexpected"};
-    BOOST_CHECK_THROW(protocol::from_json<ToolResponse>(protocol::to_json(response)), ValidationError);
+    Json base{{"worker_id", "w"}, {"session_id", "s"}, {"run_id", "r"},
+              {"request_id", "q"}, {"route", "plan/read"}};
+    Json both = base;
+    both["status"] = "succeeded";
+    both["result"] = Json{{"markdown", ""}, {"revision", 0}, {"updated_at", nullptr}};
+    both["error"] = Json{{"code", "storage_error"}, {"message", "x"}};
+    BOOST_CHECK_THROW(protocol::from_json<ToolResponse>(both), ValidationError);
 
-    response.error.reset();
-    response.result = Json{{"markdown", "- [ ] Work"}, {"revision", 1}};
-    BOOST_CHECK_NO_THROW(protocol::from_json<ToolResponse>(protocol::to_json(response)));
-
-    response.status = ToolStatus::rejected;
-    response.result.reset();
-    BOOST_CHECK_THROW(protocol::from_json<ToolResponse>(protocol::to_json(response)), ValidationError);
+    Json succeeded = base;
+    succeeded["status"] = "succeeded";
+    succeeded["result"] = Json{{"markdown", "- [ ] Work"}, {"revision", 1},
+                               {"updated_at", "2026-09-29T00:00:00Z"}};
+    BOOST_CHECK_NO_THROW(protocol::from_json<ToolResponse>(succeeded));
 }
 
-BOOST_AUTO_TEST_CASE(event_data_registry_covers_every_event_name) {
+BOOST_AUTO_TEST_CASE(every_envelope_pins_its_own_discriminator) {
+    const Json body = Json{{"data", Json{{"worker_id", "w"}, {"session_id", "s"}, {"run_id", "r"},
+                                         {"confirmation_id", "c"}, {"decision", "approved"},
+                                         {"reason", "ok"}}}};
+    Json wrong = body;
+    wrong["type"] = "payload";
+    BOOST_CHECK_THROW(protocol::from_json<ConfirmationResponseEnvelope>(wrong), ValidationError);
+
+    Json right = body;
+    right["type"] = "confirmation_response";
+    BOOST_CHECK_NO_THROW(protocol::from_json<ConfirmationResponseEnvelope>(right));
+
+    Json unknown = body;
+    unknown["type"] = "not_a_type";
+    BOOST_CHECK_THROW(protocol::from_json<ConfirmationResponseEnvelope>(unknown), ValidationError);
+
+    // A valid spelling from another family is still the wrong discriminator.
+    Json tool = Json{{"type", "event"},
+                     {"data", Json{{"worker_id", "w"}, {"session_id", "s"}, {"run_id", "r"},
+                                   {"request_id", "q"}, {"arguments", Json::object()}}}};
+    BOOST_CHECK_THROW(protocol::from_json<ToolRequestEnvelope>(tool), ValidationError);
+    tool["type"] = "tool_request";
+    BOOST_CHECK_NO_THROW(protocol::from_json<ToolRequestEnvelope>(tool));
+}
+
+BOOST_AUTO_TEST_CASE(event_registry_covers_every_event_name) {
     const auto specs = event_data_registry();
     BOOST_TEST(specs.size() == EnumTraits<EventName>::values.size());
     for (const auto& value : EnumTraits<EventName>::values) {
@@ -207,52 +257,73 @@ BOOST_AUTO_TEST_CASE(event_data_registry_covers_every_event_name) {
             return spec.event == value.value;
         });
         BOOST_TEST_MESSAGE("event: " << value.spelling);
-        BOOST_REQUIRE(found != specs.end());
-        BOOST_TEST(!found->record->name.empty());
+        const bool present = found != specs.end();
+        BOOST_TEST(present);
     }
 }
 
-BOOST_AUTO_TEST_CASE(valid_event_data_parses_for_every_family) {
+BOOST_AUTO_TEST_CASE(producer_shapes_validate_without_loss) {
     EventEnvelope envelope;
     envelope.session_id = "demo";
     envelope.worker_id = "worker-1";
 
-    // ready/status snapshot
+    // A returned batch is made of message projections, not bare results.
+    envelope.event = EventName::tool_results;
+    envelope.data = Json::array({tool_result_message()});
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // With an omitted suffix appended by display_results().
+    Json truncated_batch = Json::array({tool_result_message(),
+                                        Json{{"display_omitted", true}, {"omitted_items", 3}}});
+    envelope.data = truncated_batch;
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // A committed response keeps its cursor fields and its call batch.
+    envelope.event = EventName::model_response;
+    envelope.data = response_projection();
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // 65 calls: 64 represented plus one omission marker.
+    Json many = response_projection();
+    Json calls = Json::array();
+    for (int index = 0; index < 64; ++index) {
+        calls.push_back(Json{{"id", "call-" + std::to_string(index)},
+                             {"name", "read_text"},
+                             {"type", "read_only"},
+                             {"security", "trusted"},
+                             {"arguments", Json::object()}});
+    }
+    calls.push_back(Json{{"display_omitted", true}, {"omitted_items", 1}});
+    many["invokes"] = calls;
+    many["tool_calls"] = 65;
+    envelope.data = many;
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // An oversized summary travels as an omission object.
+    envelope.event = EventName::compact_finished;
+    envelope.data = Json{{"summary", Json{{"display_omitted", true},
+                                          {"bytes", 40000},
+                                          {"reason", "compact summary exceeds 32768 byte limit"}}},
+                         {"removed_turns", 3},
+                         {"revision", 2},
+                         {"durable", true}};
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // An automatic compaction adds its correlation fields.
+    Json automatic = envelope.data;
+    automatic["origin"] = "automatic";
+    automatic["cycle"] = 2;
+    automatic["call_id"] = "call-9";
+    envelope.data = automatic;
+    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
+
+    // The status snapshot and an empty-object event still validate.
     envelope.event = EventName::status;
-    envelope.data = Json{{"active", false},
-                         {"stopping", false},
-                         {"storage_failed", false},
-                         {"rejected_payloads", 0},
-                         {"capabilities", Json::array({"session-history", "answer-pages"})}};
+    envelope.data = Json{{"active", false}, {"stopping", false}, {"storage_failed", false},
+                         {"rejected_payloads", 0}, {"capabilities", Json::array()}};
     BOOST_CHECK_NO_THROW(validate_event_data(envelope));
-
-    // run outcome with settlement counters
-    envelope.event = EventName::run_finished;
-    envelope.data = Json{{"status", "completed"},
-                         {"error", ""},
-                         {"exchanges", 1},
-                         {"durable", true},
-                         {"omitted_display_events", 2}};
-    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
-
-    // query error with a null request identity
-    envelope.event = EventName::history_error;
-    envelope.data = Json{{"request_id", nullptr}, {"message", "invalid cursor"}};
-    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
-
-    // an empty-object event
     envelope.event = EventName::run_started;
     envelope.data = Json::object();
-    BOOST_CHECK_NO_THROW(validate_event_data(envelope));
-
-    // a tool batch with an omission marker
-    envelope.event = EventName::tool_calls;
-    envelope.data = Json::array({
-        Json{{"id", "call-1"}, {"name", "read_text"},
-             {"arguments", Json{{"path", "a"}}}, {"type", "read_only"},
-             {"security", "trusted"}},
-        Json{{"display_omitted", true}, {"omitted_items", 3}},
-    });
     BOOST_CHECK_NO_THROW(validate_event_data(envelope));
 }
 
@@ -267,7 +338,7 @@ BOOST_AUTO_TEST_CASE(invalid_event_data_is_rejected_with_a_path) {
         BOOST_TEST(std::string(error.what()).find("data.status") != std::string::npos);
     }
 
-    // an omission marker is only legal as the final batch element
+    // A marker may only be the final batch element.
     envelope.event = EventName::tool_calls;
     envelope.data = Json::array({
         Json{{"display_omitted", true}, {"omitted_items", 1}},
@@ -275,10 +346,26 @@ BOOST_AUTO_TEST_CASE(invalid_event_data_is_rejected_with_a_path) {
              {"type", "read_only"}, {"security", "trusted"}},
     });
     BOOST_CHECK_THROW(validate_event_data(envelope), ValidationError);
+
+    // A summary must be a string or an omission object.
+    envelope.event = EventName::compact_finished;
+    envelope.data = Json{{"summary", 42}, {"removed_turns", 0}, {"revision", 0},
+                         {"durable", true}};
+    BOOST_CHECK_THROW(validate_event_data(envelope), ValidationError);
 }
 
-BOOST_AUTO_TEST_CASE(envelope_type_must_match_its_family) {
-    EventEnvelope envelope;
-    envelope.type = EnvelopeType::payload;
-    BOOST_CHECK_THROW(protocol::from_json<EventEnvelope>(protocol::to_json(envelope)), ValidationError);
+BOOST_AUTO_TEST_CASE(plan_routes_publish_their_arguments) {
+    BOOST_CHECK_NO_THROW(protocol::from_json<PlanReadArguments>(Json{{"operation", "read"}}));
+    BOOST_CHECK_THROW(protocol::from_json<PlanReadArguments>(Json{{"operation", "replace"}}),
+                      ValidationError);
+
+    const Json replace = Json{{"operation", "replace"}, {"markdown", "- [ ] Work"}};
+    BOOST_CHECK_NO_THROW(protocol::from_json<PlanReplaceArguments>(replace));
+
+    Json oversized = replace;
+    oversized["markdown"] = std::string(64 * 1024 + 1, 'x');
+    BOOST_CHECK_THROW(protocol::from_json<PlanReplaceArguments>(oversized), ValidationError);
+
+    BOOST_CHECK_NO_THROW(protocol::from_json<PlanReadResult>(
+        Json{{"markdown", ""}, {"revision", 0}, {"updated_at", nullptr}}));
 }

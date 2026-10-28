@@ -48,49 +48,38 @@ void reject_fields(const PayloadRequest& request, std::string_view operation,
 
 } // namespace
 
-void wire_validate(const PayloadRequest& request) {
-    require(!request.request_id.empty(), "data.request_id", "must be a nonempty string");
-    require(request.request_id.size() <= 128, "data.request_id", "must be at most 128 UTF-8 bytes");
-
-    switch (request.operation) {
-        case InputOperation::message:
-            require(request.content.has_value() && !request.content->empty(), "data.content",
-                    "message requires a nonempty content array");
-            reject_fields(request, "message", {"start", "step", "limit", "source", "part", "offset"});
-            return;
-        case InputOperation::continue_request:
-            reject_fields(request, "continue", {"content", "start", "step", "limit", "source", "part", "offset"});
-            return;
-        case InputOperation::compact:
-            reject_fields(request, "compact", {"content", "start", "step", "limit", "source", "part", "offset"});
-            return;
-        case InputOperation::history:
-            reject_fields(request, "history", {"content", "options", "source", "part", "offset"});
-            if (request.limit) {
-                require(*request.limit >= 1 && *request.limit <= 10, "data.limit",
-                        "history limit must be between 1 and 10");
-            }
-            return;
-        case InputOperation::answer:
-            reject_fields(request, "answer", {"content", "options", "start", "step", "limit"});
-            require(request.source.has_value(), "data.source", "answer requires a complete source");
-            require(request.part.has_value(), "data.part", "answer requires a part index");
-            require(request.offset.has_value(), "data.offset", "answer requires a byte offset");
-            require(!request.source->fingerprint.empty(), "data.source.fingerprint",
-                    "answer sources must carry the fingerprint");
-            return;
-    }
-    throw ValidationError("data.operation", "unrecognized operation");
+std::span<const Rule> wire_rules(const PayloadRequest&) {
+    static const std::array<std::string_view, 1> content{"content"};
+    static const std::array<std::string_view, 2> history_forbidden{"content", "options"};
+    static const std::array<std::string_view, 2> answer_forbidden{"content", "options"};
+    static const std::array<std::string_view, 1> source{"source"};
+    static const Rule table[] = {
+        {"operation", "message", content, {}},
+        {"operation", "continue", {}, content},
+        {"operation", "compact", {}, content},
+        {"operation", "history", {}, history_forbidden},
+        {"operation", "answer", source, answer_forbidden},
+    };
+    return table;
 }
 
-void wire_validate(const SignalRequest& request) {
-    if (request.operation == SignalOperation::cancel) {
-        require(request.run_id.has_value() && !request.run_id->empty(), "data.run_id",
-                "cancel requires a nonempty run_id");
-    } else {
-        require(!request.run_id.has_value(), "data.run_id",
-                "run_id is only accepted for cancel");
-    }
+std::span<const std::string_view> wire_forbidden_fields(const PayloadRequest&) {
+    // The worker refuses these names outright even though it tolerates other
+    // unknown fields on a payload (for example an incidental `start`).
+    static const std::array<std::string_view, 5> forbidden{
+        "role", "invokes", "invoke_return", "type", "text"};
+    return forbidden;
+}
+
+std::span<const Rule> wire_rules(const SignalRequest&) {
+    static const std::array<std::string_view, 1> run_id{"run_id"};
+    static const Rule table[] = {
+        {"operation", "cancel", run_id, {}},
+        {"operation", "status", {}, run_id},
+        {"operation", "options", {}, run_id},
+        {"operation", "shutdown", {}, run_id},
+    };
+    return table;
 }
 
 void wire_validate(const ToolResponse& response) {
@@ -128,6 +117,24 @@ std::span<const MessageSpec> message_registry() {
     return specs;
 }
 
+std::span<const RouteSpec> route_registry() {
+    static const RouteSpec routes[] = {
+        {"plan/read", &describe_record<PlanReadArguments>(), &describe_record<PlanReadResult>(),
+         "Read the session plan; forbidden arguments include markdown."},
+        {"plan/replace", &describe_record<PlanReplaceArguments>(),
+         &describe_record<PlanReplaceResult>(),
+         "Replace or clear the session plan; markdown is limited to 64 KiB."},
+        {"subagent/clean-fork", nullptr, nullptr,
+         "Start an independent headless worker; argument and result shapes are "
+         "defined by the Hub subagent contract."},
+        {"subagent/send", nullptr, nullptr,
+         "Send message/continue/compact/stop to a child; Hub contract."},
+        {"subagent/receive", nullptr, nullptr,
+         "Read bounded child status and conversation; Hub contract."},
+    };
+    return routes;
+}
+
 std::span<const EventDataSpec> event_data_registry() {
     static const EventDataSpec specs[] = {
         {EventName::ready, &describe_record<StatusData>()},
@@ -141,9 +148,9 @@ std::span<const EventDataSpec> event_data_registry() {
         {EventName::input_rejected, &describe_record<InputRejectedData>()},
         {EventName::run_started, &describe_record<EmptyData>()},
         {EventName::input_committed, &describe_record<EmptyData>()},
-        {EventName::model_response, &describe_record<Message>()},
+        {EventName::model_response, &describe_record<ResponseProjection>()},
         {EventName::tool_calls, &describe_record<Call>(), true},
-        {EventName::tool_results, &describe_record<Result>(), true},
+        {EventName::tool_results, &describe_record<ToolResultMessage>(), true},
         {EventName::persisted, &describe_record<PersistedData>()},
         {EventName::compact_finished, &describe_record<CompactFinishedData>()},
         {EventName::export_error, &describe_record<ExportErrorData>()},
@@ -152,25 +159,6 @@ std::span<const EventDataSpec> event_data_registry() {
     };
     return specs;
 }
-
-namespace {
-
-/** Parse one element of a tool batch, accepting the trailing omission marker. */
-template <class R>
-void validate_batch(const Json& data, std::string_view name) {
-    require(data.is_array(), name, "expected an array for this batch event");
-    for (std::size_t index = 0; index < data.size(); ++index) {
-        const auto& entry = data.at(index);
-        const bool last = index + 1 == data.size();
-        if (last && entry.is_object() && entry.contains("display_omitted")) {
-            protocol::from_json<OmissionMarker>(entry, std::string(name) + "[" + std::to_string(index) + "]");
-            continue;
-        }
-        protocol::from_json<R>(entry, std::string(name) + "[" + std::to_string(index) + "]");
-    }
-}
-
-} // namespace
 
 void validate_event_data(const EventEnvelope& envelope) {
     const std::string prefix = "data";
@@ -202,21 +190,32 @@ void validate_event_data(const EventEnvelope& envelope) {
         case EventName::input_committed:
             protocol::from_json<EmptyData>(envelope.data, prefix);
             return;
-        case EventName::model_response:
-            protocol::from_json<Message>(envelope.data, prefix);
+        case EventName::model_response: {
+            const auto projection = protocol::from_json<ResponseProjection>(envelope.data, prefix);
+            if (projection.invokes) {
+                parse_batch<Call>(*projection.invokes, prefix + ".invokes");
+            }
             return;
+        }
         case EventName::tool_calls:
-            validate_batch<Call>(envelope.data, "data");
+            parse_batch<Call>(envelope.data, "data");
             return;
         case EventName::tool_results:
-            validate_batch<Result>(envelope.data, "data");
+            parse_batch<ToolResultMessage>(envelope.data, "data");
             return;
         case EventName::persisted:
             protocol::from_json<PersistedData>(envelope.data, prefix);
             return;
-        case EventName::compact_finished:
-            protocol::from_json<CompactFinishedData>(envelope.data, prefix);
+        case EventName::compact_finished: {
+            const auto finished = protocol::from_json<CompactFinishedData>(envelope.data, prefix);
+            if (finished.summary.is_object()) {
+                protocol::from_json<OmissionSummary>(finished.summary, prefix + ".summary");
+            } else if (!finished.summary.is_string()) {
+                throw ValidationError(prefix + ".summary",
+                                      "expected a summary string or an omission object");
+            }
             return;
+        }
         case EventName::export_error:
             protocol::from_json<ExportErrorData>(envelope.data, prefix);
             return;

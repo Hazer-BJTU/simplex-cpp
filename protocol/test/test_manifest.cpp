@@ -160,3 +160,58 @@ BOOST_AUTO_TEST_CASE(published_extension_policies_name_the_open_points) {
     }
     BOOST_TEST(document.at("fingerprint_scope").dump().find("not certified") != std::string::npos);
 }
+
+BOOST_AUTO_TEST_CASE(constraints_defaults_and_policies_are_inside_the_contract) {
+    // These are acceptance rules, not prose: they must live in the document the
+    // fingerprint covers, or a relaxation like `limit <= 11` would be invisible.
+    const Json canonical = canonical_contract();
+    const Json& request = canonical.at("records").at("PayloadRequest");
+    BOOST_TEST(request.at("unknown_fields").get<std::string>() == "ignore");
+    BOOST_TEST(request.at("forbidden_fields").dump().find("role") != std::string::npos);
+    BOOST_TEST(!request.at("rules").empty());
+
+    const Json& fields = request.at("fields");
+    const auto find_field = [&](std::string_view name) -> const Json& {
+        for (const auto& field : fields) {
+            if (field.at("name").get<std::string>() == name) return field;
+        }
+        BOOST_FAIL("missing field " << name);
+        return fields.at(0);
+    };
+    BOOST_TEST(find_field("request_id").at("min_length").get<std::uint64_t>() == 1);
+    BOOST_TEST(find_field("request_id").at("max_length").get<std::uint64_t>() == 128);
+    BOOST_TEST(find_field("limit").at("maximum").get<std::uint64_t>() == 10);
+    BOOST_TEST(find_field("limit").at("minimum").get<std::uint64_t>() == 1);
+    BOOST_TEST(find_field("limit").at("default").get<std::uint64_t>() == 10);
+    BOOST_TEST(find_field("content").at("non_empty").get<bool>());
+
+    // Options is a closed category set, and its reserved member must be empty.
+    const Json& options = canonical.at("records").at("Options");
+    BOOST_TEST(options.at("unknown_fields").get<std::string>() == "reject");
+
+    // A required-but-nullable field keeps both statements.
+    const Json& revision = canonical.at("records").at("PersistedData").at("fields").at(2);
+    BOOST_TEST(revision.at("required").get<bool>());
+    BOOST_TEST(revision.at("nullable").get<bool>());
+
+    // Every envelope pins its own discriminator, and the routes are inventoried.
+    BOOST_TEST(canonical.at("records").at("EventEnvelope").at("fields").at(0)
+                   .at("constant").get<std::string>() == "event");
+    BOOST_TEST(canonical.at("routes").size() == 5);
+    BOOST_TEST(canonical.at("routes").dump().find("plan/replace") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
+    const Json schema = json_schema();
+    const Json& request = schema.at("$defs").at("PayloadRequest");
+    BOOST_TEST(request.at("required").dump().find("request_id") != std::string::npos);
+    const Json& limit = request.at("properties").at("limit");
+    BOOST_TEST(limit.at("maximum").get<std::uint64_t>() == 10);
+    BOOST_TEST(limit.at("minimum").get<std::uint64_t>() == 1);
+    const Json& request_id = request.at("properties").at("request_id");
+    BOOST_TEST(request_id.at("minLength").get<std::uint64_t>() == 1);
+    BOOST_TEST(request_id.at("maxLength").get<std::uint64_t>() == 128);
+
+    const Json& envelope = schema.at("$defs").at("EventEnvelope").at("properties").at("type");
+    BOOST_TEST(envelope.at("const").get<std::string>() == "event");
+}

@@ -63,6 +63,41 @@ enum class Kind {
 /** Whether a record tolerates fields it does not describe. */
 enum class UnknownFields { ignore, reject };
 
+/**
+ * Presence of a field, independent of how its value is stored. Most fields
+ * infer presence from `std::optional`, but the wire language needs one more
+ * combination: `persisted.revision` is always present and may still be null.
+ */
+enum class Presence { inferred, required, optional };
+
+/** Stateless acceptance rules that do not need application state. */
+struct Constraints {
+    std::optional<std::uint64_t> min_length;
+    std::optional<std::uint64_t> max_length;
+    std::optional<std::uint64_t> minimum;
+    std::optional<std::uint64_t> maximum;
+    /** The value must be a JSON object (an open one unless more is declared). */
+    bool object_only = false;
+    /** The value must be an empty JSON object. */
+    bool empty_object = false;
+    /** The value must be a nonempty array. */
+    bool non_empty = false;
+    /** An enumeration member pinned to one spelling, e.g. an envelope type. */
+    const char* constant = nullptr;
+    /** Extra JSON Schema fragment published for an open value. */
+    const char* schema = nullptr;
+};
+
+/** One conditional requirement attached to a record. */
+struct Rule {
+    /** Field whose value selects the rule. */
+    std::string_view when_field;
+    /** Spelling that activates it. */
+    std::string_view when_equals;
+    std::span<const std::string_view> requires_fields;
+    std::span<const std::string_view> forbids_fields;
+};
+
 struct RecordDescriptor;
 struct EnumDescriptor;
 
@@ -76,6 +111,9 @@ struct FieldView {
     std::string_view summary;
     const EnumDescriptor* enumeration = nullptr;
     const RecordDescriptor* record = nullptr;
+    Constraints constraints{};
+    /** Published default as JSON text; empty when the field has none. */
+    std::string_view default_json;
 };
 
 /** A described record: a wire name, an explanation and its field views. */
@@ -134,6 +172,32 @@ struct Field {
     bool nullable = false;
     const EnumDescriptor* enumeration = nullptr;
     const RecordDescriptor* record = nullptr;
+    Presence presence = Presence::inferred;
+    Constraints constraints{};
+    const char* default_json = "";
+
+    Field& required() & { presence = Presence::required; return *this; }
+    Field&& required() && { presence = Presence::required; return std::move(*this); }
+    Field& nullable_value() & { nullable = true; return *this; }
+    Field&& nullable_value() && { nullable = true; return std::move(*this); }
+    Field& min_length(std::uint64_t value) & { constraints.min_length = value; return *this; }
+    Field&& min_length(std::uint64_t value) && { constraints.min_length = value; return std::move(*this); }
+    Field& max_length(std::uint64_t value) & { constraints.max_length = value; return *this; }
+    Field&& max_length(std::uint64_t value) && { constraints.max_length = value; return std::move(*this); }
+    Field& minimum(std::uint64_t value) & { constraints.minimum = value; return *this; }
+    Field&& minimum(std::uint64_t value) && { constraints.minimum = value; return std::move(*this); }
+    Field& maximum(std::uint64_t value) & { constraints.maximum = value; return *this; }
+    Field&& maximum(std::uint64_t value) && { constraints.maximum = value; return std::move(*this); }
+    Field& object_only() & { constraints.object_only = true; return *this; }
+    Field&& object_only() && { constraints.object_only = true; return std::move(*this); }
+    Field& empty_object() & { constraints.empty_object = true; return *this; }
+    Field&& empty_object() && { constraints.empty_object = true; return std::move(*this); }
+    Field& non_empty() & { constraints.non_empty = true; return *this; }
+    Field&& non_empty() && { constraints.non_empty = true; return std::move(*this); }
+    Field& constant(const char* spelling) & { constraints.constant = spelling; return *this; }
+    Field&& constant(const char* spelling) && { constraints.constant = spelling; return std::move(*this); }
+    Field& default_value(const char* text) & { default_json = text; return *this; }
+    Field&& default_value(const char* text) && { default_json = text; return std::move(*this); }
 };
 
 template <class M>
@@ -142,6 +206,14 @@ template <class M>
 struct is_optional<std::optional<M>> : std::true_type {};
 template <class M>
 inline constexpr bool is_optional_v = is_optional<std::remove_cvref_t<M>>::value;
+
+/** Presence after inference: `std::optional<M>` is optional unless overridden. */
+template <class T, class M>
+bool is_required(const Field<T, M>& field) {
+    if (field.presence == Presence::required) return true;
+    if (field.presence == Presence::optional) return false;
+    return !is_optional_v<M>;
+}
 
 template <class M>
 inline constexpr bool is_json_v = std::is_same_v<std::remove_cvref_t<M>, Json>;
@@ -230,8 +302,9 @@ namespace detail {
 
 template <class R, class FieldType>
 void append_view(std::vector<FieldView>& views, const FieldType& field) {
-    views.push_back(FieldView{field.name, field.kind, !is_optional_v<decltype(std::declval<R&>().*field.member)>,
-                              field.nullable, field.summary, field.enumeration, field.record});
+    views.push_back(FieldView{field.name, field.kind, is_required(field), field.nullable,
+                              field.summary, field.enumeration, field.record,
+                              field.constraints, field.default_json});
 }
 
 template <class R>
@@ -246,11 +319,34 @@ std::vector<FieldView> field_views() {
 }
 
 template <class R>
-constexpr UnknownFields unknown_policy() {
-    if constexpr (requires { wire_unknown_fields(std::declval<const R&>()); }) {
-        return wire_unknown_fields(std::declval<const R&>());
+UnknownFields unknown_policy() {
+    if constexpr (requires(const R& record) { wire_unknown_fields(record); }) {
+        const R instance{};
+        return wire_unknown_fields(instance);
     } else {
         return UnknownFields::ignore;
+    }
+}
+
+/** Fields a record rejects by name, even though it ignores other unknowns. */
+template <class R>
+std::span<const std::string_view> forbidden_fields() {
+    if constexpr (requires(const R& record) { wire_forbidden_fields(record); }) {
+        const R instance{};
+        return wire_forbidden_fields(instance);
+    } else {
+        return {};
+    }
+}
+
+/** Conditional requirements attached to a record, if any. */
+template <class R>
+std::span<const Rule> rules() {
+    if constexpr (requires(const R& record) { wire_rules(record); }) {
+        const R instance{};
+        return wire_rules(instance);
+    } else {
+        return {};
     }
 }
 

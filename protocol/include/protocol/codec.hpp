@@ -75,6 +75,17 @@ void decode_one(M& target, const Json& input, const std::string& path);
 template <class R, class FieldType>
 void read_field(R& record, const Json& input, const FieldType& field, const std::string& path);
 
+template <class FieldType>
+void check_constraints(const FieldType& field, const Json& value, const std::string& path);
+
+/** True when a rule's selector field currently holds its activating value. */
+template <class R>
+bool rule_matches(const R& record, const Rule& rule);
+
+/** True when the named field is present (an optional member holds a value). */
+template <class R>
+bool field_present(const R& record, std::string_view name);
+
 } // namespace detail
 
 /** Serialize one described record, omitting absent optional fields. */
@@ -90,6 +101,10 @@ Json to_json(const R& record) {
                 if constexpr (is_optional_v<Member>) {
                     if (record.*(descriptor.member)) {
                         output[name] = detail::encode_one(*(record.*(descriptor.member)));
+                    } else if (is_required(descriptor) && descriptor.nullable) {
+                        // Required and nullable: the key is always present, and
+                        // the only way to say "no value" is an explicit null.
+                        output[name] = nullptr;
                     }
                 } else {
                     output[name] = detail::encode_one(record.*(descriptor.member));
@@ -113,7 +128,14 @@ R from_json(const Json& input, const std::string& path = {}) {
         [&](const auto&... field) { (detail::read_field(record, input, field, path), ...); },
         wire_fields(std::as_const(record)));
 
-    if constexpr (detail::unknown_policy<R>() == UnknownFields::reject) {
+    for (const auto forbidden : detail::forbidden_fields<R>()) {
+        if (input.contains(std::string(forbidden))) {
+            throw ValidationError(detail::join_path(path, forbidden),
+                                  "this record does not accept that field");
+        }
+    }
+
+    if (detail::unknown_policy<R>() == UnknownFields::reject) {
         const auto& descriptor = describe_record<R>();
         for (const auto& [key, value] : input.items()) {
             const auto known = std::ranges::any_of(descriptor.fields(), [&](const FieldView& view) {
@@ -121,6 +143,27 @@ R from_json(const Json& input, const std::string& path = {}) {
             });
             if (!known) {
                 throw ValidationError(detail::join_path(path, key), "unknown field");
+            }
+        }
+    }
+
+    // Conditional requirements are data, not code: a rule names the field that
+    // selects it and the fields it requires or forbids, so the same table is
+    // published in the manifest and enforced here.
+    for (const auto& rule : detail::rules<R>()) {
+        if (!detail::rule_matches(record, rule)) continue;
+        for (const auto present : rule.requires_fields) {
+            if (!detail::field_present(record, present)) {
+                throw ValidationError(detail::join_path(path, present),
+                                      std::string("required when ") + std::string(rule.when_field)
+                                          + " is " + std::string(rule.when_equals));
+            }
+        }
+        for (const auto forbidden : rule.forbids_fields) {
+            if (detail::field_present(record, forbidden)) {
+                throw ValidationError(detail::join_path(path, forbidden),
+                                      std::string("not accepted when ") + std::string(rule.when_field)
+                                          + " is " + std::string(rule.when_equals));
             }
         }
     }
@@ -221,32 +264,120 @@ template <class R, class FieldType>
 void read_field(R& record, const Json& input, const FieldType& field, const std::string& path) {
     using Member = std::remove_cvref_t<decltype(record.*(field.member))>;
     const std::string name(field.name);
+    const std::string here = detail::join_path(path, field.name);
     const auto found = input.find(name);
     if (found == input.end()) {
+        if (is_required(field)) {
+            throw ValidationError(here, "missing required field");
+        }
+        return;
+    }
+    if (found->is_null()) {
+        if (!field.nullable) {
+            throw ValidationError(here, "explicit null is not accepted");
+        }
+        // The key exists and is null: leave an optional member unset, and keep
+        // a JSON member's null (some fields carry null as a value).
         if constexpr (!is_optional_v<Member>) {
-            throw ValidationError(detail::join_path(path, field.name), "missing required field");
+            if constexpr (is_json_v<Member>) {
+                record.*(field.member) = Json(nullptr);
+            }
         }
         return;
     }
     if constexpr (is_optional_v<Member>) {
-        if (found->is_null()) {
-            if (!field.nullable) {
-                throw ValidationError(detail::join_path(path, field.name),
-                                      "explicit null is not accepted");
-            }
-            return;
-        }
         using Value = typename Member::value_type;
         Value value{};
-        decode_one(value, *found, detail::join_path(path, field.name));
+        decode_one(value, *found, here);
+        check_constraints(field, *found, here);
         record.*(field.member) = std::move(value);
     } else {
-        if (found->is_null() && !(field.nullable || is_json_v<Member>)) {
-            throw ValidationError(detail::join_path(path, field.name),
-                                  "expected a value, not null");
-        }
-        decode_one(record.*(field.member), *found, detail::join_path(path, field.name));
+        decode_one(record.*(field.member), *found, here);
+        check_constraints(field, *found, here);
     }
+}
+
+template <class FieldType>
+void check_constraints(const FieldType& field, const Json& value, const std::string& path) {
+    const auto& constraints = field.constraints;
+    if ((constraints.object_only || constraints.empty_object) && !value.is_object()) {
+        throw ValidationError(path, "expected a JSON object");
+    }
+    if (constraints.empty_object && !value.empty()) {
+        throw ValidationError(path, "must be an empty object");
+    }
+    if (constraints.non_empty && value.is_array() && value.empty()) {
+        throw ValidationError(path, "must be a nonempty array");
+    }
+    if ((constraints.min_length || constraints.max_length) && value.is_string()) {
+        const auto size = value.get_ref<const std::string&>().size();
+        if (constraints.min_length && size < *constraints.min_length) {
+            throw ValidationError(path, "value is shorter than the minimum length");
+        }
+        if (constraints.max_length && size > *constraints.max_length) {
+            throw ValidationError(path, "value is longer than the maximum length");
+        }
+    }
+    if ((constraints.minimum || constraints.maximum)
+        && (value.is_number_unsigned() || value.is_number_integer())) {
+        const auto number = value.get<std::int64_t>();
+        if (constraints.minimum && number < *constraints.minimum) {
+            throw ValidationError(path, "value is below the minimum");
+        }
+        if (constraints.maximum && number > *constraints.maximum) {
+            throw ValidationError(path, "value is above the maximum");
+        }
+    }
+    if (constraints.constant != nullptr && value.is_string()
+        && value.get_ref<const std::string&>() != constraints.constant) {
+        throw ValidationError(path, std::string("must be \"") + constraints.constant + "\"");
+    }
+}
+
+template <class R>
+bool rule_matches(const R& record, const Rule& rule) {
+    bool matched = false;
+    std::apply(
+        [&](const auto&... field) {
+            (([&] {
+                 if (std::string_view(field.name) != rule.when_field) {
+                     return;
+                 }
+                 const auto& value = record.*(field.member);
+                 using Member = std::remove_cvref_t<decltype(value)>;
+                 if constexpr (is_described_enum<Member>) {
+                     matched = enum_to(value, {}) == rule.when_equals;
+                 } else if constexpr (std::is_same_v<Member, std::string>) {
+                     matched = value == rule.when_equals;
+                 }
+             }()),
+             ...);
+        },
+        wire_fields(record));
+    return matched;
+}
+
+template <class R>
+bool field_present(const R& record, std::string_view name) {
+    bool present = false;
+    std::apply(
+        [&](const auto&... field) {
+            (([&] {
+                 if (std::string_view(field.name) != name) {
+                     return;
+                 }
+                 const auto& value = record.*(field.member);
+                 using Member = std::remove_cvref_t<decltype(value)>;
+                 if constexpr (is_optional_v<Member>) {
+                     present = value.has_value();
+                 } else {
+                     present = true;
+                 }
+             }()),
+             ...);
+        },
+        wire_fields(record));
+    return present;
 }
 
 } // namespace detail

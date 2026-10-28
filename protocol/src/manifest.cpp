@@ -53,6 +53,17 @@ Json canonical_field(const FieldView& field) {
     if (field.record != nullptr) {
         entry["record"] = field.record->name;
     }
+    const auto& constraints = field.constraints;
+    if (constraints.min_length) entry["min_length"] = *constraints.min_length;
+    if (constraints.max_length) entry["max_length"] = *constraints.max_length;
+    if (constraints.minimum) entry["minimum"] = *constraints.minimum;
+    if (constraints.maximum) entry["maximum"] = *constraints.maximum;
+    if (constraints.object_only) entry["object_only"] = true;
+    if (constraints.empty_object) entry["empty_object"] = true;
+    if (constraints.non_empty) entry["non_empty"] = true;
+    if (constraints.constant != nullptr) entry["constant"] = constraints.constant;
+    if (constraints.schema != nullptr) entry["schema"] = Json::parse(constraints.schema);
+    if (!field.default_json.empty()) entry["default"] = Json::parse(field.default_json);
     return entry;
 }
 
@@ -85,7 +96,39 @@ Json record_entry(const RecordDescriptor& descriptor, bool described) {
     entry["fields"] = std::move(fields);
     if (described) {
         entry["summary"] = descriptor.summary;
-        entry["unknown_fields"] = "ignore unless the record declares rejection";
+    }
+    return entry;
+}
+
+/** Record-level acceptance policy: unknown names, rejected names, rules. */
+template <class R>
+Json policy_entry() {
+    Json entry = Json::object();
+    entry["unknown_fields"] =
+        detail::unknown_policy<R>() == UnknownFields::reject ? "reject" : "ignore";
+    Json forbidden = Json::array();
+    for (const auto name : detail::forbidden_fields<R>()) {
+        forbidden.push_back(name);
+    }
+    if (!forbidden.empty()) {
+        entry["forbidden_fields"] = std::move(forbidden);
+    }
+    Json rules = Json::array();
+    for (const auto& rule : detail::rules<R>()) {
+        Json required = Json::array();
+        for (const auto name : rule.requires_fields) {
+            required.push_back(name);
+        }
+        Json forbids = Json::array();
+        for (const auto name : rule.forbids_fields) {
+            forbids.push_back(name);
+        }
+        rules.push_back(Json{{"when", Json{{rule.when_field, rule.when_equals}}},
+                             {"requires", std::move(required)},
+                             {"forbids", std::move(forbids)}});
+    }
+    if (!rules.empty()) {
+        entry["rules"] = std::move(rules);
     }
     return entry;
 }
@@ -112,6 +155,18 @@ Json canonical_document() {
     for (const auto* descriptor : record_registry()) {
         records[std::string(descriptor->name)] = record_entry(*descriptor, false);
     }
+    for (const auto* descriptor : record_registry()) {
+        const auto name = std::string(descriptor->name);
+        if (name == "PayloadRequest") {
+            records[name].update(policy_entry<PayloadRequest>());
+        } else if (name == "SignalRequest") {
+            records[name].update(policy_entry<SignalRequest>());
+        } else if (name == "Options") {
+            records[name].update(policy_entry<Options>());
+        } else {
+            records[name]["unknown_fields"] = "ignore";
+        }
+    }
     document["records"] = std::move(records);
 
     Json enums = Json::object();
@@ -131,6 +186,15 @@ Json canonical_document() {
         messages.push_back(Json{{"family", spec.family}, {"record", spec.record->name}});
     }
     document["messages"] = std::move(messages);
+
+    Json routes = Json::array();
+    for (const auto& route : route_registry()) {
+        Json entry = Json{{"route", route.route}};
+        entry["arguments"] = route.arguments != nullptr ? Json(route.arguments->name) : Json(nullptr);
+        entry["result"] = route.result != nullptr ? Json(route.result->name) : Json(nullptr);
+        routes.push_back(std::move(entry));
+    }
+    document["routes"] = std::move(routes);
     return document;
 }
 
@@ -144,9 +208,16 @@ std::span<const RecordDescriptor* const> record_registry() {
         &describe_record<ExecutionIdentity>(),
         &describe_record<Call>(),
         &describe_record<Result>(),
-        &describe_record<Message>(),
         &describe_record<ConfirmationOptions>(),
+        &describe_record<RequestContent>(),
+        &describe_record<ResponseProjection>(),
+        &describe_record<ToolResultMessage>(),
+        &describe_record<OmissionSummary>(),
         &describe_record<Options>(),
+        &describe_record<PlanReadArguments>(),
+        &describe_record<PlanReplaceArguments>(),
+        &describe_record<PlanReadResult>(),
+        &describe_record<PlanReplaceResult>(),
         &describe_record<OptionChoice>(),
         &describe_record<OptionCategory>(),
         &describe_record<OptionsData>(),
@@ -217,6 +288,7 @@ std::span<const EnumDescriptor* const> enum_registry() {
 }
 
 Json schema_type(const FieldView& field) {
+    const auto& constraints = field.constraints;
     Json type = Json::object();
     switch (field.kind) {
         case Kind::text:
@@ -246,6 +318,20 @@ Json schema_type(const FieldView& field) {
         case Kind::texts:
             type = Json{{"type", "array"}, {"items", Json{{"type", "string"}}}};
             break;
+    }
+    if (constraints.constant != nullptr) {
+        type["const"] = constraints.constant;
+    }
+    if (constraints.min_length) type["minLength"] = *constraints.min_length;
+    if (constraints.max_length) type["maxLength"] = *constraints.max_length;
+    if (constraints.minimum) type["minimum"] = *constraints.minimum;
+    if (constraints.maximum) type["maximum"] = *constraints.maximum;
+    if (constraints.non_empty) type["minItems"] = 1;
+    if (constraints.empty_object) {
+        type["maxProperties"] = 0;
+        type["additionalProperties"] = false;
+    } else if (constraints.object_only) {
+        type["additionalProperties"] = true;
     }
     if (field.nullable) {
         return Json{{"anyOf", Json::array({type, Json{{"type", "null"}}})}};
