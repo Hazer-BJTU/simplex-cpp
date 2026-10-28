@@ -128,14 +128,14 @@ R from_json(const Json& input, const std::string& path = {}) {
         [&](const auto&... field) { (detail::read_field(record, input, field, path), ...); },
         wire_fields(std::as_const(record)));
 
-    for (const auto forbidden : detail::forbidden_fields<R>()) {
+    for (const auto forbidden : forbidden_fields<R>()) {
         if (input.contains(std::string(forbidden))) {
             throw ValidationError(detail::join_path(path, forbidden),
                                   "this record does not accept that field");
         }
     }
 
-    if (detail::unknown_policy<R>() == UnknownFields::reject) {
+    if (unknown_policy<R>() == UnknownFields::reject) {
         const auto& descriptor = describe_record<R>();
         for (const auto& [key, value] : input.items()) {
             const auto known = std::ranges::any_of(descriptor.fields(), [&](const FieldView& view) {
@@ -150,7 +150,7 @@ R from_json(const Json& input, const std::string& path = {}) {
     // Conditional requirements are data, not code: a rule names the field that
     // selects it and the fields it requires or forbids, so the same table is
     // published in the manifest and enforced here.
-    for (const auto& rule : detail::rules<R>()) {
+    for (const auto& rule : rules<R>()) {
         if (!detail::rule_matches(record, rule)) continue;
         for (const auto present : rule.requires_fields) {
             if (!detail::field_present(record, present)) {

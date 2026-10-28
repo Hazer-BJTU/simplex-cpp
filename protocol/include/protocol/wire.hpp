@@ -1040,6 +1040,13 @@ struct PlanReadArguments {
                 .constant("read"),
         };
     }
+    friend UnknownFields wire_unknown_fields(const PlanReadArguments&) {
+        return UnknownFields::reject;
+    }
+    friend std::span<const std::string_view> wire_forbidden_fields(const PlanReadArguments&) {
+        static const std::array<std::string_view, 1> forbidden{"markdown"};
+        return forbidden;
+    }
 };
 
 /** Arguments of `plan/replace`. */
@@ -1062,13 +1069,16 @@ struct PlanReplaceArguments {
                 .max_length(64 * 1024),
         };
     }
+    friend UnknownFields wire_unknown_fields(const PlanReplaceArguments&) {
+        return UnknownFields::reject;
+    }
 };
 
 /** Result of `plan/read`. */
 struct PlanReadResult {
     std::string markdown;
     std::uint64_t revision = 0;
-    Json updated_at = nullptr;
+    std::optional<std::string> updated_at;
 
     friend constexpr std::string_view wire_name(const PlanReadResult&) { return "PlanReadResult"; }
     friend constexpr std::string_view wire_summary(const PlanReadResult&) {
@@ -1079,8 +1089,8 @@ struct PlanReadResult {
             text("markdown", &PlanReadResult::markdown, "Current plan text."),
             integer("revision", &PlanReadResult::revision,
                     "Revision incremented by each changed replacement."),
-            opaque("updated_at", &PlanReadResult::updated_at,
-                   "ISO-8601 timestamp of the last change, or null for the initial plan.")
+            text("updated_at", &PlanReadResult::updated_at,
+                 "ISO-8601 timestamp of the last change, or null for the initial plan.")
                 .required().nullable_value(),
         };
     }
@@ -1089,7 +1099,7 @@ struct PlanReadResult {
 /** Result of `plan/replace`. */
 struct PlanReplaceResult {
     std::uint64_t revision = 0;
-    Json updated_at = nullptr;
+    std::optional<std::string> updated_at;
     bool changed = false;
 
     friend constexpr std::string_view wire_name(const PlanReplaceResult&) {
@@ -1101,8 +1111,8 @@ struct PlanReplaceResult {
     friend auto wire_fields(const PlanReplaceResult&) {
         return std::tuple{
             integer("revision", &PlanReplaceResult::revision, "Revision after the attempt."),
-            opaque("updated_at", &PlanReplaceResult::updated_at,
-                   "ISO-8601 timestamp of the change, or null while the plan is empty.")
+            text("updated_at", &PlanReplaceResult::updated_at,
+                 "ISO-8601 timestamp of the change, or null while the plan is empty.")
                 .required().nullable_value(),
             boolean("changed", &PlanReplaceResult::changed,
                     "True when the stored plan changed."),

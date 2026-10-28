@@ -100,21 +100,21 @@ Json record_entry(const RecordDescriptor& descriptor, bool described) {
     return entry;
 }
 
-/** Record-level acceptance policy: unknown names, rejected names, rules. */
-template <class R>
-Json policy_entry() {
+/** Record-level acceptance policy, read from the descriptor itself. */
+inline Json policy_entry(const RecordDescriptor& descriptor) {
     Json entry = Json::object();
     entry["unknown_fields"] =
-        detail::unknown_policy<R>() == UnknownFields::reject ? "reject" : "ignore";
+        descriptor.unknown != nullptr && descriptor.unknown() == UnknownFields::reject
+            ? "reject" : "ignore";
     Json forbidden = Json::array();
-    for (const auto name : detail::forbidden_fields<R>()) {
+    for (const auto name : descriptor.forbidden()) {
         forbidden.push_back(name);
     }
     if (!forbidden.empty()) {
         entry["forbidden_fields"] = std::move(forbidden);
     }
     Json rules = Json::array();
-    for (const auto& rule : detail::rules<R>()) {
+    for (const auto& rule : descriptor.rules()) {
         Json required = Json::array();
         for (const auto name : rule.requires_fields) {
             required.push_back(name);
@@ -156,16 +156,7 @@ Json canonical_document() {
         records[std::string(descriptor->name)] = record_entry(*descriptor, false);
     }
     for (const auto* descriptor : record_registry()) {
-        const auto name = std::string(descriptor->name);
-        if (name == "PayloadRequest") {
-            records[name].update(policy_entry<PayloadRequest>());
-        } else if (name == "SignalRequest") {
-            records[name].update(policy_entry<SignalRequest>());
-        } else if (name == "Options") {
-            records[name].update(policy_entry<Options>());
-        } else {
-            records[name]["unknown_fields"] = "ignore";
-        }
+        records[std::string(descriptor->name)].update(policy_entry(*descriptor));
     }
     document["records"] = std::move(records);
 

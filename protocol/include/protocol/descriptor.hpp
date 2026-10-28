@@ -121,6 +121,10 @@ struct RecordDescriptor {
     std::string_view name;
     std::string_view summary;
     std::span<const FieldView> (*fields)() = nullptr;
+    /** Effective acceptance policy, published and fingerprinted per record. */
+    UnknownFields (*unknown)() = nullptr;
+    std::span<const std::string_view> (*forbidden)() = nullptr;
+    std::span<const Rule> (*rules)() = nullptr;
 };
 
 /** A closed vocabulary with its exact wire spellings. */
@@ -318,6 +322,8 @@ std::vector<FieldView> field_views() {
     return views;
 }
 
+} // namespace detail
+
 template <class R>
 UnknownFields unknown_policy() {
     if constexpr (requires(const R& record) { wire_unknown_fields(record); }) {
@@ -350,15 +356,17 @@ std::span<const Rule> rules() {
     }
 }
 
-} // namespace detail
 
 template <class R>
 const RecordDescriptor& describe_record() {
     static const R instance{};
     static const std::vector<FieldView> views = detail::field_views<R>();
-    static const RecordDescriptor descriptor{wire_name(instance), wire_summary(instance), [] {
-                                                 return std::span<const FieldView>(views);
-                                             }};
+    static const RecordDescriptor descriptor{
+        wire_name(instance), wire_summary(instance),
+        [] { return std::span<const FieldView>(views); },
+        [] { return unknown_policy<R>(); },
+        [] { return forbidden_fields<R>(); },
+        [] { return rules<R>(); }};
     return descriptor;
 }
 

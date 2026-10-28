@@ -277,7 +277,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "6ba6a64e3e35fa2c6ac2942a4572705a7b963966a8728894a655e058499387ca",
+  "fingerprint": "17907c2057a2f47c64cc43eabe86c3c96f75e0c303e2e24d4af61ff5567902e7",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -1426,7 +1426,9 @@
           },
           "updated_at": {
             "anyOf": [
-              {},
+              {
+                "type": "string"
+              },
               {
                 "type": "null"
               }
@@ -1472,7 +1474,9 @@
           },
           "updated_at": {
             "anyOf": [
-              {},
+              {
+                "type": "string"
+              },
               {
                 "type": "null"
               }
@@ -3292,8 +3296,11 @@
           "summary": "Literal read."
         }
       ],
+      "forbidden_fields": [
+        "markdown"
+      ],
       "summary": "Arguments of plan/read: the operation is the literal read.",
-      "unknown_fields": "ignore"
+      "unknown_fields": "reject"
     },
     "PlanReadResult": {
       "fields": [
@@ -3310,7 +3317,7 @@
           "summary": "Revision incremented by each changed replacement."
         },
         {
-          "kind": "any",
+          "kind": "text",
           "name": "updated_at",
           "nullable": true,
           "required": true,
@@ -3338,7 +3345,7 @@
         }
       ],
       "summary": "Arguments of plan/replace: replace plus at most 64 KiB of markdown.",
-      "unknown_fields": "ignore"
+      "unknown_fields": "reject"
     },
     "PlanReplaceResult": {
       "fields": [
@@ -3349,7 +3356,7 @@
           "summary": "Revision after the attempt."
         },
         {
-          "kind": "any",
+          "kind": "text",
           "name": "updated_at",
           "nullable": true,
           "required": true,
