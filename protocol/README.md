@@ -17,11 +17,11 @@ atomicity — stays in its owning modules and in `docs/core/worker-protocol.md`.
 | `include/protocol/codec.hpp` | `to_json` / `from_json` driven by those descriptors |
 | `include/protocol/wire.hpp` | The inventory: envelopes, requests, events, shared objects, confirmation, remote tools |
 | `include/protocol/manifest.hpp` | The published document, its JSON Schema view and the fingerprint |
-| `src/wire.cpp` | Cross-field rules and the event/route registries |
+| `src/wire.cpp` | Cross-field rules and the event registry |
 | `src/manifest.cpp` | Registry walk, canonical document, SHA-256 |
 | `tools/export_manifest.cpp` | The only supported producer of `schemas/worker-protocol.json` |
 | `schemas/worker-protocol.json` | Generated and committed; never edited by hand |
-| `test/`, `test/fixtures/` | Codec, registry and staleness regressions |
+| `test/` | Codec, registry and staleness regressions |
 
 ## The three artifacts
 
@@ -60,9 +60,10 @@ check to staged native validation.
 
 ## Design decisions
 
-**Presence is inferred, never declared twice.** A `std::optional<M>` member is an
-optional wire field; anything else is required. There is no second list that can
-disagree with the codec.
+**Presence and nullability are separate.** A `std::optional<M>` member defaults
+to an optional wire field; other members default to required. Descriptor
+overrides express required-but-nullable fields such as persistence revisions.
+The codec and manifest read the same effective rules.
 
 **Open points stay open.** `extras`, tool arguments, provider option values and
 route results are `opaque` (`nlohmann::json`). The manifest describes their
@@ -74,12 +75,14 @@ wire object whose required fields depend on `operation`; `wire_validate()` is
 where that lives, so `history` carrying `content` fails rather than being
 half-read.
 
-**A route publishes its forms, not one shape.** `subagent/send` accepts four
-operations and `subagent/receive` three queries, and each one has its own
-argument record and reply. The route registry therefore lists `(arguments,
-result)` pairs, so an operation-dependent field is a visible contract change
-instead of a note in a handler. A route absent from the registry stays
-extension-owned: the connection path names it and no body field overrides it.
+**Remote routes belong to the Hub.** The protocol describes correlation fields,
+request/response discriminators, the success/rejection envelope and opaque
+argument/result objects. It has no route registry or per-tool argument schemas.
+The Hub decides route availability, authorization and argument validity. A
+concrete worker tool may validate its own model-facing arguments and the fields
+it needs in a reply; those checks stay with that tool. Unknown Hub error codes
+remain readable diagnostic strings. Neither a route addition nor a tool schema
+change changes the worker protocol fingerprint.
 
 **Two libraries.** `protocol_lib` (`libsimplex_protocol.so`) is the descriptors
 and codec and depends on nlohmann/json only — a tool or plugin can speak the wire

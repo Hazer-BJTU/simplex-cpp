@@ -181,9 +181,9 @@ socket deadline. Unknown routes continue to return `not_implemented`.
 | `subagent/send` | `subagent_id`, `operation: continue` or `compact`, optional `options` | child request ID and dispatch state; content is forbidden |
 | `subagent/send` | `subagent_id`, `operation: stop` | operation ID and stopping state; content/options are forbidden |
 
-Each row above is one published form. `protocol/schemas/worker-protocol.json`
-lists them under `routes[].forms` together with the exact argument and reply
-records, so a field change here is a reviewable contract change there.
+These route-specific forms belong to the Hub handlers. The worker protocol
+only describes the shared remote-tool envelope; it neither advertises route
+support nor validates these arguments or results.
 
 All unspecified arguments are rejected. `content` follows normal worker payload
 content rules. This is the remote protocol, distinct from the C++ tool's text-only
