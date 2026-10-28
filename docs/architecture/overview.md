@@ -40,6 +40,7 @@ Browser / operator
 | `process_io` | I/O environment, input ordering, raw capture and pump joins | Child lifetime and tool policy |
 | `utils/subprocess` | Owned native child, opaque launch attachment, shell and executable-location helpers | Session IDs, tool approval, capture policy |
 | `io` / `intercom` | JSON routing / reusable text WebSocket transport | Conversation semantics |
+| `protocol` | The worker's wire vocabulary, its codec and the generated contract document | Execution policy, display projections, Hub adapters |
 | Hub | Sessions, launch supervision, operator access, event presentation | Authoritative conversation state |
 
 ## Dependency injection and state

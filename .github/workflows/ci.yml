@@ -142,6 +142,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Validate worker protocol schema independently
+        if: matrix.node == '24'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/protocol-schema"
+          "$RUNNER_TEMP/protocol-schema/bin/pip" install -r protocol/test/requirements.txt
+          "$RUNNER_TEMP/protocol-schema/bin/python" protocol/test/test_schema.py
+
       - name: Check shared project version
         working-directory: hub
         run: npm run version:check

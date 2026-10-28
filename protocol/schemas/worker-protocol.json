@@ -1,0 +1,4350 @@
+{
+  "enumerations": {
+    "CallScheduling": {
+      "spellings": [
+        "read_only",
+        "parall_write",
+        "serial_write"
+      ]
+    },
+    "CallSecurity": {
+      "spellings": [
+        "default_deny",
+        "require_confirm",
+        "trusted"
+      ]
+    },
+    "ConfirmationDecision": {
+      "spellings": [
+        "approved",
+        "denied"
+      ]
+    },
+    "ContentType": {
+      "spellings": [
+        "text",
+        "binary",
+        "external_ref"
+      ]
+    },
+    "EnvelopeType": {
+      "spellings": [
+        "event",
+        "payload",
+        "signal",
+        "confirmation_request",
+        "confirmation_response",
+        "tool_request",
+        "tool_response"
+      ]
+    },
+    "EventName": {
+      "spellings": [
+        "ready",
+        "status",
+        "options",
+        "history",
+        "answer",
+        "answer_error",
+        "history_error",
+        "input_admitted",
+        "input_rejected",
+        "run_started",
+        "input_committed",
+        "model_response",
+        "tool_calls",
+        "tool_results",
+        "persisted",
+        "compact_finished",
+        "export_error",
+        "error",
+        "run_finished"
+      ]
+    },
+    "FailureStage": {
+      "spellings": [
+        "model_request",
+        "other"
+      ]
+    },
+    "InputOperation": {
+      "spellings": [
+        "message",
+        "continue",
+        "compact",
+        "history",
+        "answer"
+      ]
+    },
+    "LoopPhase": {
+      "spellings": [
+        "ready",
+        "model",
+        "tools",
+        "projection",
+        "blocked"
+      ]
+    },
+    "LoopStatus": {
+      "spellings": [
+        "idle",
+        "running",
+        "completed",
+        "cancelled",
+        "exchange_limit",
+        "failed",
+        "auto_compact_required"
+      ]
+    },
+    "MessageType": {
+      "spellings": [
+        "user_input",
+        "model_response",
+        "invoke_return"
+      ]
+    },
+    "Modality": {
+      "spellings": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "document"
+      ]
+    },
+    "PersistBoundary": {
+      "spellings": [
+        "before_tools",
+        "results_ready",
+        "step_finished",
+        "run_finished",
+        "compact",
+        "cancelled",
+        "shutdown"
+      ]
+    },
+    "RejectionCode": {
+      "spellings": [
+        "invalid_options",
+        "payload_queue_full"
+      ]
+    },
+    "RunStatus": {
+      "spellings": [
+        "completed",
+        "cancelled",
+        "exchange_limit",
+        "failed"
+      ]
+    },
+    "SignalOperation": {
+      "spellings": [
+        "status",
+        "options",
+        "cancel",
+        "shutdown"
+      ]
+    },
+    "StorageKind": {
+      "spellings": [
+        "json",
+        "sqlite"
+      ]
+    },
+    "ToolStatus": {
+      "spellings": [
+        "succeeded",
+        "rejected"
+      ]
+    }
+  },
+  "events": {
+    "answer": {
+      "array": false,
+      "data": "AnswerPage",
+      "name": "answer"
+    },
+    "answer_error": {
+      "array": false,
+      "data": "QueryErrorData",
+      "name": "answer_error"
+    },
+    "compact_finished": {
+      "array": false,
+      "data": "CompactFinishedData",
+      "name": "compact_finished"
+    },
+    "error": {
+      "array": false,
+      "data": "ErrorData",
+      "name": "error"
+    },
+    "export_error": {
+      "array": false,
+      "data": "ExportErrorData",
+      "name": "export_error"
+    },
+    "history": {
+      "array": false,
+      "data": "HistoryPage",
+      "name": "history"
+    },
+    "history_error": {
+      "array": false,
+      "data": "QueryErrorData",
+      "name": "history_error"
+    },
+    "input_admitted": {
+      "array": false,
+      "data": "InputAdmittedData",
+      "name": "input_admitted"
+    },
+    "input_committed": {
+      "array": false,
+      "data": "EmptyData",
+      "name": "input_committed"
+    },
+    "input_rejected": {
+      "array": false,
+      "data": "InputRejectedData",
+      "name": "input_rejected"
+    },
+    "model_response": {
+      "array": false,
+      "data": "ResponseProjection",
+      "name": "model_response"
+    },
+    "options": {
+      "array": false,
+      "data": "OptionsData",
+      "name": "options"
+    },
+    "persisted": {
+      "array": false,
+      "data": "PersistedData",
+      "name": "persisted"
+    },
+    "ready": {
+      "array": false,
+      "data": "StatusData",
+      "name": "ready"
+    },
+    "run_finished": {
+      "array": false,
+      "data": "RunOutcomeData",
+      "name": "run_finished"
+    },
+    "run_started": {
+      "array": false,
+      "data": "EmptyData",
+      "name": "run_started"
+    },
+    "status": {
+      "array": false,
+      "data": "StatusData",
+      "name": "status"
+    },
+    "tool_calls": {
+      "array": true,
+      "data": "Call",
+      "name": "tool_calls"
+    },
+    "tool_results": {
+      "array": true,
+      "data": "ToolResultMessage",
+      "name": "tool_results"
+    }
+  },
+  "extension_policies": [
+    "extras, tool arguments, payload options and route results are open JSON owned by their provider, tool or plugin; the manifest describes their policy rather than their shape",
+    "unknown fields are ignored unless a record declares rejection",
+    "remote-tool routes belong to the Hub: the connection path names the route and no body field overrides it. The Hub decides support, authorization and argument validity; neither route names nor tool-specific arguments/results are part of the worker contract",
+    "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
+    "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
+  ],
+  "fingerprint": "ac1676a044bd494610cbc0a6e4527ca2300667c1920326f35839481989468391",
+  "fingerprint_scope": [
+    "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
+    "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
+  ],
+  "json_schema": {
+    "$defs": {
+      "AnswerPage": {
+        "additionalProperties": true,
+        "description": "Exact answer bytes with the cursor to continue; binary parts are unavailable.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "modality": {
+            "$ref": "#/$defs/Modality"
+          },
+          "next_offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_part": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "part": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/$defs/AnswerSource"
+          },
+          "total_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "$ref": "#/$defs/ContentType"
+          }
+        },
+        "required": [
+          "request_id",
+          "source",
+          "part",
+          "offset",
+          "raw",
+          "type",
+          "modality",
+          "bytes",
+          "next_offset",
+          "next_part",
+          "total_parts",
+          "done"
+        ],
+        "type": "object"
+      },
+      "AnswerSource": {
+        "additionalProperties": false,
+        "description": "Locator for exact-answer pagination. Every field must be copied unchanged.",
+        "properties": {
+          "commit_sequence": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "step": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "turn",
+          "step",
+          "commit_sequence",
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "ArchiveCleanup": {
+        "additionalProperties": true,
+        "description": "Archives removed after a successful compaction.",
+        "properties": {
+          "removed_archives": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "removed_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "removed_archives",
+          "removed_bytes"
+        ],
+        "type": "object"
+      },
+      "ArchiveRef": {
+        "additionalProperties": true,
+        "description": "Storage evidence of a compaction archive; never an answer-paging source.",
+        "properties": {
+          "archive_id": {
+            "type": "string"
+          },
+          "restorable": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "storage_kind": {
+            "$ref": "#/$defs/StorageKind"
+          }
+        },
+        "required": [
+          "session_id",
+          "archive_id",
+          "storage_kind",
+          "restorable"
+        ],
+        "type": "object"
+      },
+      "AutoCompact": {
+        "additionalProperties": true,
+        "description": "Attempt/success counters for the current request plus the startup policy; a zero threshold disables it.",
+        "properties": {
+          "attempts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "succeeded": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "threshold": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempts",
+          "succeeded",
+          "limit",
+          "threshold"
+        ],
+        "type": "object"
+      },
+      "Call": {
+        "additionalProperties": true,
+        "description": "A proposed tool call. Arguments are tool-owned; the classifications are not.",
+        "properties": {
+          "arguments": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extras": {},
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "security": {
+            "$ref": "#/$defs/CallSecurity"
+          },
+          "type": {
+            "$ref": "#/$defs/CallScheduling"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments",
+          "type",
+          "security"
+        ],
+        "type": "object"
+      },
+      "CallScheduling": {
+        "enum": [
+          "read_only",
+          "parall_write",
+          "serial_write"
+        ],
+        "type": "string"
+      },
+      "CallSecurity": {
+        "enum": [
+          "default_deny",
+          "require_confirm",
+          "trusted"
+        ],
+        "type": "string"
+      },
+      "CompactFinishedData": {
+        "additionalProperties": true,
+        "description": "Compacted state was durably published; old history pages must be invalidated.",
+        "properties": {
+          "archive": {
+            "$ref": "#/$defs/ArchiveRef"
+          },
+          "archive_cleanup": {
+            "$ref": "#/$defs/ArchiveCleanup"
+          },
+          "archive_cleanup_error": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "cycle": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "durable": {
+            "type": "boolean"
+          },
+          "memory_file": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "removed_turns": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/OmissionSummary"
+              }
+            ]
+          }
+        },
+        "required": [
+          "summary",
+          "removed_turns",
+          "revision",
+          "durable"
+        ],
+        "type": "object"
+      },
+      "ConfirmationDecision": {
+        "enum": [
+          "approved",
+          "denied"
+        ],
+        "type": "string"
+      },
+      "ConfirmationRequest": {
+        "additionalProperties": true,
+        "description": "One confirmation request. Correlate by all four identifiers plus the authenticated connection; there is no request ID or event sequence.",
+        "properties": {
+          "call": {
+            "$ref": "#/$defs/Call"
+          },
+          "confirmation_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "session_id",
+          "run_id",
+          "confirmation_id",
+          "call"
+        ],
+        "type": "object"
+      },
+      "ConfirmationRequestEnvelope": {
+        "additionalProperties": true,
+        "description": "Worker-to-hub confirmation request on its own connection.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ConfirmationRequest"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "confirmation_request"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "ConfirmationResponse": {
+        "additionalProperties": true,
+        "description": "One decision for one request. A mismatched identifier denies the call.",
+        "properties": {
+          "confirmation_id": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/$defs/ConfirmationDecision"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "session_id",
+          "run_id",
+          "confirmation_id",
+          "decision"
+        ],
+        "type": "object"
+      },
+      "ConfirmationResponseEnvelope": {
+        "additionalProperties": true,
+        "description": "Hub-to-worker decision, sent once on the same confirmation connection.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ConfirmationResponse"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "confirmation_response"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "Content": {
+        "additionalProperties": true,
+        "description": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "extras": {},
+          "modality": {
+            "$ref": "#/$defs/Modality"
+          },
+          "omitted": {
+            "type": "boolean"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "type": {
+            "$ref": "#/$defs/ContentType"
+          }
+        },
+        "required": [
+          "type",
+          "modality",
+          "raw"
+        ],
+        "type": "object"
+      },
+      "ContentType": {
+        "enum": [
+          "text",
+          "binary",
+          "external_ref"
+        ],
+        "type": "string"
+      },
+      "EmptyData": {
+        "additionalProperties": true,
+        "description": "An empty object. Older workers may omit fields; nothing is required.",
+        "properties": {},
+        "type": "object"
+      },
+      "EnvelopeType": {
+        "enum": [
+          "event",
+          "payload",
+          "signal",
+          "confirmation_request",
+          "confirmation_response",
+          "tool_request",
+          "tool_response"
+        ],
+        "type": "string"
+      },
+      "ErrorData": {
+        "additionalProperties": true,
+        "description": "Control-validation or storage diagnostic, not a universal fatal notification. A terminal storage failure always carries primary_outcome.",
+        "properties": {
+          "durable": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "primary_outcome": {},
+          "storage_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "EventEnvelope": {
+        "additionalProperties": true,
+        "description": "An emitted event. data carries the shape registered for this event name.",
+        "properties": {
+          "data": {},
+          "event": {
+            "$ref": "#/$defs/EventName"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "event"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "event",
+          "session_id",
+          "worker_id",
+          "request_id",
+          "run_id",
+          "sequence",
+          "data"
+        ],
+        "type": "object"
+      },
+      "EventName": {
+        "enum": [
+          "ready",
+          "status",
+          "options",
+          "history",
+          "answer",
+          "answer_error",
+          "history_error",
+          "input_admitted",
+          "input_rejected",
+          "run_started",
+          "input_committed",
+          "model_response",
+          "tool_calls",
+          "tool_results",
+          "persisted",
+          "compact_finished",
+          "export_error",
+          "error",
+          "run_finished"
+        ],
+        "type": "string"
+      },
+      "EventQueue": {
+        "additionalProperties": true,
+        "description": "Queue and transport byte snapshot; a snapshot is not a delivery receipt.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transport_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ExecutionIdentity": {
+        "additionalProperties": true,
+        "description": "Worker, request and run identity of an input or a committed response.",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "request_id",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "ExportErrorData": {
+        "additionalProperties": true,
+        "description": "Optional archive-cleanup diagnostic; it never changes the run outcome.",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FailureData": {
+        "additionalProperties": true,
+        "description": "Where a run failed and whether an explicit continue may be admitted.",
+        "properties": {
+          "can_continue": {
+            "type": "boolean"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/$defs/FailureStage"
+          }
+        },
+        "required": [
+          "stage",
+          "operation",
+          "can_continue"
+        ],
+        "type": "object"
+      },
+      "FailureStage": {
+        "enum": [
+          "model_request",
+          "other"
+        ],
+        "type": "string"
+      },
+      "HistoryPage": {
+        "additionalProperties": true,
+        "description": "One history page. All pages of a load must agree on worker, revision and total.",
+        "properties": {
+          "next": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_step": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "step": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/$defs/HistoryTurn"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "request_id",
+          "revision",
+          "start",
+          "step",
+          "next",
+          "next_step",
+          "total",
+          "turns"
+        ],
+        "type": "object"
+      },
+      "HistoryStep": {
+        "additionalProperties": true,
+        "description": "One bounded response preview. Exact text is read through answer pages.",
+        "properties": {
+          "answer_source": {
+            "$ref": "#/$defs/AnswerSource"
+          },
+          "commit_sequence": {
+            "type": "string"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionIdentity"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasoning": {
+            "$ref": "#/$defs/Content"
+          },
+          "tool_calls": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "content",
+          "tool_calls",
+          "omitted_parts"
+        ],
+        "type": "object"
+      },
+      "HistoryTurn": {
+        "additionalProperties": true,
+        "description": "One canonical turn with a repeated user projection; steps are admitted whole.",
+        "properties": {
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "internal_input": {
+            "type": "string"
+          },
+          "omitted_steps": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_user_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/$defs/ExecutionIdentity"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/HistoryStep"
+            },
+            "type": "array"
+          },
+          "user": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "user",
+          "steps",
+          "omitted_user_parts",
+          "omitted_steps"
+        ],
+        "type": "object"
+      },
+      "InputAdmittedData": {
+        "additionalProperties": true,
+        "description": "Admitted operation retained for transcript replay; older workers emitted an empty object.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/InputOperation"
+          }
+        },
+        "type": "object"
+      },
+      "InputOperation": {
+        "enum": [
+          "message",
+          "continue",
+          "compact",
+          "history",
+          "answer"
+        ],
+        "type": "string"
+      },
+      "InputRejectedData": {
+        "additionalProperties": true,
+        "description": "An input that failed validation or queue admission; no run was started for it.",
+        "properties": {
+          "code": {
+            "$ref": "#/$defs/RejectionCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "operation": {
+            "$ref": "#/$defs/InputOperation"
+          },
+          "request_id": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "message"
+        ],
+        "type": "object"
+      },
+      "LoopPhase": {
+        "enum": [
+          "ready",
+          "model",
+          "tools",
+          "projection",
+          "blocked"
+        ],
+        "type": "string"
+      },
+      "LoopProgress": {
+        "additionalProperties": true,
+        "description": "Current or most recent loop outcome and recovery boundary, unrelated to event sequence.",
+        "properties": {
+          "committed_response_sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completed_exchanges": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "pending_results": {},
+          "phase": {
+            "$ref": "#/$defs/LoopPhase"
+          },
+          "status": {
+            "$ref": "#/$defs/LoopStatus"
+          }
+        },
+        "required": [
+          "status",
+          "phase",
+          "completed_exchanges",
+          "committed_response_sequence",
+          "error",
+          "pending_results"
+        ],
+        "type": "object"
+      },
+      "LoopStatus": {
+        "enum": [
+          "idle",
+          "running",
+          "completed",
+          "cancelled",
+          "exchange_limit",
+          "failed",
+          "auto_compact_required"
+        ],
+        "type": "string"
+      },
+      "MemoryRetention": {
+        "additionalProperties": true,
+        "description": "Effective archive retention; zero disables cleanup.",
+        "properties": {
+          "max_archives": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_archives"
+        ],
+        "type": "object"
+      },
+      "MessageType": {
+        "enum": [
+          "user_input",
+          "model_response",
+          "invoke_return"
+        ],
+        "type": "string"
+      },
+      "Modality": {
+        "enum": [
+          "text",
+          "image",
+          "audio",
+          "video",
+          "document"
+        ],
+        "type": "string"
+      },
+      "OmissionMarker": {
+        "additionalProperties": true,
+        "description": "Counts a batch suffix that was not projected; it is not a call or a result.",
+        "properties": {
+          "display_omitted": {
+            "type": "boolean"
+          },
+          "omitted_items": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "display_omitted",
+          "omitted_items"
+        ],
+        "type": "object"
+      },
+      "OmissionSummary": {
+        "additionalProperties": true,
+        "description": "An explicit omission instead of an apparently complete summary prefix.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "display_omitted": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_omitted",
+          "bytes",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "OptionCategory": {
+        "additionalProperties": true,
+        "description": "Advertised choices and effective current values; an absent key means no selection.",
+        "properties": {
+          "available": {
+            "items": {
+              "$ref": "#/$defs/OptionChoice"
+            },
+            "type": "array"
+          },
+          "current": {}
+        },
+        "required": [
+          "available",
+          "current"
+        ],
+        "type": "object"
+      },
+      "OptionChoice": {
+        "additionalProperties": true,
+        "description": "An option name with its advertised values, in display order.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "options"
+        ],
+        "type": "object"
+      },
+      "OptionsData": {
+        "additionalProperties": true,
+        "description": "Available choices and current selections grouped by category.",
+        "properties": {
+          "confirmation": {
+            "$ref": "#/$defs/OptionCategory"
+          },
+          "model": {
+            "$ref": "#/$defs/OptionCategory"
+          },
+          "tools": {
+            "$ref": "#/$defs/OptionCategory"
+          }
+        },
+        "type": "object"
+      },
+      "PayloadEnvelope": {
+        "additionalProperties": true,
+        "description": "Hub-to-worker payload envelope.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/PayloadRequest"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "payload"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "PayloadRequest": {
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "message"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
+              },
+              "required": [
+                "content"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "continue"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "compact"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {},
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {},
+                "step": {}
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "history"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "options"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "offset": {},
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {},
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {},
+                "start": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "step": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "answer"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "additionalProperties": false,
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "content"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "options"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "start"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "step"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "limit"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "content": {
+                  "items": {
+                    "$ref": "#/$defs/RequestContent"
+                  },
+                  "type": "array"
+                },
+                "limit": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "offset": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "operation": {
+                  "$ref": "#/$defs/InputOperation"
+                },
+                "options": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "part": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/$defs/AnswerSource"
+                },
+                "start": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "step": {
+                  "default": 0,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "source"
+              ]
+            }
+          }
+        ],
+        "description": "A message, continuation, compaction, history query or answer query; the operation decides which fields are required.",
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "role"
+              ]
+            },
+            {
+              "required": [
+                "invokes"
+              ]
+            },
+            {
+              "required": [
+                "invoke_return"
+              ]
+            },
+            {
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "required": [
+                "text"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/$defs/RequestContent"
+            },
+            "type": "array"
+          },
+          "limit": {},
+          "offset": {},
+          "operation": {
+            "$ref": "#/$defs/InputOperation"
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "part": {},
+          "request_id": {
+            "type": "string"
+          },
+          "source": {},
+          "start": {},
+          "step": {}
+        },
+        "required": [
+          "operation",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "PersistBoundary": {
+        "enum": [
+          "before_tools",
+          "results_ready",
+          "step_finished",
+          "run_finished",
+          "compact",
+          "cancelled",
+          "shutdown"
+        ],
+        "type": "string"
+      },
+      "PersistedData": {
+        "additionalProperties": true,
+        "description": "A required snapshot write completed at the named boundary; notifications may be coalesced.",
+        "properties": {
+          "backend": {
+            "$ref": "#/$defs/StorageKind"
+          },
+          "boundary": {
+            "$ref": "#/$defs/PersistBoundary"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "boundary",
+          "backend",
+          "revision",
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "QueryErrorData": {
+        "additionalProperties": true,
+        "description": "Query failure. request_id echoes whatever the query carried, including null.",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "message"
+        ],
+        "type": "object"
+      },
+      "RejectionCode": {
+        "enum": [
+          "invalid_options",
+          "payload_queue_full"
+        ],
+        "type": "string"
+      },
+      "RequestContent": {
+        "additionalProperties": true,
+        "description": "One user part. raw is a string and extras, when present, an object.",
+        "properties": {
+          "extras": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "modality": {
+            "$ref": "#/$defs/Modality"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/ContentType"
+          }
+        },
+        "required": [
+          "type",
+          "modality",
+          "raw"
+        ],
+        "type": "object"
+      },
+      "ResponseProjection": {
+        "additionalProperties": true,
+        "description": "A committed response as displayed: bounded content with its cursor fields. Exact text is read through answer pages.",
+        "properties": {
+          "answer_source": {
+            "$ref": "#/$defs/AnswerSource"
+          },
+          "commit_sequence": {
+            "type": "string"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/$defs/Usage"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "invokes": {
+            "contains": {
+              "required": [
+                "display_omitted"
+              ],
+              "type": "object"
+            },
+            "items": {
+              "else": {
+                "$ref": "#/$defs/Call"
+              },
+              "if": {
+                "required": [
+                  "display_omitted"
+                ],
+                "type": "object"
+              },
+              "then": {
+                "$ref": "#/$defs/OmissionMarker"
+              }
+            },
+            "maxContains": 1,
+            "minContains": 0,
+            "type": "array",
+            "x-simplex-trailing-marker": "display_omitted"
+          },
+          "omitted_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasoning": {
+            "$ref": "#/$defs/Content"
+          },
+          "role": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "$ref": "#/$defs/MessageType"
+          }
+        },
+        "required": [
+          "index",
+          "type",
+          "role",
+          "content",
+          "tool_calls",
+          "omitted_parts"
+        ],
+        "type": "object"
+      },
+      "Result": {
+        "additionalProperties": true,
+        "description": "A tool result. Recognized extras markers include error, cause_query and loop_skipped.",
+        "properties": {
+          "extras": {},
+          "output": {
+            "$ref": "#/$defs/Content"
+          },
+          "query": {
+            "$ref": "#/$defs/Call"
+          }
+        },
+        "required": [
+          "query",
+          "output"
+        ],
+        "type": "object"
+      },
+      "RunOutcomeData": {
+        "additionalProperties": true,
+        "description": "Settled invocation outcome. Omission counters appear only when nonzero and are not lifetime totals or delivery acknowledgements.",
+        "properties": {
+          "auto_compact": {
+            "$ref": "#/$defs/AutoCompact"
+          },
+          "coalesced_metadata_events": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "compact_exchanges": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "durable": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "exchanges": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failure": {
+            "$ref": "#/$defs/FailureData"
+          },
+          "omitted_display_events": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_feedback_events": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_query_events": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/$defs/RunStatus"
+          },
+          "task_exchanges": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "error",
+          "exchanges",
+          "durable"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "completed",
+          "cancelled",
+          "exchange_limit",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "SignalEnvelope": {
+        "additionalProperties": true,
+        "description": "Hub-to-worker signal envelope; it uses a separate queue from payloads.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/SignalRequest"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "signal"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "SignalOperation": {
+        "enum": [
+          "status",
+          "options",
+          "cancel",
+          "shutdown"
+        ],
+        "type": "string"
+      },
+      "SignalRequest": {
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "cancel"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "status"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "options"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "shutdown"
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "run_id"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "operation": {
+                  "$ref": "#/$defs/SignalOperation"
+                },
+                "run_id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Control signal; additional fields are ignored and no request ID is echoed.",
+        "properties": {
+          "operation": {
+            "$ref": "#/$defs/SignalOperation"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      },
+      "StatusData": {
+        "additionalProperties": true,
+        "description": "State snapshot. Optional fields are omitted by older workers and must be tolerated.",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "auto_compact": {
+            "$ref": "#/$defs/AutoCompact"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "event_queue": {
+            "$ref": "#/$defs/EventQueue"
+          },
+          "loop": {
+            "$ref": "#/$defs/LoopProgress"
+          },
+          "memory_retention": {
+            "$ref": "#/$defs/MemoryRetention"
+          },
+          "rejected_payloads": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rejected_queries": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stopping": {
+            "type": "boolean"
+          },
+          "storage_failed": {
+            "type": "boolean"
+          },
+          "unreported_rejections": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "stopping",
+          "storage_failed",
+          "rejected_payloads",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "StorageKind": {
+        "enum": [
+          "json",
+          "sqlite"
+        ],
+        "type": "string"
+      },
+      "ToolError": {
+        "additionalProperties": true,
+        "description": "Machine-readable rejection code with a diagnostic message.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ToolRequest": {
+        "additionalProperties": true,
+        "description": "One remote-tool request. The connection path selects a Hub-owned route; support is decided by the Hub.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "session_id",
+          "run_id",
+          "request_id",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "ToolRequestEnvelope": {
+        "additionalProperties": true,
+        "description": "One-shot remote-tool request; the route is the connection path.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolRequest"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "tool_request"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "ToolResponse": {
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "error"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ToolError"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "result": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/$defs/ToolStatus"
+                },
+                "worker_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "rejected"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "result"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ToolError"
+                },
+                "request_id": {
+                  "type": "string"
+                },
+                "result": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/$defs/ToolStatus"
+                },
+                "worker_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          }
+        ],
+        "description": "Echoes the identifiers and route. succeeded carries result, rejected carries error.",
+        "properties": {
+          "error": {
+            "$ref": "#/$defs/ToolError"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "route": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/ToolStatus"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "session_id",
+          "run_id",
+          "request_id",
+          "route",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ToolResponseEnvelope": {
+        "additionalProperties": true,
+        "description": "Terminal remote-tool answer; the connection closes after it.",
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ToolResponse"
+          },
+          "type": {
+            "$ref": "#/$defs/EnvelopeType",
+            "const": "tool_response"
+          }
+        },
+        "required": [
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "ToolResultMessage": {
+        "additionalProperties": true,
+        "description": "One returned batch entry: the message projection carrying its invoke_return provenance.",
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/$defs/Content"
+            },
+            "type": "array"
+          },
+          "extras": {},
+          "invoke_return": {
+            "$ref": "#/$defs/Result"
+          },
+          "omitted_parts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/MessageType"
+          }
+        },
+        "required": [
+          "type",
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
+      "ToolStatus": {
+        "enum": [
+          "succeeded",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "additionalProperties": true,
+        "description": "Provider-reported token cost; cache_hit counts tokens inside prompt.",
+        "properties": {
+          "cache_hit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generated": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt",
+          "generated",
+          "cache_hit"
+        ],
+        "type": "object"
+      }
+    },
+    "$id": "urn:simplex:worker-protocol",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Generated from the compiled descriptors. Do not edit: regenerate with the protocol_manifest_export target.",
+    "title": "Simplex worker protocol"
+  },
+  "manifest_format": "simplex.worker-protocol/1",
+  "messages": [
+    {
+      "family": "connection",
+      "record": "EventEnvelope"
+    },
+    {
+      "family": "connection",
+      "record": "PayloadEnvelope"
+    },
+    {
+      "family": "connection",
+      "record": "SignalEnvelope"
+    },
+    {
+      "family": "confirmation",
+      "record": "ConfirmationRequestEnvelope"
+    },
+    {
+      "family": "confirmation",
+      "record": "ConfirmationResponseEnvelope"
+    },
+    {
+      "family": "remote_tool",
+      "record": "ToolRequestEnvelope"
+    },
+    {
+      "family": "remote_tool",
+      "record": "ToolResponseEnvelope"
+    }
+  ],
+  "protocol": "simplex-worker",
+  "records": {
+    "AnswerPage": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Query this page answers."
+        },
+        {
+          "kind": "record",
+          "name": "source",
+          "record": "AnswerSource",
+          "required": true,
+          "summary": "Echoed source."
+        },
+        {
+          "kind": "integer",
+          "name": "part",
+          "required": true,
+          "summary": "Echoed part index."
+        },
+        {
+          "kind": "integer",
+          "name": "offset",
+          "required": true,
+          "summary": "Echoed byte offset."
+        },
+        {
+          "kind": "text",
+          "name": "raw",
+          "required": true,
+          "summary": "Original bytes, verbatim."
+        },
+        {
+          "enumeration": "ContentType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Encoding of raw."
+        },
+        {
+          "enumeration": "Modality",
+          "kind": "enumeration",
+          "name": "modality",
+          "required": true,
+          "summary": "Media category of raw."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": true,
+          "summary": "Original byte length of this part."
+        },
+        {
+          "kind": "integer",
+          "name": "next_offset",
+          "required": true,
+          "summary": "Offset to continue within this part."
+        },
+        {
+          "kind": "integer",
+          "name": "next_part",
+          "required": true,
+          "summary": "Next part index; reset offset when it advances."
+        },
+        {
+          "kind": "integer",
+          "name": "total_parts",
+          "required": true,
+          "summary": "Parts in the committed response."
+        },
+        {
+          "kind": "boolean",
+          "name": "done",
+          "required": true,
+          "summary": "True for the last part."
+        }
+      ],
+      "summary": "Exact answer bytes with the cursor to continue; binary parts are unavailable.",
+      "unknown_fields": "ignore"
+    },
+    "AnswerSource": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Worker incarnation that committed the response."
+        },
+        {
+          "kind": "integer",
+          "name": "turn",
+          "required": true,
+          "summary": "Zero-based turn index."
+        },
+        {
+          "kind": "integer",
+          "name": "step",
+          "required": true,
+          "summary": "Zero-based step index within the turn."
+        },
+        {
+          "kind": "text",
+          "name": "commit_sequence",
+          "required": true,
+          "summary": "Nonzero commit sequence as a decimal string, never a JSON number."
+        },
+        {
+          "kind": "text",
+          "name": "fingerprint",
+          "required": true,
+          "summary": "SHA-256 over the ordered canonical answer parts of this response."
+        }
+      ],
+      "summary": "Locator for exact-answer pagination. Every field must be copied unchanged.",
+      "unknown_fields": "reject"
+    },
+    "ArchiveCleanup": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "removed_archives",
+          "required": true,
+          "summary": "Archives deleted."
+        },
+        {
+          "kind": "integer",
+          "name": "removed_bytes",
+          "required": true,
+          "summary": "Bytes reclaimed."
+        }
+      ],
+      "summary": "Archives removed after a successful compaction.",
+      "unknown_fields": "ignore"
+    },
+    "ArchiveRef": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Session the archive belongs to."
+        },
+        {
+          "kind": "text",
+          "name": "archive_id",
+          "required": true,
+          "summary": "Archive identity."
+        },
+        {
+          "enumeration": "StorageKind",
+          "kind": "enumeration",
+          "name": "storage_kind",
+          "required": true,
+          "summary": "Backend that holds it."
+        },
+        {
+          "kind": "boolean",
+          "name": "restorable",
+          "required": true,
+          "summary": "Whether the archive can be restored."
+        }
+      ],
+      "summary": "Storage evidence of a compaction archive; never an answer-paging source.",
+      "unknown_fields": "ignore"
+    },
+    "AutoCompact": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "attempts",
+          "required": true,
+          "summary": "Automatic attempts for this logical request."
+        },
+        {
+          "kind": "integer",
+          "name": "succeeded",
+          "required": true,
+          "summary": "Successful automatic compactions."
+        },
+        {
+          "kind": "integer",
+          "name": "limit",
+          "required": true,
+          "summary": "Configured attempt limit."
+        },
+        {
+          "kind": "integer",
+          "name": "threshold",
+          "required": true,
+          "summary": "Token threshold; zero disables the automatic policy."
+        }
+      ],
+      "summary": "Attempt/success counters for the current request plus the startup policy; a zero threshold disables it.",
+      "unknown_fields": "ignore"
+    },
+    "Call": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "id",
+          "required": true,
+          "summary": "Call identity used to correlate its result."
+        },
+        {
+          "kind": "text",
+          "name": "name",
+          "required": true,
+          "summary": "Tool name."
+        },
+        {
+          "kind": "any",
+          "name": "arguments",
+          "nullable": true,
+          "required": true,
+          "summary": "Tool-specific arguments as proposed; open JSON, including null. Execution validation belongs to the tool, not to a display projection."
+        },
+        {
+          "enumeration": "CallScheduling",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Scheduling classification; parall_write is the exact spelling."
+        },
+        {
+          "enumeration": "CallSecurity",
+          "kind": "enumeration",
+          "name": "security",
+          "required": true,
+          "summary": "Security classification decided before dispatch."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Bounded annotations (status, loop_skipped, error preview) copied before arguments."
+        }
+      ],
+      "summary": "A proposed tool call. Arguments are tool-owned; the classifications are not.",
+      "unknown_fields": "ignore"
+    },
+    "CompactFinishedData": {
+      "fields": [
+        {
+          "kind": "text_or_record",
+          "name": "summary",
+          "record": "OmissionSummary",
+          "required": true,
+          "summary": "The published summary: a string, or an omission object when it exceeds the 32 KiB budget."
+        },
+        {
+          "kind": "text",
+          "name": "memory_file",
+          "required": false,
+          "summary": "Memory file written, when any."
+        },
+        {
+          "kind": "record",
+          "name": "archive",
+          "record": "ArchiveRef",
+          "required": false,
+          "summary": "Archive the summary came from."
+        },
+        {
+          "kind": "integer",
+          "name": "removed_turns",
+          "required": true,
+          "summary": "Turns replaced by the summary."
+        },
+        {
+          "kind": "integer",
+          "name": "revision",
+          "required": true,
+          "summary": "Display revision after compaction."
+        },
+        {
+          "kind": "boolean",
+          "name": "durable",
+          "required": true,
+          "summary": "Whether the replacement was published."
+        },
+        {
+          "kind": "text",
+          "name": "origin",
+          "required": false,
+          "summary": "automatic for an automatic compaction; absent for a manual one."
+        },
+        {
+          "kind": "integer",
+          "name": "cycle",
+          "required": false,
+          "summary": "Automatic attempt number that produced this summary."
+        },
+        {
+          "kind": "text",
+          "name": "call_id",
+          "required": false,
+          "summary": "Call that triggered the automatic compaction."
+        },
+        {
+          "kind": "record",
+          "name": "archive_cleanup",
+          "record": "ArchiveCleanup",
+          "required": false,
+          "summary": "Cleanup counters on success."
+        },
+        {
+          "kind": "text",
+          "name": "archive_cleanup_error",
+          "required": false,
+          "summary": "Cleanup diagnostic on failure; the run outcome is unaffected."
+        }
+      ],
+      "summary": "Compacted state was durably published; old history pages must be invalidated.",
+      "unknown_fields": "ignore"
+    },
+    "ConfirmationRequest": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Worker incarnation asking for a decision."
+        },
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Session the call belongs to."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Run that proposed the call."
+        },
+        {
+          "kind": "text",
+          "name": "confirmation_id",
+          "required": true,
+          "summary": "One-shot identity of this confirmation exchange."
+        },
+        {
+          "kind": "record",
+          "name": "call",
+          "record": "Call",
+          "required": true,
+          "summary": "The call as settled, not an earlier model proposal."
+        }
+      ],
+      "summary": "One confirmation request. Correlate by all four identifiers plus the authenticated connection; there is no request ID or event sequence.",
+      "unknown_fields": "ignore"
+    },
+    "ConfirmationRequestEnvelope": {
+      "fields": [
+        {
+          "constant": "confirmation_request",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"confirmation_request\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "ConfirmationRequest",
+          "required": true,
+          "summary": "The request."
+        }
+      ],
+      "summary": "Worker-to-hub confirmation request on its own connection.",
+      "unknown_fields": "ignore"
+    },
+    "ConfirmationResponse": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "confirmation_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "enumeration": "ConfirmationDecision",
+          "kind": "enumeration",
+          "name": "decision",
+          "required": true,
+          "summary": "approved or denied; nothing else is accepted."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": false,
+          "summary": "Optional operator text; defaults to \"operator decision\"."
+        }
+      ],
+      "summary": "One decision for one request. A mismatched identifier denies the call.",
+      "unknown_fields": "ignore"
+    },
+    "ConfirmationResponseEnvelope": {
+      "fields": [
+        {
+          "constant": "confirmation_response",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"confirmation_response\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "ConfirmationResponse",
+          "required": true,
+          "summary": "The decision."
+        }
+      ],
+      "summary": "Hub-to-worker decision, sent once on the same confirmation connection.",
+      "unknown_fields": "ignore"
+    },
+    "Content": {
+      "fields": [
+        {
+          "enumeration": "ContentType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Encoding of raw: text, base64 binary, or an external reference."
+        },
+        {
+          "enumeration": "Modality",
+          "kind": "enumeration",
+          "name": "modality",
+          "required": true,
+          "summary": "Media category, required and never inferred from type."
+        },
+        {
+          "kind": "text",
+          "name": "raw",
+          "required": true,
+          "summary": "UTF-8 text, base64 bytes, or a reference string."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Open provider/tool metadata; admitted user metadata is preserved unchanged."
+        },
+        {
+          "kind": "boolean",
+          "name": "truncated",
+          "required": false,
+          "summary": "Display marker: raw is a prefix of the canonical value."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": false,
+          "summary": "Display marker: original UTF-8 byte length of the shortened value."
+        },
+        {
+          "kind": "boolean",
+          "name": "omitted",
+          "required": false,
+          "summary": "Display marker: the value is not shown here."
+        }
+      ],
+      "summary": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them.",
+      "unknown_fields": "ignore"
+    },
+    "EmptyData": {
+      "fields": [],
+      "summary": "An empty object. Older workers may omit fields; nothing is required.",
+      "unknown_fields": "ignore"
+    },
+    "ErrorData": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "message",
+          "required": true,
+          "summary": "Diagnostic text."
+        },
+        {
+          "kind": "boolean",
+          "name": "durable",
+          "required": false,
+          "summary": "Present only as false for storage failures."
+        },
+        {
+          "kind": "any",
+          "name": "primary_outcome",
+          "required": false,
+          "summary": "Status, error and operation of the outcome this failure superseded."
+        },
+        {
+          "kind": "text",
+          "name": "storage_error",
+          "required": false,
+          "summary": "Describes an uncertain archive mutation."
+        }
+      ],
+      "summary": "Control-validation or storage diagnostic, not a universal fatal notification. A terminal storage failure always carries primary_outcome.",
+      "unknown_fields": "ignore"
+    },
+    "EventEnvelope": {
+      "fields": [
+        {
+          "constant": "event",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"event\"."
+        },
+        {
+          "enumeration": "EventName",
+          "kind": "enumeration",
+          "name": "event",
+          "required": true,
+          "summary": "Event name."
+        },
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Worker session."
+        },
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Worker incarnation that emitted it."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Current admitted request, empty when none."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Current run, empty when none."
+        },
+        {
+          "kind": "integer",
+          "name": "sequence",
+          "required": true,
+          "summary": "Monotonic event sequence allocated at admission; not a replay cursor."
+        },
+        {
+          "kind": "any",
+          "name": "data",
+          "required": true,
+          "summary": "Event data; its shape is registered per event name."
+        }
+      ],
+      "summary": "An emitted event. data carries the shape registered for this event name.",
+      "unknown_fields": "ignore"
+    },
+    "EventQueue": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "count",
+          "required": false,
+          "summary": "Events awaiting transport."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": false,
+          "summary": "Encoded bytes queued in the application outbox."
+        },
+        {
+          "kind": "integer",
+          "name": "transport_bytes",
+          "required": false,
+          "summary": "Bytes still held by the transport write queue."
+        }
+      ],
+      "summary": "Queue and transport byte snapshot; a snapshot is not a delivery receipt.",
+      "unknown_fields": "ignore"
+    },
+    "ExecutionIdentity": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Worker incarnation."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Admitted payload request."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Run that executed or committed it."
+        }
+      ],
+      "summary": "Worker, request and run identity of an input or a committed response.",
+      "unknown_fields": "ignore"
+    },
+    "ExportErrorData": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "operation",
+          "required": true,
+          "summary": "Operation that failed."
+        },
+        {
+          "kind": "text",
+          "name": "message",
+          "required": true,
+          "summary": "Diagnostic text."
+        }
+      ],
+      "summary": "Optional archive-cleanup diagnostic; it never changes the run outcome.",
+      "unknown_fields": "ignore"
+    },
+    "FailureData": {
+      "fields": [
+        {
+          "enumeration": "FailureStage",
+          "kind": "enumeration",
+          "name": "stage",
+          "required": true,
+          "summary": "model_request when the request raised before committing."
+        },
+        {
+          "kind": "text",
+          "name": "operation",
+          "required": true,
+          "summary": "task, compact or auto_compact."
+        },
+        {
+          "kind": "boolean",
+          "name": "can_continue",
+          "required": true,
+          "summary": "True when a turn or valid host memory exists and the phase is ready."
+        }
+      ],
+      "summary": "Where a run failed and whether an explicit continue may be admitted.",
+      "unknown_fields": "ignore"
+    },
+    "HistoryPage": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Query this page answers."
+        },
+        {
+          "kind": "integer",
+          "name": "revision",
+          "required": true,
+          "summary": "Display-state revision within one worker; not persisted."
+        },
+        {
+          "kind": "integer",
+          "name": "start",
+          "required": true,
+          "summary": "Requested turn cursor."
+        },
+        {
+          "kind": "integer",
+          "name": "step",
+          "required": true,
+          "summary": "Requested step cursor."
+        },
+        {
+          "kind": "integer",
+          "name": "next",
+          "required": true,
+          "summary": "Next turn cursor; equals total at the end."
+        },
+        {
+          "kind": "integer",
+          "name": "next_step",
+          "required": true,
+          "summary": "Next step cursor; zero when the turn is finished."
+        },
+        {
+          "kind": "integer",
+          "name": "total",
+          "required": true,
+          "summary": "Total turns in this revision."
+        },
+        {
+          "kind": "records",
+          "name": "turns",
+          "record": "HistoryTurn",
+          "required": true,
+          "summary": "Turns on this page."
+        }
+      ],
+      "summary": "One history page. All pages of a load must agree on worker, revision and total.",
+      "unknown_fields": "ignore"
+    },
+    "HistoryStep": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Zero-based step index within its turn."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "Content",
+          "required": true,
+          "summary": "Ordered answer preview."
+        },
+        {
+          "kind": "integer",
+          "name": "tool_calls",
+          "required": true,
+          "summary": "Number of proposed calls; arguments and results are not returned."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_parts",
+          "required": true,
+          "summary": "Response parts outside this preview."
+        },
+        {
+          "kind": "record",
+          "name": "reasoning",
+          "record": "Content",
+          "required": false,
+          "summary": "Bounded reasoning preview."
+        },
+        {
+          "kind": "text",
+          "name": "commit_sequence",
+          "required": false,
+          "summary": "Nonzero commit sequence as a decimal string; omitted for legacy steps."
+        },
+        {
+          "kind": "record",
+          "name": "answer_source",
+          "record": "AnswerSource",
+          "required": false,
+          "summary": "Exact-answer locator when a fresh source is available."
+        },
+        {
+          "kind": "record",
+          "name": "execution",
+          "record": "ExecutionIdentity",
+          "required": false,
+          "summary": "Execution that produced this response."
+        }
+      ],
+      "summary": "One bounded response preview. Exact text is read through answer pages.",
+      "unknown_fields": "ignore"
+    },
+    "HistoryTurn": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Zero-based canonical turn index."
+        },
+        {
+          "kind": "records",
+          "name": "user",
+          "record": "Content",
+          "required": true,
+          "summary": "Bounded ordered user preview."
+        },
+        {
+          "kind": "records",
+          "name": "steps",
+          "record": "HistoryStep",
+          "required": true,
+          "summary": "Model steps on this page."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_user_parts",
+          "required": true,
+          "summary": "User parts outside the display projection."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_steps",
+          "required": true,
+          "summary": "Model steps after this page that remain to be fetched."
+        },
+        {
+          "kind": "record",
+          "name": "source",
+          "record": "ExecutionIdentity",
+          "required": false,
+          "summary": "Original input provenance, preserved across continue."
+        },
+        {
+          "kind": "text",
+          "name": "internal_input",
+          "required": false,
+          "summary": "auto_compact_continue for the hidden host-owned continuation input."
+        }
+      ],
+      "summary": "One canonical turn with a repeated user projection; steps are admitted whole.",
+      "unknown_fields": "ignore"
+    },
+    "InputAdmittedData": {
+      "fields": [
+        {
+          "enumeration": "InputOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": false,
+          "summary": "message, continue or compact."
+        }
+      ],
+      "summary": "Admitted operation retained for transcript replay; older workers emitted an empty object.",
+      "unknown_fields": "ignore"
+    },
+    "InputRejectedData": {
+      "fields": [
+        {
+          "kind": "any",
+          "name": "request_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Rejected request identity; any JSON value, including null."
+        },
+        {
+          "kind": "text",
+          "name": "message",
+          "required": true,
+          "summary": "Diagnostic text."
+        },
+        {
+          "enumeration": "InputOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": false,
+          "summary": "Recognized operation, kept for transcript replay."
+        },
+        {
+          "enumeration": "RejectionCode",
+          "kind": "enumeration",
+          "name": "code",
+          "required": false,
+          "summary": "invalid_options or payload_queue_full."
+        }
+      ],
+      "summary": "An input that failed validation or queue admission; no run was started for it.",
+      "unknown_fields": "ignore"
+    },
+    "LoopProgress": {
+      "fields": [
+        {
+          "enumeration": "LoopStatus",
+          "kind": "enumeration",
+          "name": "status",
+          "required": true,
+          "summary": "Loop outcome."
+        },
+        {
+          "enumeration": "LoopPhase",
+          "kind": "enumeration",
+          "name": "phase",
+          "required": true,
+          "summary": "Recovery boundary."
+        },
+        {
+          "kind": "integer",
+          "name": "completed_exchanges",
+          "required": true,
+          "summary": "Model responses committed during that invocation."
+        },
+        {
+          "kind": "integer",
+          "name": "committed_response_sequence",
+          "required": true,
+          "summary": "Persisted count of committed responses; not a replay cursor."
+        },
+        {
+          "kind": "text",
+          "name": "error",
+          "required": true,
+          "summary": "Loop-level diagnostic, empty when none."
+        },
+        {
+          "kind": "any",
+          "name": "pending_results",
+          "required": true,
+          "summary": "Results awaiting projection during recovery; normally an empty array."
+        }
+      ],
+      "summary": "Current or most recent loop outcome and recovery boundary, unrelated to event sequence.",
+      "unknown_fields": "ignore"
+    },
+    "MemoryRetention": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "max_archives",
+          "required": true,
+          "summary": "Archives kept after compaction; zero disables cleanup."
+        }
+      ],
+      "summary": "Effective archive retention; zero disables cleanup.",
+      "unknown_fields": "ignore"
+    },
+    "OmissionMarker": {
+      "fields": [
+        {
+          "kind": "boolean",
+          "name": "display_omitted",
+          "required": true,
+          "summary": "Always true when present."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_items",
+          "required": true,
+          "summary": "Entries left out of this batch."
+        }
+      ],
+      "summary": "Counts a batch suffix that was not projected; it is not a call or a result.",
+      "unknown_fields": "ignore"
+    },
+    "OmissionSummary": {
+      "fields": [
+        {
+          "kind": "boolean",
+          "name": "display_omitted",
+          "required": true,
+          "summary": "Always true when present."
+        },
+        {
+          "kind": "integer",
+          "name": "bytes",
+          "required": true,
+          "summary": "Original UTF-8 byte length of the summary."
+        },
+        {
+          "kind": "text",
+          "name": "reason",
+          "required": true,
+          "summary": "Why the summary is not shown here."
+        }
+      ],
+      "summary": "An explicit omission instead of an apparently complete summary prefix.",
+      "unknown_fields": "ignore"
+    },
+    "OptionCategory": {
+      "fields": [
+        {
+          "kind": "records",
+          "name": "available",
+          "record": "OptionChoice",
+          "required": true,
+          "summary": "Advertised descriptors in display order."
+        },
+        {
+          "kind": "any",
+          "name": "current",
+          "required": true,
+          "summary": "Effective values, never a patch to apply; hubs tolerate unknown names."
+        }
+      ],
+      "summary": "Advertised choices and effective current values; an absent key means no selection.",
+      "unknown_fields": "ignore"
+    },
+    "OptionChoice": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "name",
+          "required": true,
+          "summary": "Option name the provider or worker accepts."
+        },
+        {
+          "kind": "texts",
+          "name": "options",
+          "required": true,
+          "summary": "Advertised values; empty when unknown."
+        }
+      ],
+      "summary": "An option name with its advertised values, in display order.",
+      "unknown_fields": "ignore"
+    },
+    "OptionsData": {
+      "fields": [
+        {
+          "kind": "record",
+          "name": "model",
+          "record": "OptionCategory",
+          "required": false,
+          "summary": "Provider options."
+        },
+        {
+          "kind": "record",
+          "name": "tools",
+          "record": "OptionCategory",
+          "required": false,
+          "summary": "Reserved: empty available list and empty current object."
+        },
+        {
+          "kind": "record",
+          "name": "confirmation",
+          "record": "OptionCategory",
+          "required": false,
+          "summary": "Confirmation mode choices."
+        }
+      ],
+      "summary": "Available choices and current selections grouped by category.",
+      "unknown_fields": "ignore"
+    },
+    "PayloadEnvelope": {
+      "fields": [
+        {
+          "constant": "payload",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"payload\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "PayloadRequest",
+          "required": true,
+          "summary": "The request."
+        }
+      ],
+      "summary": "Hub-to-worker payload envelope.",
+      "unknown_fields": "ignore"
+    },
+    "PayloadRequest": {
+      "fields": [
+        {
+          "enumeration": "InputOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "Selects the request family and its required fields."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Client-chosen correlation identity; application policy controls its length."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "RequestContent",
+          "required": false,
+          "summary": "Ordered user parts; required for message and refused elsewhere."
+        },
+        {
+          "kind": "any",
+          "name": "options",
+          "object_only": true,
+          "required": false,
+          "summary": "Application-owned options, including confirmation; unsupported settings are runtime business errors, not protocol incompatibility."
+        },
+        {
+          "default": 0,
+          "kind": "integer",
+          "name": "start",
+          "required": false,
+          "summary": "History turn cursor."
+        },
+        {
+          "default": 0,
+          "kind": "integer",
+          "name": "step",
+          "required": false,
+          "summary": "First step within the history turn."
+        },
+        {
+          "kind": "integer",
+          "name": "limit",
+          "required": false,
+          "summary": "Requested history turn count; limits and defaults belong to the application."
+        },
+        {
+          "kind": "record",
+          "name": "source",
+          "record": "AnswerSource",
+          "required": false,
+          "summary": "Exact-answer locator; required for answer only."
+        },
+        {
+          "default": 0,
+          "kind": "integer",
+          "name": "part",
+          "required": false,
+          "summary": "Answer part index, defaulted to 0."
+        },
+        {
+          "default": 0,
+          "kind": "integer",
+          "name": "offset",
+          "required": false,
+          "summary": "Byte offset within the part, defaulted to 0."
+        }
+      ],
+      "forbidden_fields": [
+        "role",
+        "invokes",
+        "invoke_return",
+        "type",
+        "text"
+      ],
+      "rules": [
+        {
+          "closed": false,
+          "forbids": [],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
+          ],
+          "requires": [
+            "content"
+          ],
+          "when": {
+            "operation": "message"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "content"
+          ],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "continue"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "content"
+          ],
+          "ignores": [
+            "start",
+            "step",
+            "limit",
+            "source",
+            "part",
+            "offset"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "compact"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "content",
+            "options"
+          ],
+          "ignores": [
+            "source",
+            "part",
+            "offset"
+          ],
+          "requires": [],
+          "when": {
+            "operation": "history"
+          }
+        },
+        {
+          "closed": true,
+          "forbids": [
+            "content",
+            "options",
+            "start",
+            "step",
+            "limit"
+          ],
+          "ignores": [],
+          "requires": [
+            "source"
+          ],
+          "when": {
+            "operation": "answer"
+          }
+        }
+      ],
+      "summary": "A message, continuation, compaction, history query or answer query; the operation decides which fields are required.",
+      "unknown_fields": "ignore"
+    },
+    "PersistedData": {
+      "fields": [
+        {
+          "enumeration": "PersistBoundary",
+          "kind": "enumeration",
+          "name": "boundary",
+          "required": true,
+          "summary": "Checkpoint that completed."
+        },
+        {
+          "enumeration": "StorageKind",
+          "kind": "enumeration",
+          "name": "backend",
+          "required": true,
+          "summary": "Backend that wrote it."
+        },
+        {
+          "kind": "integer",
+          "name": "revision",
+          "nullable": true,
+          "required": true,
+          "summary": "Backend revision; the key is always present and null when the backend does not expose one."
+        },
+        {
+          "kind": "text",
+          "name": "operation_id",
+          "required": true,
+          "summary": "Write operation identity."
+        }
+      ],
+      "summary": "A required snapshot write completed at the named boundary; notifications may be coalesced.",
+      "unknown_fields": "ignore"
+    },
+    "QueryErrorData": {
+      "fields": [
+        {
+          "kind": "any",
+          "name": "request_id",
+          "nullable": true,
+          "required": true,
+          "summary": "Echoed query identity; any JSON value, including null."
+        },
+        {
+          "kind": "text",
+          "name": "message",
+          "required": true,
+          "summary": "Diagnostic text."
+        }
+      ],
+      "summary": "Query failure. request_id echoes whatever the query carried, including null.",
+      "unknown_fields": "ignore"
+    },
+    "RequestContent": {
+      "fields": [
+        {
+          "enumeration": "ContentType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Encoding of raw; an unknown label is rejected, never inferred."
+        },
+        {
+          "enumeration": "Modality",
+          "kind": "enumeration",
+          "name": "modality",
+          "required": true,
+          "summary": "Media category, required and never inferred from type."
+        },
+        {
+          "kind": "text",
+          "name": "raw",
+          "required": true,
+          "summary": "The part body; the application decides whether empty text is meaningful."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "object_only": true,
+          "required": false,
+          "summary": "Optional metadata object; an array or scalar is rejected."
+        }
+      ],
+      "summary": "One user part. raw is a string and extras, when present, an object.",
+      "unknown_fields": "ignore"
+    },
+    "ResponseProjection": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "index",
+          "required": true,
+          "summary": "Zero-based step index within its turn."
+        },
+        {
+          "enumeration": "MessageType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Conversation record kind; model_response for committed responses."
+        },
+        {
+          "kind": "text",
+          "name": "role",
+          "required": true,
+          "summary": "Conversation role of the response."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "Content",
+          "required": true,
+          "summary": "Ordered answer preview; parts beyond the budget are counted."
+        },
+        {
+          "kind": "integer",
+          "name": "tool_calls",
+          "required": true,
+          "summary": "Number of proposed calls, whether or not they are displayed."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_parts",
+          "required": true,
+          "summary": "Response parts outside this preview."
+        },
+        {
+          "kind": "record",
+          "name": "reasoning",
+          "record": "Content",
+          "required": false,
+          "summary": "Bounded reasoning preview, never part of exact answers."
+        },
+        {
+          "kind": "text",
+          "name": "commit_sequence",
+          "required": false,
+          "summary": "Nonzero commit sequence as a decimal string; omitted when uncommitted."
+        },
+        {
+          "kind": "record",
+          "name": "answer_source",
+          "record": "AnswerSource",
+          "required": false,
+          "summary": "Exact-answer locator for this committed response."
+        },
+        {
+          "kind": "record",
+          "name": "cost",
+          "record": "Usage",
+          "required": false,
+          "summary": "Provider-reported usage; absence means unavailable, not zero."
+        },
+        {
+          "alternative": "OmissionMarker",
+          "kind": "projected_batch",
+          "name": "invokes",
+          "record": "Call",
+          "required": false,
+          "summary": "Array of Call, optionally ending in an omission marker; see parse_batch(). An engaged but empty array is a legitimate projection."
+        }
+      ],
+      "summary": "A committed response as displayed: bounded content with its cursor fields. Exact text is read through answer pages.",
+      "unknown_fields": "ignore"
+    },
+    "Result": {
+      "fields": [
+        {
+          "kind": "record",
+          "name": "query",
+          "record": "Call",
+          "required": true,
+          "summary": "The call this result answers."
+        },
+        {
+          "kind": "record",
+          "name": "output",
+          "record": "Content",
+          "required": true,
+          "summary": "Human-readable result output."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Machine-readable annotations; error.stage and loop_skipped are recognized."
+        }
+      ],
+      "summary": "A tool result. Recognized extras markers include error, cause_query and loop_skipped.",
+      "unknown_fields": "ignore"
+    },
+    "RunOutcomeData": {
+      "fields": [
+        {
+          "enumeration": "RunStatus",
+          "kind": "enumeration",
+          "name": "status",
+          "required": true,
+          "summary": "Final logical-request outcome."
+        },
+        {
+          "kind": "text",
+          "name": "error",
+          "required": true,
+          "summary": "Technical diagnostic, empty when none."
+        },
+        {
+          "kind": "integer",
+          "name": "exchanges",
+          "required": true,
+          "summary": "Committed task and compact responses in this logical request."
+        },
+        {
+          "kind": "integer",
+          "name": "task_exchanges",
+          "required": false,
+          "summary": "Committed task responses."
+        },
+        {
+          "kind": "integer",
+          "name": "compact_exchanges",
+          "required": false,
+          "summary": "Committed summary responses."
+        },
+        {
+          "kind": "record",
+          "name": "auto_compact",
+          "record": "AutoCompact",
+          "required": false,
+          "summary": "Automatic-compaction counters and policy."
+        },
+        {
+          "kind": "boolean",
+          "name": "durable",
+          "required": true,
+          "summary": "Whether a final or cancellation snapshot was recorded."
+        },
+        {
+          "kind": "record",
+          "name": "failure",
+          "record": "FailureData",
+          "required": false,
+          "summary": "Present for failed only."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_display_events",
+          "required": false,
+          "summary": "Display events omitted since the previous settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_query_events",
+          "required": false,
+          "summary": "Query responses omitted since the previous settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_feedback_events",
+          "required": false,
+          "summary": "Rejection feedback omitted since the previous settlement."
+        },
+        {
+          "kind": "integer",
+          "name": "coalesced_metadata_events",
+          "required": false,
+          "summary": "Replayable metadata events coalesced since the previous settlement."
+        }
+      ],
+      "summary": "Settled invocation outcome. Omission counters appear only when nonzero and are not lifetime totals or delivery acknowledgements.",
+      "unknown_fields": "ignore"
+    },
+    "SignalEnvelope": {
+      "fields": [
+        {
+          "constant": "signal",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"signal\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "SignalRequest",
+          "required": true,
+          "summary": "The signal."
+        }
+      ],
+      "summary": "Hub-to-worker signal envelope; it uses a separate queue from payloads.",
+      "unknown_fields": "ignore"
+    },
+    "SignalRequest": {
+      "fields": [
+        {
+          "enumeration": "SignalOperation",
+          "kind": "enumeration",
+          "name": "operation",
+          "required": true,
+          "summary": "status, options, cancel or shutdown."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": false,
+          "summary": "Required for cancel and rejected otherwise; a stale ID changes nothing."
+        }
+      ],
+      "rules": [
+        {
+          "closed": false,
+          "forbids": [],
+          "ignores": [],
+          "requires": [
+            "run_id"
+          ],
+          "when": {
+            "operation": "cancel"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "run_id"
+          ],
+          "ignores": [],
+          "requires": [],
+          "when": {
+            "operation": "status"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "run_id"
+          ],
+          "ignores": [],
+          "requires": [],
+          "when": {
+            "operation": "options"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "run_id"
+          ],
+          "ignores": [],
+          "requires": [],
+          "when": {
+            "operation": "shutdown"
+          }
+        }
+      ],
+      "summary": "Control signal; additional fields are ignored and no request ID is echoed.",
+      "unknown_fields": "ignore"
+    },
+    "StatusData": {
+      "fields": [
+        {
+          "kind": "boolean",
+          "name": "active",
+          "required": true,
+          "summary": "An admitted invocation is owned, including settlement."
+        },
+        {
+          "kind": "boolean",
+          "name": "stopping",
+          "required": true,
+          "summary": "Shutdown is in progress."
+        },
+        {
+          "kind": "boolean",
+          "name": "storage_failed",
+          "required": true,
+          "summary": "A required persistence write failed; further saves are suppressed."
+        },
+        {
+          "kind": "integer",
+          "name": "rejected_payloads",
+          "required": true,
+          "summary": "Cumulative payload-queue overflow count for this IO client."
+        },
+        {
+          "kind": "integer",
+          "name": "rejected_queries",
+          "required": false,
+          "summary": "Cumulative history/answer quota or envelope rejections."
+        },
+        {
+          "kind": "integer",
+          "name": "unreported_rejections",
+          "required": false,
+          "summary": "Rejection notices dropped by a full feedback mailbox."
+        },
+        {
+          "kind": "record",
+          "name": "event_queue",
+          "record": "EventQueue",
+          "required": false,
+          "summary": "Queue snapshot."
+        },
+        {
+          "kind": "record",
+          "name": "memory_retention",
+          "record": "MemoryRetention",
+          "required": false,
+          "summary": "Effective archive retention."
+        },
+        {
+          "kind": "record",
+          "name": "auto_compact",
+          "record": "AutoCompact",
+          "required": false,
+          "summary": "Automatic-compaction counters and policy."
+        },
+        {
+          "kind": "texts",
+          "name": "capabilities",
+          "required": true,
+          "summary": "Features this binary supports; check before querying an older worker."
+        },
+        {
+          "kind": "record",
+          "name": "loop",
+          "record": "LoopProgress",
+          "required": false,
+          "summary": "Loop recovery state when available."
+        }
+      ],
+      "summary": "State snapshot. Optional fields are omitted by older workers and must be tolerated.",
+      "unknown_fields": "ignore"
+    },
+    "ToolError": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "code",
+          "required": true,
+          "summary": "Hub-owned rejection code; unknown codes remain valid diagnostics."
+        },
+        {
+          "kind": "text",
+          "name": "message",
+          "required": true,
+          "summary": "Diagnostic text; not a stable machine code."
+        }
+      ],
+      "summary": "Machine-readable rejection code with a diagnostic message.",
+      "unknown_fields": "ignore"
+    },
+    "ToolRequest": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Calling worker; must match a live run."
+        },
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Must match the authenticated route."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Active run of the caller."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Per-attempt correlation; provides neither authorization nor deduplication."
+        },
+        {
+          "kind": "any",
+          "name": "arguments",
+          "object_only": true,
+          "required": true,
+          "summary": "Opaque argument object. The Hub handler owns its keys and validation."
+        }
+      ],
+      "summary": "One remote-tool request. The connection path selects a Hub-owned route; support is decided by the Hub.",
+      "unknown_fields": "ignore"
+    },
+    "ToolRequestEnvelope": {
+      "fields": [
+        {
+          "constant": "tool_request",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"tool_request\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "ToolRequest",
+          "required": true,
+          "summary": "The request."
+        }
+      ],
+      "summary": "One-shot remote-tool request; the route is the connection path.",
+      "unknown_fields": "ignore"
+    },
+    "ToolResponse": {
+      "fields": [
+        {
+          "kind": "text",
+          "name": "worker_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "session_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "run_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "request_id",
+          "required": true,
+          "summary": "Echoed from the request."
+        },
+        {
+          "kind": "text",
+          "name": "route",
+          "required": true,
+          "summary": "Echoed route that was executed or rejected."
+        },
+        {
+          "enumeration": "ToolStatus",
+          "kind": "enumeration",
+          "name": "status",
+          "required": true,
+          "summary": "succeeded or rejected."
+        },
+        {
+          "kind": "record",
+          "name": "error",
+          "record": "ToolError",
+          "required": false,
+          "summary": "Present for rejected only."
+        },
+        {
+          "kind": "any",
+          "name": "result",
+          "object_only": true,
+          "required": false,
+          "summary": "Opaque result object; interpreted by the consuming tool, not the protocol."
+        }
+      ],
+      "rules": [
+        {
+          "closed": false,
+          "forbids": [
+            "error"
+          ],
+          "ignores": [],
+          "requires": [
+            "result"
+          ],
+          "when": {
+            "status": "succeeded"
+          }
+        },
+        {
+          "closed": false,
+          "forbids": [
+            "result"
+          ],
+          "ignores": [],
+          "requires": [
+            "error"
+          ],
+          "when": {
+            "status": "rejected"
+          }
+        }
+      ],
+      "summary": "Echoes the identifiers and route. succeeded carries result, rejected carries error.",
+      "unknown_fields": "ignore"
+    },
+    "ToolResponseEnvelope": {
+      "fields": [
+        {
+          "constant": "tool_response",
+          "enumeration": "EnvelopeType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "Always \"tool_response\"."
+        },
+        {
+          "kind": "record",
+          "name": "data",
+          "record": "ToolResponse",
+          "required": true,
+          "summary": "The response."
+        }
+      ],
+      "summary": "Terminal remote-tool answer; the connection closes after it.",
+      "unknown_fields": "ignore"
+    },
+    "ToolResultMessage": {
+      "fields": [
+        {
+          "enumeration": "MessageType",
+          "kind": "enumeration",
+          "name": "type",
+          "required": true,
+          "summary": "invoke_return for a tool result."
+        },
+        {
+          "kind": "text",
+          "name": "role",
+          "required": true,
+          "summary": "Conversation role, normally tool."
+        },
+        {
+          "kind": "records",
+          "name": "content",
+          "record": "Content",
+          "required": true,
+          "summary": "Bounded tool output; at most four parts are projected."
+        },
+        {
+          "kind": "integer",
+          "name": "omitted_parts",
+          "required": false,
+          "summary": "Output parts outside this projection."
+        },
+        {
+          "kind": "record",
+          "name": "invoke_return",
+          "record": "Result",
+          "required": false,
+          "summary": "The call this result answers plus its bounded output."
+        },
+        {
+          "kind": "any",
+          "name": "extras",
+          "required": false,
+          "summary": "Bounded message annotations; error stage/message are projected separately."
+        }
+      ],
+      "summary": "One returned batch entry: the message projection carrying its invoke_return provenance.",
+      "unknown_fields": "ignore"
+    },
+    "Usage": {
+      "fields": [
+        {
+          "kind": "integer",
+          "name": "prompt",
+          "required": true,
+          "summary": "Prompt tokens reported by the provider."
+        },
+        {
+          "kind": "integer",
+          "name": "generated",
+          "required": true,
+          "summary": "Generated tokens reported by the provider."
+        },
+        {
+          "kind": "integer",
+          "name": "cache_hit",
+          "required": true,
+          "summary": "Prompt tokens served from cache; do not add them to a total."
+        }
+      ],
+      "summary": "Provider-reported token cost; cache_hit counts tokens inside prompt.",
+      "unknown_fields": "ignore"
+    }
+  }
+}

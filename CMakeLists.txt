@@ -208,6 +208,11 @@ add_subdirectory(io)
 # functions, so the module depends only on simplex_thirdparty_iface
 # (for <nlohmann/json.hpp>).
 add_subdirectory(dataclass)
+# protocol before core: the worker's wire vocabulary, its codec and the
+# generated contract document. It depends on nlohmann/json only (the manifest
+# fingerprint additionally links openssl_iface), so tools and plugins can speak
+# the wire format without inheriting the application.
+add_subdirectory(protocol)
 # Independent child I/O backends used by the process lifecycle manager.
 add_subdirectory(process_io)
 # tools after dataclass + extensions: the tool-invocation layer. It consumes
