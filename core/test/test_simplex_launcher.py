@@ -26,6 +26,9 @@ with tempfile.TemporaryDirectory(prefix="simplex launcher ") as temporary:
         assert "simplex <command>" in result.stdout
         assert "run" in result.stdout
         assert "shell" not in result.stdout
+    result = subprocess.run([str(launcher), "protocol", "--help"],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0 and "protocol [--hash]" in result.stdout
     for command in ("unknown", "shell", "--unknown"):
         result = subprocess.run([str(launcher), command], capture_output=True,
                                 text=True, timeout=5)

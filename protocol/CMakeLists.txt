@@ -9,8 +9,7 @@
 #                         uses OpenSSL::Crypto (the project-wide hashing
 #                         dependency behind `openssl_iface`) and links the codec.
 #
-# Nothing links these yet: the migration of core producers and consumers is the
-# next change. Keeping them independent is what makes that migration reviewable.
+# Worker producers use the codec; only inspection needs manifest generation.
 add_library(protocol_lib SHARED src/wire.cpp)
 target_include_directories(protocol_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(protocol_lib PUBLIC simplex_thirdparty_iface)
@@ -35,3 +34,6 @@ target_link_libraries(protocol_manifest_export PRIVATE protocol_manifest_lib)
 if(BUILD_TESTS)
     add_subdirectory(test)
 endif()
+
+# Reference artifact only: installed inspection always uses compiled descriptors.
+install(FILES schemas/worker-protocol.json DESTINATION share/simplex/protocol)

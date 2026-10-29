@@ -9,6 +9,7 @@ Usage: simplex <command> [options]
 Commands:
   run       Start a worker session
   manage    Manage worker allocations on this host
+  protocol  Print the compiled worker protocol (--hash for SHA-256 only)
 
 Use "simplex run --help" for worker options.
 Use "simplex --version" to show the compiled worker version.
@@ -24,6 +25,20 @@ case "${1:-}" in
         ;;
     run)
         shift
+        ;;
+    protocol)
+        shift
+        if (( $# == 0 )); then
+            set -- --protocol
+        elif (( $# == 1 )) && [[ "$1" == --hash ]]; then
+            set -- --protocol-hash
+        elif (( $# == 1 )) && [[ "$1" == -h || "$1" == --help ]]; then
+            printf 'Usage: simplex protocol [--hash]\n'
+            exit 0
+        else
+            printf 'Usage: simplex protocol [--hash]\n' >&2
+            exit 2
+        fi
         ;;
     manage)
         executable=simplex_manager

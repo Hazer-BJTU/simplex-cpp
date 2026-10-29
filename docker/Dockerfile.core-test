@@ -11,4 +11,4 @@ RUN cmake -S /src -B /src/build -DCMAKE_BUILD_TYPE=Debug \
     && cmake --build /src/build --target clean \
     && cmake --build /src/build --target simplex \
         test_core_compact test_core_protocol test_core_configuration test_core_confirmation test_core_application test_core_dns test_loop test_process_handle test_session_store test_shutdown_failures test_tools -j"${JOBS}"
-CMD ["ctest", "--test-dir", "/src/build", "-R", "^(test_core_.*|test_loop|core_worker_cli|core_simplex_cli|core_simplex_launcher|core_lifecycle_container|process_handle|test_session_store|test_shutdown_failures|test_tools)$", "--output-on-failure"]
+CMD ["ctest", "--test-dir", "/src/build", "-R", "^(test_core_.*|test_loop|core_protocol_cli|core_worker_cli|core_simplex_cli|core_simplex_launcher|core_lifecycle_container|process_handle|test_session_store|test_shutdown_failures|test_tools)$", "--output-on-failure"]

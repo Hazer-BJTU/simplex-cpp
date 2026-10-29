@@ -1,7 +1,8 @@
 /**
  * @file worker event envelopes: validation and protocol vocabulary.
  *
- * The wire contract itself lives in docs/core/worker-protocol.md; this module
+ * The structural contract is generated from protocol/; behavioral guidance lives
+ * in docs/core/worker-protocol.md. This module
  * only encodes the parts the hub must act on — the envelope fields, the event
  * names core currently emits, and the handful of numbers that can exceed
  * JavaScript's safe integer range.

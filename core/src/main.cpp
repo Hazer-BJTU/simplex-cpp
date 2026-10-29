@@ -1,6 +1,7 @@
 #include "core/application.hpp"
 #include "core/protocol.hpp"
 #include "logging/console.hpp"
+#include "protocol/manifest.hpp"
 #include "versioning/version.hpp"
 
 #include <boost/program_options.hpp>
@@ -24,6 +25,8 @@ int main(int argc, char** argv) {
         description.add_options()
             ("help,h", "Show this help message")
             ("version", "Show the compiled worker version and exit")
+            ("protocol", "Print the compiled protocol manifest and exit")
+            ("protocol-hash", "Print the compiled protocol SHA-256 and exit")
             ("config,c", options::value<std::string>(&file)->default_value("config.yaml"),
                 "Startup YAML configuration file")
             ("session,s", options::value<std::string>(&session)->required(),
@@ -33,6 +36,22 @@ int main(int argc, char** argv) {
 
         options::variables_map arguments;
         options::store(options::parse_command_line(argc, argv, description), arguments);
+        // Inspection is independent of runtime configuration. Reject mixed modes
+        // rather than silently ignoring arguments intended for a running worker.
+        if (arguments.count("protocol") || arguments.count("protocol-hash")) {
+            bool mixed = arguments.count("protocol") && arguments.count("protocol-hash");
+            for (const auto& [name, value] : arguments) {
+                if (name != "protocol" && name != "protocol-hash" && !value.defaulted()) {
+                    mixed = true;
+                }
+            }
+            if (mixed) {
+                throw options::error("protocol inspection accepts no other worker options");
+            }
+            const auto output = arguments.count("protocol-hash")
+                ? protocol::fingerprint() : protocol::manifest().dump(2);
+            return logging::write_console(std::cout, output + "\n") ? 0 : 1;
+        }
         if (arguments.count("help")) {
             std::ostringstream help;
             help << "Usage: simplex run [options]\n\n" << description << '\n';

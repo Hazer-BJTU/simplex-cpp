@@ -48,6 +48,10 @@ fi
 env -u LD_LIBRARY_PATH "$root/bin/simplex" run --help >/dev/null
 env -u LD_LIBRARY_PATH "$root/bin/simplex" manage --help >/dev/null
 if command -v python3 >/dev/null; then
+    # Only this disposable extraction is modified: inspection is compiled in.
+    rm -- "$root/share/simplex/protocol/worker-protocol.json"
+    env -u LD_LIBRARY_PATH python3 "$(dirname -- "${BASH_SOURCE[0]}")/../core/test/test_protocol_cli.py" \
+        "$root/bin/simplex_worker"
     env -u LD_LIBRARY_PATH python3 "$(dirname -- "${BASH_SOURCE[0]}")/../manager/test/test_cli.py" \
         "$root/bin/simplex_manager" "$root/bin/simplex"
 fi
