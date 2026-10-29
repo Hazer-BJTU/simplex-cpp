@@ -29,6 +29,7 @@ test ! -e /build
 tar -xzf "$artifacts/musl-test-support.tar.gz" -C "$stage/bin"
 run_test() {
     local binary=$1
+    printf "Running installed musl test: %s\n" "$binary"
     shift
     "$stage/lib/ld-musl-x86_64.so.1" --library-path "$stage/lib" \
         "$stage/bin/$binary" --log_level=error "$@"
@@ -38,10 +39,13 @@ run_test test_registry_e2e --run_test=tty_selection_reaches_confirmation_before_
 run_test test_reading_tools --run_test=defaults_schema_skill_and_attributes_match,installed_declarations_take_precedence_when_present,all_read_modes_preserve_expected_selection,selected_yaml_configuration_controls_read_limits
 # Loading configuration from the installed YAML must not require recompilation.
 declaration="$stage/bin/schemas/reading/read_text.yaml"
-grep -Fxq '  max_file_bytes: 16777216' "$declaration"
-grep -Fxq '  max_output_bytes: 65536' "$declaration"
-sed -i -e 's/^  max_file_bytes: 16777216$/  max_file_bytes: 64/' \
-    -e 's/^  max_output_bytes: 65536$/  max_output_bytes: 7/' "$declaration"
+# Defaults are verified by the native schema test above. This check exercises
+# overrides independently of their current defaults (which may change).
+grep -Exq '  max_file_bytes: [0-9]+' "$declaration"
+grep -Exq '  max_output_bytes: [0-9]+' "$declaration"
+printf 'Checking installed reading configuration overrides\n'
+sed -i -E -e 's/^  max_file_bytes: [0-9]+$/  max_file_bytes: 64/' \
+    -e 's/^  max_output_bytes: [0-9]+$/  max_output_bytes: 7/' "$declaration"
 grep -Fxq '  max_file_bytes: 64' "$declaration"
 grep -Fxq '  max_output_bytes: 7' "$declaration"
 run_test test_reading_tools --run_test=selected_yaml_configuration_controls_read_limits
