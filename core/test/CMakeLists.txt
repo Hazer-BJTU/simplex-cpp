@@ -63,3 +63,8 @@ add_executable(test_core_archive_memory test_archive_memory.cpp)
 target_link_libraries(test_core_archive_memory PRIVATE core_lib persistence_lib Boost::unit_test_framework)
 add_test(NAME test_core_archive_memory COMMAND test_core_archive_memory)
 set_tests_properties(test_core_archive_memory PROPERTIES TIMEOUT 60)
+
+add_test(NAME core_protocol_cli
+    COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/run_python_test.sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_protocol_cli.py $<TARGET_FILE:simplex_worker>)
+set_tests_properties(core_protocol_cli PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)

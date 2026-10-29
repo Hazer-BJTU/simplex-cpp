@@ -12,6 +12,25 @@ and session. This document describes the current protocol, including its
 limitations; it does not introduce unimplemented acknowledgements or recovery
 endpoints.
 
+## Inspect the executable contract
+
+Run `simplex protocol` to export the installed worker's complete structural
+manifest, or `simplex protocol --hash` for its SHA-256 fingerprint. These commands
+need no session, configuration, credentials or connection. Direct binary flags
+are `simplex_worker --protocol` and `simplex_worker --protocol-hash`.
+
+The compiled descriptors own field types, required/optional/null distinctions,
+closed vocabularies and basic operation combinations. The generated artifact is
+also installed at `share/simplex/protocol/worker-protocol.json`; the command does
+not read that file. The tables and examples below explain behavior and usage;
+use the manifest for automated structural checks.
+
+The fingerprint excludes prose and release versions. A difference is not itself
+an incompatibility and must not become a mandatory connection handshake.
+Delivery, cancellation, recovery and security still follow this guide. Provider
+options, confirmation policy choices, remote routes and tool arguments remain
+runtime business policy, not a closed structural compatibility vocabulary.
+
 ## Contents
 
 - [Connections and configuration](#connections-and-configuration)

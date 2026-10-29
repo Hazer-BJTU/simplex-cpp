@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Verify the packed artifact rather than trusting the working tree layout. */
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,7 @@ for (const member of members) {
 }
 for (const required of [
     'package/LICENSE',
+    'package/dist/protocol/worker-protocol.json',
     'package/dist/docs/core/worker-protocol.md',
     'package/dist/docs/getting-started/installation.md',
     'package/dist/docs/deployment/hub.md',
@@ -71,6 +72,10 @@ const root = mkdtempSync(join(tmpdir(), 'simplex-packed-runtime-'));
 try {
     execFileSync('tar', ['-xzf', archive, '-C', root]);
     const installed = join(root, 'package');
+    const contract = readFileSync(new URL('../../protocol/schemas/worker-protocol.json', import.meta.url), 'utf8');
+    if (readFileSync(join(installed, 'dist/protocol/worker-protocol.json'), 'utf8') !== contract) {
+        throw new Error('Packed worker protocol differs from the generated source artifact');
+    }
     const images = validateDocumentationImages(join(installed, 'dist', 'docs'));
     process.stdout.write(`Validated ${members.length} npm package files and ${images} local documentation images\n`);
     copyFileSync(fileURLToPath(new URL('../package-lock.json', import.meta.url)),

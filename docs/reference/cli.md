@@ -1,7 +1,7 @@
 # Command-line reference
 
 The installed public worker entry point is `simplex`. It provides `run` for worker sessions and `manage` for target-local storage
-management. The launcher preserves arguments and uses `exec` to replace itself
+management, and `protocol` for offline contract inspection. The launcher preserves arguments and uses `exec` to replace itself
 with the adjacent executable, so signals reach it directly.
 
 ```sh
@@ -43,3 +43,21 @@ See [Worker storage management](management.md) for the Base64 request/stdout
 contract and allocation ownership. New local Hub templates and fresh native
 sessions use managed allocations; saved legacy profiles keep their original
 local layout until the operator recreates them.
+
+## Protocol inspection
+
+```sh
+simplex protocol > worker-protocol.json
+simplex protocol --hash
+```
+
+These commands print the compiled manifest or its structural SHA-256 and exit
+without loading configuration, providers or persistence. The equivalent direct
+flags are `simplex_worker --protocol` and `simplex_worker --protocol-hash`.
+Inspection accepts no other worker options; `simplex protocol --help` shows its
+usage. Output goes only to stdout, errors to stderr, with a nonzero exit status
+for invalid arguments or failed writes. Standard and bundled packages support
+the same commands from arbitrary working directories, including symlink launchers.
+
+The hash describes structure, not enabled runtime features or behavioral
+compatibility. See the [worker protocol guide](../core/worker-protocol.md).

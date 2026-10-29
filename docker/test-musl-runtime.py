@@ -50,6 +50,12 @@ with tempfile.TemporaryDirectory(prefix='simplex musl ') as temporary:
                     str(installed / "bin/simplex_manager"), str(installed / "bin/simplex")],
                    cwd=caller, env=env, check=True, timeout=45)
 
+    # Inspection must survive removal of the installed reference artifact.
+    (installed / 'share/simplex/protocol/worker-protocol.json').unlink()
+    subprocess.run([sys.executable, str(repo / 'core/test/test_protocol_cli.py'),
+                    str(installed / 'bin/simplex_worker')], cwd=caller,
+                   env=env, check=True, timeout=60)
+
     # Production fixtures exercise provider loading, installed prompts and
     # graceful stop through the moved package, not a build-tree executable.
     for entry in ('simplex_worker', 'simplex'):

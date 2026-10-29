@@ -22,6 +22,7 @@ import { WORKER_BIN, e2eSkip, startE2eHub } from '../helpers/e2e.js';
 import { connectWorker, until } from '../helpers/worker.js';
 import { boundedHistoryPages, HISTORY_PAGE_MAX_BYTES,
     HISTORY_EVENT_MAX_BYTES, HISTORY_PANEL_MAX_BYTES } from '../helpers/history.ts';
+import { contractValidator, validateWorkerEvent } from '../helpers/worker-contract.js';
 import { parseHistoryPage } from '../../web/src/state/history.ts';
 
 const skip = e2eSkip;
@@ -446,6 +447,15 @@ describe('end to end with the real worker', { skip }, () => {
             assert.ok(existsSync(marker), `missing tool marker at ${marker}`);
 
             const transcript = ctx.hub.transcripts.get('e2e-live').toArray();
+            // Validate genuine worker projections after the Hub adapter, including
+            // status, history, tools, persistence and the final run boundary.
+            const check = contractValidator();
+            for (const event of [...transcript, history.envelope, session.latest.status]) {
+                validateWorkerEvent(event, check);
+            }
+            check('ConfirmationRequestEnvelope', {
+                type: 'confirmation_request', data: prompt,
+            });
             const results = transcript.filter((envelope) => envelope.event === 'tool_results');
             assert.ok(results.length >= 1, 'no tool_results event');
             const [result] = results[0].data;

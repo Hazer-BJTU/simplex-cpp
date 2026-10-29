@@ -1,309 +1,102 @@
-/**
- * @file protocol drift: the hub's vocabulary against the core document.
- *
- * `docs/core/worker-protocol.md` is the authoritative contract, and the hub
- * keeps its own copies of that vocabulary (the event table, the signal
- * operations, the accepted content types and option categories). A copy can
- * drift silently: the hub would keep working, its tests would keep passing, and
- * the only symptom would be a feature that never lights up — a new event
- * rendered as "unknown", a new signal the panel cannot send.
- *
- * So the document itself is parsed here. When core adds an event or a signal,
- * this test fails until the hub is taught about it. When the document is
- * reformatted beyond what this parser understands, it fails too — with a
- * message that says which of the two to fix.
- *
- * It reads the repository's documentation, the generated protocol manifest and
- * one persisted-enum serializer that the manifest does not describe. A
- * standalone copy of `hub/` without those files skips the corresponding checks
- * instead of failing.
- */
+/** Hub adapters against compiled-descriptor artifacts; no source/prose parsing. */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { hubRoot } from '../src/config.ts';
-import { EVENT_TABLE, KNOWN_EVENTS } from '../src/protocol/events.ts';
-import {
-    CONFIRMATION_MODES,
-    CONTENT_MODALITIES,
-    CONTENT_TYPES,
-    INPUT_OPERATIONS,
-    SIGNAL_OPERATIONS,
-    buildConfirmationResponse,
-    buildPayload,
-    buildSignal,
-    normalizeOptions,
-} from '../src/protocol/messages.ts';
+import { EVENT_TABLE, KNOWN_EVENTS, parseEventEnvelope } from '../src/protocol/events.ts';
+import { CONTENT_MODALITIES, CONTENT_TYPES, INPUT_OPERATIONS, SIGNAL_OPERATIONS,
+    buildConfirmationResponse, buildPayload, buildSignal } from '../src/protocol/messages.ts';
+import { parseToolRequest, dispatchToolRequest } from '../src/protocol/tool-requests.ts';
+import { succeededTool } from '../src/worker/tool-context.ts';
+import { manifest, contractValidator, validateWorkerEvent } from './helpers/worker-contract.js';
 
-const DOC_PATH = join(hubRoot, '..', 'docs', 'core', 'worker-protocol.md');
-const MANIFEST_PATH = join(hubRoot, '..', 'protocol', 'schemas', 'worker-protocol.json');
-const available = existsSync(DOC_PATH);
-const skip = available ? false : `core documentation not present at ${DOC_PATH}`;
-const MODEL_IO_PATH = join(hubRoot, '..', 'dataclass', 'include', 'dataclass', 'model_io.hpp');
-const workerSkip = existsSync(MODEL_IO_PATH)
-    ? false : 'Worker C++ sources are not present in this standalone Hub';
+const check = contractValidator();
+const source = { worker_id: 'w', turn: 0, step: 0, commit_sequence: '1', fingerprint: 'a'.repeat(64) };
+const correlation = { worker_id: 'w', session_id: 's', run_id: 'r', confirmation_id: 'c' };
+const call = { id: 'c', name: 'future_tool', arguments: { arbitrary: [1, null] },
+    type: 'read_only', security: 'trusted' };
+const marker = { display_omitted: true, omitted_items: 36 };
+const envelope = (event, data) => ({ type: 'event', event, session_id: 's', worker_id: 'w',
+    request_id: 'q', run_id: 'r', sequence: 1, data });
 
-/** Hint appended to every parse failure. */
-const PARSER_HINT = 'The document was reformatted or the vocabulary moved. Update this '
-    + "test's parser, or the hub, to match — do not delete the check.";
-
-/** Read the authoritative document. */
-function readDocument() {
-    return readFileSync(DOC_PATH, 'utf8');
-}
-
-/**
- * Read the generated structural contract.
- *
- * A full checkout always has it: a missing or unparsable artifact is a broken
- * build step, never a reason to skip a conformance check.
- */
-function readManifest() {
-    assert.ok(existsSync(MANIFEST_PATH),
-        `generated protocol manifest is missing at ${MANIFEST_PATH};`
-        + ' rebuild protocol_manifest_export and commit the artifact');
-    return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
-}
-
-/**
- * Slice out one section: from the heading line to the next heading of the same
- * or a higher level.
- */
-function section(markdown, heading) {
-    const lines = markdown.split('\n');
-    const level = heading.match(/^#+/)[0].length;
-    const start = lines.findIndex((line) => line.trim() === heading);
-    assert.notEqual(start, -1, `section "${heading}" not found in worker-protocol.md. ${PARSER_HINT}`);
-    let end = lines.length;
-    for (let index = start + 1; index < lines.length; index += 1) {
-        const match = /^(#+)\s/.exec(lines[index]);
-        if (match && match[1].length <= level) {
-            end = index;
-            break;
+describe('worker contract conformance', () => {
+    it('covers Hub vocabularies and every event rendering category', () => {
+        for (const [name, values] of Object.entries({ EventName: KNOWN_EVENTS,
+            InputOperation: INPUT_OPERATIONS, SignalOperation: SIGNAL_OPERATIONS,
+            ContentType: CONTENT_TYPES, Modality: CONTENT_MODALITIES })) {
+            assert.deepEqual([...values].sort(), [...manifest.enumerations[name].spellings].sort(), name);
         }
-    }
-    return lines.slice(start + 1, end).join('\n');
-}
-
-/** Parse every markdown table in a slice into rows of trimmed cells. */
-function tables(text) {
-    const found = [];
-    let current = null;
-    for (const line of text.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('|')) {
-            current = null;
-            continue;
-        }
-        const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-        if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
-        if (!current) {
-            current = [];
-            found.push(current);
-        }
-        current.push(cells);
-    }
-    return found;
-}
-
-/** The first table of a section, header row included. */
-function firstTable(text, label) {
-    const [table] = tables(text);
-    assert.ok(table && table.length > 1, `no table found for ${label}. ${PARSER_HINT}`);
-    return table.slice(1);
-}
-
-/** Identifiers inside backticks in one cell. */
-function backticks(cell) {
-    return [...cell.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-}
-
-/** First backticked identifier of a cell, without any type suffix. */
-function identifier(cell) {
-    const [first] = backticks(cell);
-    return first?.replace(/:.*$/, '') ?? cell.replace(/`/g, '');
-}
-
-/** Extract a known source fragment, failing explicitly when its layout changes. */
-function sourceFragment(text, pattern, label) {
-    const match = pattern.exec(text);
-    assert.ok(match, `cannot locate ${label} in the C++ source. ${PARSER_HINT}`);
-    return match[1];
-}
-
-describe('worker protocol drift', { skip }, () => {
-    it('documents the history fields the generated manifest publishes', { skip }, () => {
-        const manifest = readManifest();
-        const markdown = readDocument();
-        function check(heading, record) {
-            const published = manifest.records[record].fields;
-            assert.ok(published && published.length > 0, `no ${record} fields in the manifest`);
-            const rows = firstTable(section(markdown, heading), heading);
-            assert.deepEqual(rows.map(row => identifier(row[0])).sort(),
-                published.map(field => field.name).sort(),
-                `${heading} and the generated manifest disagree`);
-            for (const row of rows) {
-                const field = published.find(entry => entry.name === identifier(row[0]));
-                assert.equal(row[1].startsWith('Optional'), !field.required,
-                    `incorrect optionality for ${heading} ${row[0]}`);
-            }
-        }
-        check('#### History turn fields', 'HistoryTurn');
-        check('#### History step fields', 'HistoryStep');
-        const turns = section(markdown, '#### History turn fields');
-        const steps = section(markdown, '#### History step fields');
-        assert.match(turns, /preserved across Continue/i);
-        assert.match(steps, /distinct from the turn's input source/);
-        assert.match(steps, /Optional decimal string/);
-    });
-
-    it('keeps status capability examples aligned with the generated vocabulary', { skip }, () => {
-        const manifest = readManifest();
-        const supported = [...manifest.enumerations.Capability.spellings].sort();
-        const status = section(readDocument(), '### Status object');
-        const example = JSON.parse(sourceFragment(status, /```json\s*([\s\S]*?)```/, 'status JSON example'));
-        assert.deepEqual(example.capabilities.sort(), supported,
-            'the status example and the generated capability vocabulary disagree');
-        const rows = firstTable(status, 'status fields');
-        const row = rows.find(entry => identifier(entry[0]) === 'capabilities');
-        assert.ok(row, PARSER_HINT);
-        const described = backticks(row[2]).filter(value => supported.includes(value)).sort();
-        assert.deepEqual(described, supported);
-        assert.match(row[2], /not necessarily enabled/);
-        assert.match(row[2], /auto_compact\.threshold/);
-        assert.equal(example.auto_compact.threshold, 0);
-        assert.ok(rows.some(entry => identifier(entry[0]) === 'auto_compact'));
-    });
-
-    it('lists every persisted loop status serialized by model_io', { skip: workerSkip }, () => {
-        const modelIO = readFileSync(MODEL_IO_PATH, 'utf8');
-        const serialization = sourceFragment(modelIO,
-            /inline void to_json\(nlohmann::json& j, LoopStatus value\) \{([\s\S]*?)\n\}/, 'LoopStatus serialization');
-        const serialized = [...serialization.matchAll(/j = "([a-z_]+)";/g)].map(match => match[1]).sort();
-        assert.ok(serialized.length > 0, PARSER_HINT);
-        const rows = tables(section(readDocument(), '### Status object')).flat();
-        const row = rows.find(entry => identifier(entry[0]) === 'status');
-        assert.ok(row, PARSER_HINT);
-        assert.deepEqual(backticks(row[1]).sort(), serialized);
-        assert.match(row[2], /not a queued action/);
-    });
-
-    it('documents the run outcome fields the generated manifest publishes', { skip }, () => {
-        const manifest = readManifest();
-        const published = manifest.records.RunOutcomeData.fields;
-        assert.ok(published.length > 0, 'no RunOutcomeData fields in the manifest');
-        const rows = firstTable(section(readDocument(), '### Run outcome and persistence events'),
-            'run outcome fields');
-        assert.deepEqual(rows.map(row => identifier(row[0])).sort(),
-            published.map(field => field.name).sort(),
-            'the run outcome table and the generated manifest disagree');
-        for (const row of rows) {
-            const field = published.find(entry => entry.name === identifier(row[0]));
-            assert.equal(row[1].startsWith('Optional'), !field.required,
-                `incorrect optionality for ${row[0]}`);
+        for (const [name, entry] of Object.entries(manifest.events)) {
+            assert.equal(Boolean(EVENT_TABLE[name].array), entry.array, name);
         }
     });
-
-    it('documents hub events plus explicit worker-only additions', () => {
-        const rows = firstTable(section(readDocument(), '## Worker events'), 'the worker events table');
-        const documented = rows.map((row) => identifier(row[0])).sort();
-        assert.deepEqual([...KNOWN_EVENTS].sort(), documented,
-            'the hub\'s event vocabulary and docs/core/worker-protocol.md disagree');
-        // Every hub-supported event needs a rendering hint. Worker-only events
-        // use the existing unknown-event display until the follow-up rollout.
-        for (const name of documented) {
-            assert.ok(Object.hasOwn(EVENT_TABLE, name), `no rendering hint for ${name}`);
+    it('validates actual Hub request builders for all operations and signals', () => {
+        for (const operation of INPUT_OPERATIONS) {
+            const extra = operation === 'message'
+                ? { content: [{ type: 'text', raw: 'hello', modality: 'text' }], options: { model: {} } }
+                : operation === 'history' ? { start: 0, step: 0, limit: 10 }
+                : operation === 'answer' ? { source, part: 0, offset: 0 } : {};
+            check('PayloadEnvelope', buildPayload({ operation, requestId: 'q', ...extra }));
+        }
+        for (const operation of SIGNAL_OPERATIONS) {
+            check('SignalEnvelope', buildSignal({ operation, runId: 'r' }));
+        }
+        for (const type of CONTENT_TYPES) for (const modality of CONTENT_MODALITIES) {
+            check('PayloadEnvelope', buildPayload({ requestId: 'q', content: [{ type, modality, raw: 'x' }] }));
+        }
+        const answer = buildPayload({ operation: 'answer', requestId: 'q', source, part: 0, offset: 0 });
+        assert.throws(() => check('PayloadEnvelope', { ...answer, data: { ...answer.data, unknown: true } }));
+        assert.throws(() => check('PayloadEnvelope', { ...answer, data: { ...answer.data, source: null } }));
+        const message = buildPayload({ requestId: 'q', content: [{ type: 'text', modality: 'text', raw: 'x' }] });
+        check('PayloadEnvelope', { ...message, data: { ...message.data, start: 'ignored', unknown: true } });
+        // Runtime policy is deliberately outside protocol compatibility.
+        check('PayloadEnvelope', { type: 'payload', data: { operation: 'continue', request_id: '',
+            options: { confirmation: { mode: 'future-policy' }, future: 42 } } });
+    });
+    it('validates confirmation and opaque remote-call envelopes', () => {
+        check('ConfirmationRequestEnvelope', { type: 'confirmation_request', data: { ...correlation, call } });
+        for (const decision of manifest.enumerations.ConfirmationDecision.spellings) {
+            check('ConfirmationResponseEnvelope', buildConfirmationResponse(correlation, decision));
+        }
+        const ids = { worker_id: 'w', session_id: 's', run_id: 'r', request_id: 'q' };
+        const request = { type: 'tool_request', data: { ...ids, arguments: { future: [null] } } };
+        check('ToolRequestEnvelope', request);
+        const parsed = parseToolRequest(request, 's');
+        assert.deepEqual(parsed, request.data);
+        check('ToolResponseEnvelope', dispatchToolRequest('/unknown', parsed));
+        check('ToolResponseEnvelope', succeededTool({ request: parsed, route: '/unknown' }, { future: true }));
+        for (const [status, fields] of [['succeeded', { result: { future: true } }],
+            ['rejected', { error: { code: 'future_error', message: 'unavailable' } }]]) {
+            const value = { type: 'tool_response', data: { ...ids, route: '/unknown', status, ...fields } };
+            check('ToolResponseEnvelope', value);
+            assert.throws(() => check('ToolResponseEnvelope', { ...value, data: { ...value.data, result: {}, error: {} } }));
         }
     });
-
-    it('documents exactly the signals the hub can send', () => {
-        const rows = firstTable(section(readDocument(), '## Control signals'), 'the control signals table');
-        const documented = rows.map((row) => identifier(row[0])).sort();
-        assert.deepEqual([...SIGNAL_OPERATIONS].sort(), documented);
-        for (const operation of documented) {
-            assert.doesNotThrow(() => buildSignal({ operation, runId: 'run-1' }),
-                `the hub cannot build the documented signal "${operation}"`);
+    it('validates projected events before exercising the tolerant Hub normalizer', () => {
+        const fixtures = [envelope('run_started', {}), envelope('tool_calls', [call, marker]),
+            envelope('history', { request_id: 'q', revision: 1, start: 0, step: 0, next: 0,
+                next_step: 0, total: 0, turns: [] }),
+            envelope('model_response', { index: 0, type: 'model_response', role: 'assistant', content: [],
+                tool_calls: 1, omitted_parts: 0, invokes: [call, marker] }),
+            envelope('run_finished', { status: 'completed', error: '', exchanges: 1, durable: true,
+                omitted_display_events: 2 })];
+        for (const fixture of fixtures) {
+            validateWorkerEvent(fixture, check);
+            assert.equal(parseEventEnvelope(JSON.stringify(fixture)).ok, true);
         }
+        assert.equal(parseEventEnvelope(JSON.stringify(envelope('future_event', { future: true }))).ok, true);
+        assert.throws(() => validateWorkerEvent(envelope('tool_calls', [marker, call]), check));
+        assert.throws(() => check('PayloadEnvelope', { type: 'payload', data: { operation: 'unknown' } }));
+        assert.throws(() => check('PayloadEnvelope', { type: 'payload', data: { operation: 'continue', request_id: 'q', content: null } }));
     });
-
-    it('documents the input operations accepted by the hub', () => {
-        const requests = section(readDocument(), '## User requests');
-        const documented = [...requests.matchAll(/"operation"\s*:\s*"([a-z_]+)"/g)]
-            .map((match) => match[1]);
-        assert.ok(documented.length > 0, `no input operations found. ${PARSER_HINT}`);
-        assert.deepEqual([...INPUT_OPERATIONS].sort(), [...new Set(documented)].sort());
-        assert.doesNotThrow(() => buildPayload({
-            requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'text' }] }));
-        assert.doesNotThrow(() => buildPayload({ operation: 'continue', requestId: 'r' }));
-    });
-
-    it('documents exactly the content encodings the hub accepts', () => {
-        const rows = firstTable(section(readDocument(), '### Content'), 'the Content table');
-        const typeRow = rows.find((row) => identifier(row[0]) === 'type');
-        assert.ok(typeRow, `no "type" row in the Content table. ${PARSER_HINT}`);
-        const documented = backticks(typeRow[1]).sort();
-        assert.deepEqual([...CONTENT_TYPES].sort(), documented);
-    });
-
-    it('documents exactly the modalities the hub accepts', () => {
-        const rows = firstTable(section(readDocument(), '### Content'), 'the Content table');
-        const modalityRow = rows.find((row) => identifier(row[0]) === 'modality');
-        assert.ok(modalityRow, `no "modality" row in the Content table. ${PARSER_HINT}`);
-        const documented = backticks(modalityRow[1]).sort();
-        assert.deepEqual([...CONTENT_MODALITIES].sort(), documented);
-        // A part without the label is refused rather than assumed to be text.
-        assert.throws(
-            () => buildPayload({ requestId: 'r', content: [{ type: 'text', raw: 'x' }] }),
-            /modality/);
-    });
-
-    it('documents exactly the option categories the hub accepts', () => {
-        const rows = firstTable(
-            section(readDocument(), '### Apply options at the next run boundary'),
-            'the payload options table');
-        const documented = rows.map((row) => identifier(row[0]));
-        assert.deepEqual(documented.sort(), ['confirmation', 'model', 'tools']);
-        for (const category of documented) {
-            const value = category === 'confirmation' ? {} : category === 'tools' ? {} : {};
-            assert.doesNotThrow(() => normalizeOptions({ [category]: value }),
-                `the hub refuses the documented option category "${category}"`);
+    it('detects deliberate required-field, enum and structural-constraint mutations', () => {
+        const message = buildSignal({ operation: 'status' });
+        for (const mutate of [
+            schema => schema.$defs.SignalRequest.required.push('new_required'),
+            schema => { schema.$defs.SignalOperation.enum = ['new_operation']; },
+            schema => { schema.$defs.SignalRequest.properties.operation = { type: 'integer' }; },
+        ]) {
+            const changed = structuredClone(manifest);
+            mutate(changed.json_schema);
+            assert.throws(() => contractValidator(changed)('SignalEnvelope', message), /SignalEnvelope/);
         }
-        assert.throws(() => normalizeOptions({ not_documented: {} }), /unknown options category/);
-    });
-
-    it('documents exactly the confirmation modes the hub can select', () => {
-        const rows = firstTable(
-            section(readDocument(), '### Apply options at the next run boundary'),
-            'the payload options table');
-        const row = rows.find((entry) => identifier(entry[0]) === 'confirmation');
-        assert.ok(row, `no confirmation row in the options table. ${PARSER_HINT}`);
-        // "Object with optional `mode`: `ask`, `approve`, or `deny`"
-        const documented = backticks(row[1]).filter((value) => value !== 'mode').sort();
-        assert.deepEqual([...CONFIRMATION_MODES].sort(), documented);
-    });
-
-    it('documents exactly the decisions the hub may answer with', () => {
-        const response = section(readDocument(), '### Response');
-        const match = /`decision` must be (.+?)\./.exec(response);
-        assert.ok(match, `the confirmation response decision rule moved. ${PARSER_HINT}`);
-        const documented = backticks(match[1]).sort();
-        assert.deepEqual(documented, ['approved', 'denied']);
-        const request = {
-            worker_id: 'w', session_id: 's', run_id: 'r', confirmation_id: 'c',
-        };
-        for (const decision of documented) {
-            assert.equal(buildConfirmationResponse(request, decision).data.decision, decision);
-        }
-        assert.throws(() => buildConfirmationResponse(request, 'maybe'), /approved or denied/);
-    });
-
-    it('sends only the two documented envelope types', () => {
-        const markdown = readDocument();
-        const match = /`type` must be `payload` or `signal`/.exec(markdown);
-        assert.ok(match, `the hub-to-worker envelope rule moved. ${PARSER_HINT}`);
-        assert.equal(buildPayload({
-            requestId: 'r', content: [{ type: 'text', raw: 'x', modality: 'text' }] }).type, 'payload');
-        assert.equal(buildSignal({ operation: 'status' }).type, 'signal');
     });
 });

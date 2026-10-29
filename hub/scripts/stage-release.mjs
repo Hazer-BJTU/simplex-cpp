@@ -21,6 +21,10 @@ for (const resource of ['schemas', 'web/dist']) {
     rmSync(destination, { recursive: true, force: true });
     cpSync(resolve(root, resource), destination, { recursive: true });
 }
+// Copy the generated worker contract verbatim; never create a second schema.
+mkdirSync(resolve(dist, 'protocol'), { recursive: true });
+cpSync(resolve(root, '../protocol/schemas/worker-protocol.json'),
+    resolve(dist, 'protocol/worker-protocol.json'));
 // Stage public Markdown and allow-listed images: site dependencies and historical
 // notes must never enter the runtime npm package.
 const docs = resolve(dist, 'docs');

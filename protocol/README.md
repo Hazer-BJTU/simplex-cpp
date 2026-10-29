@@ -91,8 +91,7 @@ validation, which reports unsupported values as business errors. The protocol
 keeps request field types and basic operation combinations, but does not impose
 ID/text length limits, page-size quotas or application-owned resource defaults.
 Unsigned counts/cursors still require unsigned integers. Status diagnostics
-remain described in detail. The later application migration must retain its
-runtime safeguards rather than relying on structural decoding alone.
+remain described in detail. Application parsing retains its runtime safeguards separately from structural decoding.
 
 **Two libraries.** `protocol_lib` (`libsimplex_protocol.so`) is the descriptors
 and codec and depends on nlohmann/json only — a tool or plugin can speak the wire
@@ -106,14 +105,31 @@ constructs event envelopes, metadata events, projections, confirmation requests
 and remote-tool envelopes from these records; `core/wire.hpp` owns the enum
 conversions. Behaviour stays where it was: event classification, budgets,
 sequence allocation and admission policy remain application code, and the
-projection algorithms keep their byte accounting. The installed
-`simplex protocol` command and the remaining Hub checks are the next changes.
+projection algorithms keep their byte accounting. `simplex protocol` prints the
+compiled manifest; `simplex protocol --hash` prints its structural SHA-256.
+Direct equivalents are `simplex_worker --protocol` and `--protocol-hash`.
+Neither command initializes the runtime or reads external schema files.
 
 ## Relationship to the documentation
 
-`docs/core/worker-protocol.md` remains the behavioural document. Once the Hub
-checks consume the manifest, the field tables in it will point here instead of
-duplicating an authority that can drift.
+`docs/core/worker-protocol.md` remains the behavioural guide. The compiled
+manifest is authoritative for field types and presence; documentation examples
+explain use and do not drive compatibility checks. The reference artifact is
+installed at `share/simplex/protocol/worker-protocol.json` and copied verbatim
+into the Hub npm package at `dist/protocol/worker-protocol.json`.
+
+Hub Node tests validate adapter output using the committed artifact and Ajv's
+Draft 2020-12 validator with the trailing-marker extension below. Required-field,
+enum and type mutations verify that mismatches fail. Worker-enabled e2e compares
+the actual binary's output against that same artifact. Runtime connections do
+not load this validator and unknown-event tolerance remains unchanged.
+
+When changing a structural descriptor, build `protocol_manifest_export`, run
+`build/bin/protocol_manifest_export > protocol/schemas/worker-protocol.json`,
+then run protocol native tests and `cd hub && node --test test/protocol-drift.test.js`.
+Do not edit the JSON artifact manually. Cross-compilation does not execute a
+target generator during configure/install: use a host build to update the
+committed artifact, and compare the target CLI in a compatible runtime image.
 
 ## Structural conformance tests
 
