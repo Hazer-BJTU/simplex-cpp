@@ -6,7 +6,6 @@
 #include "posix_identity.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +13,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -24,6 +24,9 @@ namespace {
 
 constexpr std::size_t kMinBufferBytes = 4;
 constexpr std::size_t kMaxBufferBytes = 1024 * 1024;
+// FileWork executes on pthreads, whose default stack may be only 128 KiB
+// (musl). Keep these fixed-size IO buffers on the heap: two comparison buffers
+// alone would otherwise consume that entire stack before caller/Asio frames.
 constexpr std::size_t kCompareChunk = 64 * 1024;
 
 /** Read from both descriptors and require identical bytes. */
@@ -31,8 +34,8 @@ void compare_exact(
     int left, int right, std::uintmax_t bytes, std::uintmax_t base,
     SourceObserver* observer, std::stop_token stop)
 {
-    std::array<char, kCompareChunk> first{};
-    std::array<char, kCompareChunk> second{};
+    std::vector<char> first(kCompareChunk);
+    std::vector<char> second(kCompareChunk);
     std::uintmax_t compared = 0;
     while (compared < bytes) {
         check_cancelled(stop);
@@ -57,7 +60,7 @@ void compare_exact(
 void compare_expected(
     int descriptor, std::uintmax_t bytes, std::string_view expected, std::stop_token stop)
 {
-    std::array<char, kCompareChunk> chunk{};
+    std::vector<char> chunk(kCompareChunk);
     std::uintmax_t consumed = 0;
     while (consumed < bytes) {
         check_cancelled(stop);
@@ -76,8 +79,8 @@ void compare_expected(
 void compare_to_end(
     int left, int right, std::uintmax_t base, SourceObserver* observer, std::stop_token stop)
 {
-    std::array<char, kCompareChunk> first{};
-    std::array<char, kCompareChunk> second{};
+    std::vector<char> first(kCompareChunk);
+    std::vector<char> second(kCompareChunk);
     std::uintmax_t compared = 0;
     for (;;) {
         check_cancelled(stop);
@@ -98,7 +101,7 @@ void compare_to_end(
 /** Discard exactly `bytes` bytes from one descriptor. */
 void skip_bytes(int descriptor, std::uintmax_t bytes, std::stop_token stop)
 {
-    std::array<char, kCompareChunk> chunk{};
+    std::vector<char> chunk(kCompareChunk);
     std::uintmax_t skipped = 0;
     while (skipped < bytes) {
         check_cancelled(stop);
@@ -272,7 +275,7 @@ void StagedReplacement::copy_prefix(std::uintmax_t bytes)
     if (copied < bytes) {
         // Fallback for filesystems without copy_file_range; pread keeps the
         // source scan position untouched.
-        std::array<char, kCompareChunk> chunk{};
+        std::vector<char> chunk(kCompareChunk);
         while (copied < bytes) {
             check_cancelled(stop_);
             const auto want = static_cast<std::size_t>(

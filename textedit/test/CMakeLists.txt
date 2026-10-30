@@ -45,3 +45,9 @@ target_link_libraries(test_stream_edit PRIVATE textedit_lib fileio_lib Boost::un
 set_target_properties(test_stream_edit PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME test_stream_edit COMMAND test_stream_edit)
 set_tests_properties(test_stream_edit PROPERTIES TIMEOUT 180)
+
+# A small pthread stack catches fixed-buffer overflow on glibc as well as musl.
+add_executable(test_edit_small_stack test_edit_small_stack.cpp)
+target_link_libraries(test_edit_small_stack PRIVATE textedit_lib Boost::unit_test_framework)
+add_test(NAME test_edit_small_stack COMMAND test_edit_small_stack)
+set_tests_properties(test_edit_small_stack PROPERTIES TIMEOUT 30)
