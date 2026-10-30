@@ -30,7 +30,8 @@ llm/
                      (compat/README.md says why this grouping, unlike
                      providers/, appears in the logical path)
   providers/         the bundled provider plugins (openai over the Responses
-                     adapter; deepseek, qwen and chat-completions over Chat Completions)
+                     adapter; deepseek, qwen, glm and chat-completions over
+                     Chat Completions)
   example/           manual demos that need a live API key
   test/              module-level tests: the contract, the plugins, and the
                      plugin-boundary ABI assertions

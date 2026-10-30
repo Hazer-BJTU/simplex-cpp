@@ -37,7 +37,7 @@ target_compile_definitions(test_openai_plugin PRIVATE
 set_target_properties(test_openai_plugin PROPERTIES ENABLE_EXPORTS ON)
 # All bundled provider .so share the plugins/llm directory the test counts;
 # the dependency keeps a single-target build from racing a missing library.
-add_dependencies(test_openai_plugin llm_openai llm_deepseek llm_qwen llm_custom_chat)
+add_dependencies(test_openai_plugin llm_openai llm_deepseek llm_qwen llm_glm llm_custom_chat)
 add_test(NAME test_openai_plugin COMMAND test_openai_plugin)
 
 # The deepseek plugin test drives one exchange through the dlopened .so
@@ -62,7 +62,7 @@ target_compile_definitions(test_deepseek_plugin PRIVATE
 # authoritative copies of the header-only contract classes' typeinfo/vtables
 # (type identity across the boundary, not the name-comparison fallback).
 set_target_properties(test_deepseek_plugin PROPERTIES ENABLE_EXPORTS ON)
-add_dependencies(test_deepseek_plugin llm_openai llm_deepseek llm_qwen llm_custom_chat)
+add_dependencies(test_deepseek_plugin llm_openai llm_deepseek llm_qwen llm_glm llm_custom_chat)
 add_test(NAME test_deepseek_plugin COMMAND test_deepseek_plugin)
 
 # Structural assertions for the hardened plugin boundary: factory aliases

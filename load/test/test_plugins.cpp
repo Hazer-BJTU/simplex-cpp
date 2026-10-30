@@ -75,16 +75,19 @@ BOOST_AUTO_TEST_CASE(provider_discovery_ignores_model_selection_and_credentials)
         {"future_field", true}
     };
     auto providers = load::load_providers(configuration, scratch.root);
-    BOOST_TEST(providers.usable_count() == 4u);
+    BOOST_TEST(providers.usable_count() == 5u);
     BOOST_TEST(providers.contains("deepseek"));
     BOOST_TEST(providers.contains("openai"));
     BOOST_TEST(providers.contains("qwen"));
+    BOOST_TEST(providers.contains("glm"));
     BOOST_TEST(providers.contains("chat-completions"));
     boost::asio::io_context io;
     BOOST_CHECK(providers.create_model(
         "deepseek", io.get_executor(), {{"model", "test-model"}}));
     BOOST_CHECK(providers.create_model(
         "qwen", io.get_executor(), {{"model", "qwen3.8-flash"}}));
+    BOOST_CHECK(providers.create_model(
+        "glm", io.get_executor(), {{"model", "glm-5.3-flash"}}));
     BOOST_CHECK(providers.create_model(
         "openai", io.get_executor(), {{"model", "test-model"}}));
     BOOST_CHECK(providers.create_model(
@@ -275,7 +278,8 @@ BOOST_AUTO_TEST_CASE(yaml_entrypoint_uses_file_parent_and_reports_source) {
 
 BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_network) {
     const auto loaded = load::load_plugins(LOAD_TEMPLATE);
-    BOOST_TEST(loaded.providers.usable_count() == 4u);
+    BOOST_TEST(loaded.providers.usable_count() == 5u);
+    BOOST_TEST(loaded.providers.contains("glm"));
     BOOST_TEST(loaded.providers.contains("chat-completions"));
     BOOST_TEST(loaded.extensions.tools.empty());
     BOOST_TEST(loaded.extensions.loop_hooks.empty());
