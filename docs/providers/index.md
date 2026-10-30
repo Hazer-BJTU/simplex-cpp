@@ -1,7 +1,7 @@
 # Model providers
 
-The documented providers are **DeepSeek**, **Qwen**, and the configurable
-**Custom Chat Completions** fallback. Provider pages
+The documented providers are **DeepSeek**, **Qwen**, **GLM (Zhipu AI)**, and the
+configurable **Custom Chat Completions** fallback. Provider pages
 record when their repository implementation and configuration were last reviewed;
 the date is not a claim of live service availability or exhaustive remote testing.
 
@@ -9,6 +9,7 @@ the date is not a claim of live service availability or exhaustive remote testin
 | --- | --- | --- | --- |
 | [DeepSeek](deepseek.md) | `deepseek` | Chat Completions | 2026-10-01 |
 | [Qwen](qwen.md) | `qwen` | Chat Completions | 2026-10-04 |
+| [GLM (Zhipu AI)](glm.md) | `glm` | Chat Completions | 2026-10-30 |
 | [Custom Chat Completions](chat-completions.md) | `chat-completions` | Chat Completions | 2026-10-15 |
 
 The source tree also builds an `openai` provider using the Responses adapter.
@@ -25,7 +26,8 @@ implementation.
 ## Provider configuration
 
 The [DeepSeek](deepseek.md#worker-configuration),
-[Qwen](qwen.md#worker-configuration), and
+[Qwen](qwen.md#worker-configuration),
+[GLM (Zhipu AI)](glm.md#worker-configuration), and
 [Custom Chat Completions](chat-completions.md#minimal-worker-configuration) pages
 contain provider-only YAML examples and each plugin's generation controls. Copy the relevant
 `providers` section into your worker YAML and select its entry name through
@@ -69,8 +71,9 @@ header values, not arbitrary YAML strings. Referenced variables must exist and
 be nonempty. Prefer environment references over storing credentials in YAML.
 
 The worker constructs `messages` and `tools` from the current loop state.
-For DeepSeek and Qwen, the shared adapter enforces streaming and usage collection (`stream: true` and
-`stream_options.include_usage: true`), and both providers remove `n`. These are
+For DeepSeek, Qwen and GLM, the shared adapter enforces streaming and usage
+collection (`stream: true` and `stream_options.include_usage: true`), and all
+three providers remove `n`. These are
 request mechanics, not user-configurable alternatives for those providers.
 Other members of `stream_options` are preserved.
 

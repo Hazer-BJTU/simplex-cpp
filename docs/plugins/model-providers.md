@@ -8,9 +8,9 @@ tools, own the agent loop, or write conversation snapshots to disk.
 
 Reuse `llm::chat_completions::ChatCompletionsModel` or
 `llm::responses::ResponsesModel` when the endpoint speaks one of those protocols.
-A dialect supplies endpoint defaults and protocol-specific behavior. DeepSeek and Qwen
-illustrate Chat Completions dialects; the in-tree OpenAI implementation
-illustrates the Responses adapter.
+A dialect supplies endpoint defaults and protocol-specific behavior. DeepSeek,
+Qwen and GLM illustrate Chat Completions dialects; the in-tree OpenAI
+implementation illustrates the Responses adapter.
 
 Unsupported modality/encoding combinations must fail explicitly. Do not silently
 reinterpret document, image, or audio input as a different category. Preserve
