@@ -1,6 +1,6 @@
 {
   "name": "@hazer-bjtu/simplex-hub",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Worker hub and web panel for simplex_worker sessions",
   "type": "module",
   "license": "MIT",
