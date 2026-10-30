@@ -95,7 +95,7 @@ the request leaves the process, so a Coding Plan account configured with
 
 | Control | Plugin behavior |
 | --- | --- |
-| `thinking.type` | Forwarded unchanged, except that `disabled` is refused locally on the GLM-5.3 family and on `glm-4.7`, which the platform documents as always thinking. The service answers that request with HTTP 400 and code `1210`; refusing it here names the field instead of spending a round trip. |
+| `thinking.type` | Forwarded unchanged, except that `disabled` is refused locally on the GLM-5.3 family. GLM-4.7 enables thinking by default but supports disabling it per turn. HTTP 400 / code `1210` was verified for `glm-5.3-flash`, not GLM-4.7. |
 | `thinking.clear_thinking` | Forwarded unchanged. `false` opts into preserved thinking: the worker already replays intermediate `reasoning_content`, which that mode requires. The service default is `true`, which discards historical reasoning between turns. |
 | `reasoning_effort` | `low`, `high`, and `max` are the documented values for the GLM-5.3 family. `medium` is translated to `high` and `xhigh` to `max`, matching the aliases the family's predecessors document. `none`, `minimal`, and unknown values are refused, because the model cannot stop thinking and silently landing on `low` would be a different request. |
 | `reasoning.effort` | Shared compatibility spelling. Converted to `reasoning_effort`; an explicit top-level value wins. The `reasoning` envelope is removed. |

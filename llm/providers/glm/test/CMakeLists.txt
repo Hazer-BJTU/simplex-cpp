@@ -33,3 +33,7 @@ target_link_libraries(test_glm_model PRIVATE
     llm_chat_completions endpoint_lib eventbus_iface
     Boost::unit_test_framework)
 add_test(NAME test_glm_model COMMAND test_glm_model)
+target_compile_definitions(test_glm_model PRIVATE
+    GLM_PLUGIN_DIR="$<TARGET_FILE_DIR:llm_glm>")
+set_target_properties(test_glm_model PROPERTIES ENABLE_EXPORTS ON)
+add_dependencies(test_glm_model llm_glm)

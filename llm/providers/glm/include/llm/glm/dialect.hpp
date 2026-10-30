@@ -73,14 +73,14 @@ inline bool is_glm53(std::string_view model) {
 }
 
 /**
- * Models documented as always thinking. GLM-5.3 and GLM-4.7 report this in
- * the thinking guide; every other model keeps the permissive path where
+ * Models documented as always thinking. GLM-5.3 requires thinking, whereas
+ * GLM-4.7 enables it by default but allows disabling it per turn. Other
+ * models keep the permissive path where
  * `disabled` is forwarded for the service to judge — the dialect does not
  * infer an unverified model's capabilities from its name.
  */
 inline bool requires_thinking(std::string_view model) {
-    return is_glm53(model) || model == "glm-4.7"
-        || model.starts_with("glm-4.7-");
+    return is_glm53(model);
 }
 
 // ===== request policy ========================================================

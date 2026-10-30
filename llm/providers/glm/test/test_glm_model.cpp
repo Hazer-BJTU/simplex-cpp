@@ -19,6 +19,7 @@
 #include <boost/beast/http.hpp>
 
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,11 +30,33 @@
 #include "llm/compat/chat_completions/events.hpp"
 #include "llm/compat/chat_completions/model.hpp"
 #include "llm/glm/dialect.hpp"
+#include "llm/models.hpp"
 #include "loopback_server.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
+
+BOOST_AUTO_TEST_CASE(real_plugin_allows_glm47_thinking_switches) {
+    llm::LLMDispatcher dispatcher;
+    BOOST_REQUIRE(dispatcher.load_models(std::filesystem::path(GLM_PLUGIN_DIR)) > 0);
+    asio::io_context io;
+    for (const char* name : {"glm-4.7", "glm-4.7-flash"}) {
+        auto model = dispatcher.create_model("glm", io.get_executor(), {
+            {"model", name}, {"thinking", {{"type", "disabled"}}}});
+        BOOST_REQUIRE(model);
+        BOOST_CHECK_EQUAL(model->generation()["thinking"]["type"], "disabled");
+        model->set_generation(nlohmann::json{{"thinking", {{"type", "enabled"}}}});
+        model->set_generation(nlohmann::json{{"thinking", {{"type", "disabled"}}}});
+        BOOST_CHECK_EQUAL(model->generation()["thinking"]["type"], "disabled");
+        const auto before = model->generation();
+        BOOST_CHECK_THROW(model->set_generation(nlohmann::json{{"model", "glm-5.3-flash"}}),
+                          std::invalid_argument);
+        BOOST_CHECK(model->generation() == before);
+    }
+    BOOST_CHECK(!dispatcher.create_model("glm", io.get_executor(), {
+        {"model", "glm-5.3-flash"}, {"thinking", {{"type", "disabled"}}}}));
+}
 
 namespace {
 

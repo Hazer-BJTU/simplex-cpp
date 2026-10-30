@@ -86,11 +86,13 @@ BOOST_AUTO_TEST_CASE(disabling_thinking_is_refused_on_the_53_family) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(disabling_thinking_is_refused_on_glm_47) {
-    BOOST_CHECK_THROW(
-        transformed({{"model", "glm-4.7"},
-                     {"thinking", {{"type", "disabled"}}}}),
-        std::invalid_argument);
+BOOST_AUTO_TEST_CASE(disabling_thinking_passes_through_on_glm_47) {
+    for (const char* model : {"glm-4.7", "glm-4.7-flash"}) {
+        const auto body = transformed({{"model", model},
+            {"thinking", {{"type", "disabled"}, {"clear_thinking", false}}}});
+        BOOST_CHECK_EQUAL(body["thinking"]["type"], "disabled");
+        BOOST_CHECK_EQUAL(body["thinking"]["clear_thinking"], false);
+    }
 }
 
 // A model the dialect has no evidence about keeps the permissive path: the
