@@ -356,8 +356,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             const outbox = view?.items.find(item => item.kind === 'outbox'
                 && item.requestId === pending.requestId);
             const record = view?.requests.get(pending.requestId);
-            // A replay may replace the local outbox. Correlated lifecycle
-            // evidence still settles admission without relying on that item.
+            // Live lifecycle events can settle without an outbox. Accepted
+            // replay batches settle from their original envelopes in the store,
+            // even when later runs or retention hide evidence from this cache.
             const lifecycle = ['input_admitted', 'run_started', 'run_finished']
                 .some(name => {
                     const event = view?.latestEvents[name];

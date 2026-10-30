@@ -163,3 +163,54 @@ test('transcript replacement cannot unlock pending admission or strand it after 
     emit('run_finished', request.request_id, { status: 'completed' });
     assert.equal(client.sendInput('demo', [], 'compact'), true);
 });
+
+for (const delivery of ['snapshot', 'replay-reset', 'replay-delta']) {
+    for (const active of [false, true]) {
+        test(`${delivery} settles an older execution while the later run is ${active ? 'active' : 'finished'}`, async t => {
+            const { store, client, socket, sessions, inputs } = await setup(t);
+            assert.equal(client.sendInput('demo', [], 'continue'), true);
+            const requestId = inputs().at(-1).request_id;
+            let sequence = 0;
+            const event = (request_id, name) => ({
+                type: 'event', event: name, session_id: 'demo', worker_id: 'worker',
+                sequence: ++sequence, hub_sequence: sequence, request_id, run_id: request_id,
+                data: name === 'input_admitted' ? { operation: 'continue' } : { status: 'completed' },
+            });
+            const transcript = [
+                ...['input_admitted', 'run_started', 'run_finished'].map(name => event(requestId, name)),
+                ...['input_admitted', 'run_started', 'run_finished'].map(name => event('another-panel', name)),
+                ...(active ? ['input_admitted', 'run_started'].map(name => event('still-running', name)) : []),
+            ];
+            const session = { ...sessions[0], requests: [{
+                request_id: requestId, operation: 'continue', state: 'admitted',
+                sent_at: '', settled_at: '', detail: '',
+            }] };
+            const message = delivery === 'snapshot'
+                ? { type: 'snapshot', session, transcript }
+                : { type: 'subscribed', session, transcript, latest: sequence, logs: [],
+                    ...(delivery === 'replay-reset' ? { replay_reset: true } : {}) };
+            socket.receive(message);
+            const state = store.getState();
+            assert.notEqual(state.views.get('demo').latestEvents.run_finished.request_id, requestId);
+            assert.equal(state.views.get('demo').requests.get(requestId).state, 'admitted');
+            assert.equal(state.pendingExecutions.size, 0);
+            assert.equal(state.views.get('demo').runActive, active);
+            assert.equal(client.sendInput('demo', [], 'compact'), !active);
+        });
+    }
+}
+
+test('replay evidence must match both request and worker, not just an admitted record', async t => {
+    const { store, client, socket, sessions, inputs } = await setup(t);
+    assert.equal(client.sendInput('demo', [], 'continue'), true);
+    const requestId = inputs().at(-1).request_id;
+    socket.receive({ type: 'snapshot', session: { ...sessions[0], requests: [{
+        request_id: requestId, operation: 'continue', state: 'admitted',
+        sent_at: '', settled_at: '', detail: '',
+    }] }, transcript: [{
+        type: 'event', event: 'run_finished', session_id: 'demo', worker_id: 'old-worker',
+        sequence: 1, hub_sequence: 1, request_id: requestId, run_id: 'old-run', data: { status: 'completed' },
+    }] });
+    assert.equal(store.getState().pendingExecutions.size, 1);
+    assert.equal(client.sendInput('demo', [], 'continue'), false);
+});

@@ -601,6 +601,30 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
 }
 
 /**
+ * Settle admission from an accepted replay batch, after its complete view and
+ * run activity have been published. Later runs can overwrite latestEvents and
+ * retention can evict earlier items, so inspect the original batch rather than
+ * either display cache. An admitted request record alone is not enough: it can
+ * arrive before the worker lifecycle event that marks the run active.
+ *
+ * Call only after replay epoch/cursor checks accept the batch. This never
+ * changes run activity, which belongs to the normal ordered envelope fold.
+ */
+function settleReplayExecution(
+    state: PanelStore,
+    sessionId: SessionId,
+    transcript: readonly WorkerEnvelope[],
+): void {
+    const pending = state.pendingExecutions.get(sessionId);
+    if (!pending || state.sessions.get(sessionId)?.identity.worker_id !== pending.workerId) return;
+    const admitted = transcript.some(envelope => envelope
+        && envelope.worker_id === pending.workerId
+        && envelope.request_id === pending.requestId
+        && ['input_admitted', 'run_started', 'run_finished'].includes(envelope.event));
+    if (admitted) state.setPendingExecution(sessionId, null);
+}
+
+/**
  * Merge a replayed delta into a view.
  *
  * The delta holds the envelopes after the cursor the panel asked from. Anything
@@ -970,6 +994,7 @@ export function createPanelStore() {
                 return confirmations === view.confirmations ? view : { ...view, confirmations };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, message.transcript ?? []);
             return NO_EFFECTS;
         },
 
@@ -1240,6 +1265,7 @@ export function createPanelStore() {
                 };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, message.transcript ?? []);
         },
 
         mergeTranscript(sessionId, transcript, latest) {
@@ -1249,6 +1275,7 @@ export function createPanelStore() {
                 return { ...merged, lastSeq: Math.max(merged.lastSeq, latest) };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, transcript);
         },
 
         applyError(message) {
