@@ -141,3 +141,14 @@ describe('compaction archive guidance', () => {
         }
     });
 });
+
+it('offers saved-state continuation and compaction independently of usage or failure classification', () => {
+    const ready = input({ executionAvailable: true, compactSupported: true });
+    for (const operation of ['continue', 'compact']) {
+        assert.deepEqual(buildCommands(ready).find(command => command.id === `conversation:${operation}`).action,
+            { kind: 'execute', session: 'demo', operation });
+        assert.ok(!ids({ ...ready, executionAvailable: false }).includes(`conversation:${operation}`));
+    }
+    assert.ok(!ids({ ...ready, compactSupported: false }).includes('conversation:compact'));
+    assert.ok(ids({ ...ready, compactSupported: false }).includes('conversation:continue'));
+});

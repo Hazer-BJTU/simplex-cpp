@@ -90,6 +90,15 @@ test('keeps executing A, queued B, and rejected C separate in live and replayed 
         await composer.fill(`Input ${id}`);
         await page.getByRole('button', { name: 'Send', exact: true }).click();
         await expect(page.getByTestId('outbox-item')).toHaveCount(['A', 'B', 'C'].indexOf(id) + 1);
+        // A live channel now permits only one unacknowledged execution. Old
+        // unknown outcomes can still coexist after reconnect; never discard
+        // their transcript correlation just because the admission lock reset.
+        if (id !== 'C') {
+            await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
+            await expect(composer).toHaveAttribute('placeholder', 'No worker is attached to this session');
+            await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
+            await expect(composer).toHaveAttribute('placeholder', 'Message the worker…');
+        }
     }
     await expect(page.getByTestId('round-summary')).toHaveCount(0);
     const received = await (await page.request.get(`${STUB}/__stub/received`)).json();

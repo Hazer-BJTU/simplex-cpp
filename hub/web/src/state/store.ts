@@ -179,8 +179,17 @@ export interface SnapshotState {
     readonly error: string | null;
 }
 
+/** An execution sent on the current channel, awaiting worker admission. */
+export interface PendingExecution {
+    readonly requestId: string;
+    readonly workerId: string | null;
+    readonly operation: string;
+}
+
 /** The state held by the store. */
 export interface PanelState {
+    /** Shared by composer, recovery actions and palette; not a delivery receipt. */
+    pendingExecutions: ReadonlyMap<SessionId, PendingExecution>;
     plans: ReadonlyMap<SessionId, SessionPlan>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
@@ -270,6 +279,8 @@ export interface PanelActions {
     /** The client supplies confirmedReplacement only for a current zero-cursor legacy reply. */
     applySubscribed(message: SubscribedMessage, confirmedReplacement?: boolean): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    /** Publish or retire the client-owned reservation for one execution. */
+    setPendingExecution(sessionId: SessionId, pending: PendingExecution | null): void;
     setCancelPending(sessionId: SessionId, pending: boolean): void;
     setModelOption(sessionId: SessionId, name: string, value: unknown): void;
     /** Account for a transient worker reply without advancing hub replay. */
@@ -371,6 +382,7 @@ const INITIAL: PanelState = {
         ignoredFrames: 0,
     },
     authRequired: false,
+    pendingExecutions: new Map(),
     plans: new Map(),
     sessions: new Map(),
     views: new Map(),
@@ -586,6 +598,30 @@ function foldEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewState {
         }
     }
     return next;
+}
+
+/**
+ * Settle admission from an accepted replay batch, after its complete view and
+ * run activity have been published. Later runs can overwrite latestEvents and
+ * retention can evict earlier items, so inspect the original batch rather than
+ * either display cache. An admitted request record alone is not enough: it can
+ * arrive before the worker lifecycle event that marks the run active.
+ *
+ * Call only after replay epoch/cursor checks accept the batch. This never
+ * changes run activity, which belongs to the normal ordered envelope fold.
+ */
+function settleReplayExecution(
+    state: PanelStore,
+    sessionId: SessionId,
+    transcript: readonly WorkerEnvelope[],
+): void {
+    const pending = state.pendingExecutions.get(sessionId);
+    if (!pending || state.sessions.get(sessionId)?.identity.worker_id !== pending.workerId) return;
+    const admitted = transcript.some(envelope => envelope
+        && envelope.worker_id === pending.workerId
+        && envelope.request_id === pending.requestId
+        && ['input_admitted', 'run_started', 'run_finished'].includes(envelope.event));
+    if (admitted) state.setPendingExecution(sessionId, null);
 }
 
 /**
@@ -958,6 +994,7 @@ export function createPanelStore() {
                 return confirmations === view.confirmations ? view : { ...view, confirmations };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, message.transcript ?? []);
             return NO_EFFECTS;
         },
 
@@ -967,6 +1004,13 @@ export function createPanelStore() {
             })));
         },
 
+        setPendingExecution(sessionId, pending) {
+            if ((get().pendingExecutions.get(sessionId) ?? null) === pending) return;
+            const pendingExecutions = new Map(get().pendingExecutions);
+            if (pending) pendingExecutions.set(sessionId, pending);
+            else pendingExecutions.delete(sessionId);
+            set({ pendingExecutions });
+        },
         setCancelPending(sessionId, pending) {
             set(withView(get(), sessionId, (view) => ({ ...view, cancelPending: pending })));
         },
@@ -1221,6 +1265,7 @@ export function createPanelStore() {
                 };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, message.transcript ?? []);
         },
 
         mergeTranscript(sessionId, transcript, latest) {
@@ -1230,6 +1275,7 @@ export function createPanelStore() {
                 return { ...merged, lastSeq: Math.max(merged.lastSeq, latest) };
             }));
             set(seedFromSession(get(), sessionId));
+            settleReplayExecution(get(), sessionId, transcript);
         },
 
         applyError(message) {
@@ -1341,6 +1387,9 @@ export function createPanelStore() {
         },
 
         failInput(sessionId, requestId, reason) {
+            if (get().pendingExecutions.get(sessionId)?.requestId === requestId) {
+                get().setPendingExecution(sessionId, null);
+            }
             const pending = get().view(sessionId).items.find(
                 (item): item is OutboxItem => (
                     item.kind === 'outbox' && item.requestId === requestId

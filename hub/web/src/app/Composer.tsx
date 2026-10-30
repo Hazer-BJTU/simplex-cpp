@@ -1,12 +1,12 @@
 /** Message composer with session-scoped settings, skill snapshots and context compaction.
- * Compaction never submits or clears the message draft. A pending compaction
- * disables submission until acknowledged, rejected, or disconnected.
+ * Compaction never submits or clears the message draft. Every execution shares
+ * the client admission guard until acknowledged, rejected, or disconnected.
  */
 import { useSkills } from './useSkills.ts';
 import { skillCompletion } from './skillInput.ts';
 import type { FailedInput } from '../state/store.ts';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ContentPart, PayloadOptions } from '../../../ui/index.ts';
+import type { ContentPart } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
@@ -64,13 +64,8 @@ function SessionComposer() {
     const setModelOption = usePanel((state) => state.setModelOption);
 
     const [draft, setDraft] = useState('');
-    const readView = usePanel(state => state.view);
-    const [compactRequestId, setCompactRequestId] = useState<string | null>(null);
-    useEffect(() => {
-        // A lost channel cannot guarantee an acknowledgement. Do not retain a
-        // local admission spinner across reconnection or worker replacement.
-        setCompactRequestId(null);
-    }, [connectionState, session?.connected, session?.identity.worker_id]);
+    const pendingExecution = usePanel(state => selected
+        ? state.pendingExecutions.get(selected) : undefined);
     const [references, setReferences] = useState<readonly Reference[]>([]);
     const skill = useSkills(draft, selected, client.rest);
     const [skillQuery, setSkillQuery] = useState('');
@@ -156,13 +151,13 @@ function SessionComposer() {
             ? latestReady : undefined)?.data as
         Record<string, unknown> | undefined;
     const canSend = draft.trim().length > 0 || references.length > 0;
-    const compactPending = Boolean(compactRequestId && view?.items.some(item =>
-        item.kind === 'outbox' && item.state === 'pending' && item.requestId === compactRequestId));
+    const executionPending = Boolean(pendingExecution);
+    const compactPending = pendingExecution?.operation === 'compact';
     const compactActive = runActive
         && (view?.latestEvents.input_admitted?.data as { operation?: string } | undefined)?.operation === 'compact';
     const compactBusy = compactPending || compactActive;
     const compactUnavailable = connectionState !== 'open' || !connected || runActive
-        || compactPending || !compactSupported;
+        || executionPending || !compactSupported;
 
     function insertSkill(id: string): void {
         const input = box.current;
@@ -193,34 +188,19 @@ function SessionComposer() {
     }
 
     function send(operation: 'message' | 'compact' = 'message'): void {
-        if (connectionState !== 'open' || !connected || runActive || compactPending
+        if (connectionState !== 'open' || !connected || runActive || executionPending
             || (operation === 'compact' && !compactSupported) || (operation === 'message' && (!canSend || skill.error))) return;
-        // The mode travels with the payload. The worker freezes the policy per
-        // run, so sending it every time is what makes a change take effect on
-        // the next run rather than the next restart — and what keeps one
-        // session's choice out of another's.
-        const options: PayloadOptions = { confirmation: { mode } };
-        if (modelData && view && Object.keys(view.modelSelection).length > 0) {
-            options.model = { ...view.modelSelection };
-        }
         const sent = client.sendInput(
             sessionId,
             operation === 'message' ? parts() : [],
             operation,
-            options,
+            undefined,
             operation === 'message' && (draft.includes('@{skill:'))
                 ? { draft, skills: skill.skills } : undefined,
             // The wire payload expands skill text; the transcript keeps the
             // draft so the operator's own sentence stays readable.
             operation === 'message' && skill.ids.length > 0 ? draft : undefined,
         );
-        if (sent && operation === 'compact') {
-            // sendInput publishes its outbox entry synchronously. Track only
-            // this request: older unacknowledged entries may survive reconnect.
-            const pending = readView(sessionId).items.findLast(item =>
-                item.kind === 'outbox' && item.operation === 'compact');
-            setCompactRequestId(pending?.kind === 'outbox' ? pending.requestId : null);
-        }
         // Clear only when the frame actually left; otherwise the store has
         // already handed the text back and clearing here would lose it.
         if (sent && operation === 'message') {
@@ -241,16 +221,13 @@ function SessionComposer() {
         >
             <div className="h-5">{tokenUsage && <TokenUsageIndicator usage={tokenUsage} />}</div>
             <div className="reading-width composer-surface" data-testid="composer-surface">
-                {/* The row is always present so the first response fills the
-                    meter instead of growing the composer, but it draws nothing
-                    until a usage figure exists: an animated placeholder above
-                    the composer read as a broken meter. The action belongs to
-                    the meter and is hidden until there is one. */}
+                {/* Reserve the row even before usage arrives. Compaction is a
+                    capability, not a side effect of receiving token counts. */}
                 <div className="flex h-10 items-center pl-3 pt-2 pb-1 pr-2"
                     data-testid="context-meter-row">
-                    {tokenUsage && (
+                    {tokenUsage && <TokenUsageMeter usage={tokenUsage} />}
+                    {(tokenUsage || compactSupported) && (
                         <>
-                            <TokenUsageMeter usage={tokenUsage} />
                             <IconButton className="ml-2"
                                 label={compactBusy ? 'Compacting…' : 'Compact'}
                                 disabled={compactUnavailable} aria-busy={compactBusy}
@@ -534,7 +511,7 @@ function SessionComposer() {
                                 type="submit"
                                 variant="primary"
                                 size="md"
-                                disabled={connectionState !== 'open' || !connected || compactPending || !canSend || Boolean(skill.error)}
+                                disabled={connectionState !== 'open' || !connected || executionPending || !canSend || Boolean(skill.error)}
                                 className={PRIMARY_ACTION_CLASS}
                                 icon={<Glyph name="send" />}
                             >

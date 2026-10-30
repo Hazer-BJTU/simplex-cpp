@@ -24,6 +24,7 @@ export type PaletteAction =
         readonly session: SessionId;
         readonly operation: 'status' | 'options' | 'cancel';
     }
+    | { readonly kind: 'execute'; readonly session: SessionId; readonly operation: 'continue' | 'compact' }
     | { readonly kind: 'refresh-conversation'; readonly session: SessionId }
     | { readonly kind: 'inspector'; readonly open: boolean; readonly tab?: InspectorTab | undefined }
     | { readonly kind: 'ping' };
@@ -44,6 +45,9 @@ export interface PaletteInput {
     /** True when the selected session's worker process is up. */
     readonly running: boolean;
     readonly runActive: boolean;
+    /** A live idle worker can validate whether its saved state is resumable. */
+    readonly executionAvailable?: boolean;
+    readonly compactSupported?: boolean;
     readonly inspectorOpen: boolean;
     readonly confirmMode: ConfirmMode;
     readonly pingMs: number | null;
@@ -108,6 +112,18 @@ export function buildCommands(input: PaletteInput): CommandSpec[] {
                 label: 'Cancel the active run',
                 hint: selected,
                 action: { kind: 'signal', session: selected, operation: 'cancel' },
+            });
+        }
+        if (input.executionAvailable) {
+            commands.push({
+                id: 'conversation:continue', group: 'process', label: 'Continue run',
+                hint: 'Resume saved worker state without sending a new message',
+                action: { kind: 'execute', session: selected, operation: 'continue' },
+            });
+            if (input.compactSupported) commands.push({
+                id: 'conversation:compact', group: 'process', label: 'Compact context',
+                hint: 'Summarize conversation as memory; keep the draft',
+                action: { kind: 'execute', session: selected, operation: 'compact' },
             });
         }
         commands.push({
