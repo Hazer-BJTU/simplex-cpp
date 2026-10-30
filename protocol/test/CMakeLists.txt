@@ -1,4 +1,6 @@
 add_executable(test_protocol_codec test_codec.cpp)
+target_compile_definitions(test_protocol_codec PRIVATE
+    PROTOCOL_BOUNDARY_CASES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/boundary-cases.json")
 target_link_libraries(test_protocol_codec PRIVATE
     protocol_lib Boost::unit_test_framework)
 target_compile_options(test_protocol_codec PRIVATE

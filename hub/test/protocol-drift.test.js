@@ -18,6 +18,13 @@ const envelope = (event, data) => ({ type: 'event', event, session_id: 's', work
     request_id: 'q', run_id: 'r', sequence: 1, data });
 
 describe('worker contract conformance', () => {
+    it('accepts future capabilities without weakening closed operation vocabularies', () => {
+        const data = { active: false, stopping: false, storage_failed: false,
+            rejected_payloads: 0, capabilities: ['session-history', 'future-feature'] };
+        assert.doesNotThrow(() => check('StatusData', data));
+        assert.throws(() => check('StatusData', { ...data, capabilities: [42] }));
+        assert.throws(() => check('PayloadRequest', { operation: 'future', request_id: 'q' }));
+    });
     it('covers Hub vocabularies and every event rendering category', () => {
         for (const [name, values] of Object.entries({ EventName: KNOWN_EVENTS,
             InputOperation: INPUT_OPERATIONS, SignalOperation: SIGNAL_OPERATIONS,

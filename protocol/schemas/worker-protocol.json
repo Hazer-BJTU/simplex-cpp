@@ -270,7 +270,7 @@
     "an unrecognized event name is not an envelope failure; a hub must tolerate future events",
     "the manifest describes built-in shapes only; it is not a claim that a configured provider or plugin capability is enabled"
   ],
-  "fingerprint": "8c4ea7a439f7252d252723df0b6dcff3d9c615c03fdd56dd4f475b2bad7b7217",
+  "fingerprint": "d49976b18dba329944d075f012ce272fad96685eb42fe8af7cb71272d99de52f",
   "fingerprint_scope": [
     "certified: field names, kinds, presence, nullability, closed vocabularies, record references, the event registry and the message registry",
     "not certified: ordering and delivery guarantees, backpressure and admission policy, resource limits, accepted option categories/values, argument and reply size budgets, cancellation and shutdown behaviour, confirmation deadlines, authorization and security judgement, persistence atomicity, and every explanatory sentence"
@@ -282,6 +282,7 @@
         "description": "Exact answer bytes with the cursor to continue; binary parts are unavailable.",
         "properties": {
           "bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -292,18 +293,22 @@
             "$ref": "#/$defs/Modality"
           },
           "next_offset": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "next_part": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "offset": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "part": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -317,6 +322,7 @@
             "$ref": "#/$defs/AnswerSource"
           },
           "total_parts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -351,10 +357,12 @@
             "type": "string"
           },
           "step": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "turn": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -376,10 +384,12 @@
         "description": "Archives removed after a successful compaction.",
         "properties": {
           "removed_archives": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "removed_bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -420,18 +430,22 @@
         "description": "Attempt/success counters for the current request plus the startup policy; a zero threshold disables it.",
         "properties": {
           "attempts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "limit": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "succeeded": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "threshold": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -521,6 +535,7 @@
             "type": "string"
           },
           "cycle": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -534,10 +549,12 @@
             "type": "string"
           },
           "removed_turns": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "revision": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -669,6 +686,7 @@
         "description": "One ordered content part. Display projections may add truncation markers; canonical execution bytes never carry them.",
         "properties": {
           "bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -734,6 +752,7 @@
           },
           "primary_outcome": {},
           "rejected_queries": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -741,6 +760,7 @@
             "type": "string"
           },
           "unreported_rejections": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -765,6 +785,7 @@
             "type": "string"
           },
           "sequence": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -820,14 +841,17 @@
         "description": "Queue and transport byte snapshot; a snapshot is not a delivery receipt.",
         "properties": {
           "bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "count": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "transport_bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -905,10 +929,12 @@
         "description": "One history page. All pages of a load must agree on worker, revision and total.",
         "properties": {
           "next": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "next_step": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -916,18 +942,22 @@
             "type": "string"
           },
           "revision": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "start": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "step": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "total": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -970,10 +1000,12 @@
             "$ref": "#/$defs/ExecutionIdentity"
           },
           "index": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "omitted_parts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -981,6 +1013,7 @@
             "$ref": "#/$defs/Content"
           },
           "tool_calls": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -998,6 +1031,7 @@
         "description": "One canonical turn with a repeated user projection; steps are admitted whole.",
         "properties": {
           "index": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1005,10 +1039,12 @@
             "type": "string"
           },
           "omitted_steps": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "omitted_user_parts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1100,10 +1136,12 @@
         "description": "Current or most recent loop outcome and recovery boundary, unrelated to event sequence.",
         "properties": {
           "committed_response_sequence": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "completed_exchanges": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1145,6 +1183,7 @@
         "description": "Effective archive retention; zero disables cleanup.",
         "properties": {
           "max_archives": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -1180,6 +1219,7 @@
             "type": "boolean"
           },
           "omitted_items": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -1195,6 +1235,7 @@
         "description": "An explicit omission instead of an apparently complete summary prefix.",
         "properties": {
           "bytes": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1456,6 +1497,7 @@
                   "type": "array"
                 },
                 "limit": {
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -1474,11 +1516,13 @@
                 "source": {},
                 "start": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
                 "step": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 }
@@ -1535,11 +1579,13 @@
                   "type": "array"
                 },
                 "limit": {
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
                 "offset": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -1552,6 +1598,7 @@
                 },
                 "part": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -1563,11 +1610,13 @@
                 },
                 "start": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 },
                 "step": {
                   "default": 0,
+                  "maximum": 18446744073709551615,
                   "minimum": 0,
                   "type": "integer"
                 }
@@ -1666,6 +1715,7 @@
           "revision": {
             "anyOf": [
               {
+                "maximum": 18446744073709551615,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -1760,6 +1810,7 @@
             "$ref": "#/$defs/Usage"
           },
           "index": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1790,6 +1841,7 @@
             "x-simplex-trailing-marker": "display_omitted"
           },
           "omitted_parts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1800,6 +1852,7 @@
             "type": "string"
           },
           "tool_calls": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1843,10 +1896,12 @@
             "$ref": "#/$defs/AutoCompact"
           },
           "coalesced_metadata_events": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "compact_exchanges": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1857,6 +1912,7 @@
             "type": "string"
           },
           "exchanges": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1864,18 +1920,22 @@
             "$ref": "#/$defs/FailureData"
           },
           "omitted_display_events": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "omitted_feedback_events": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "omitted_query_events": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "rejected_queries": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -1883,10 +1943,12 @@
             "$ref": "#/$defs/RunStatus"
           },
           "task_exchanges": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "unreported_rejections": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -2083,7 +2145,7 @@
           },
           "capabilities": {
             "items": {
-              "$ref": "#/$defs/Capability"
+              "type": "string"
             },
             "type": "array"
           },
@@ -2097,10 +2159,12 @@
             "$ref": "#/$defs/MemoryRetention"
           },
           "rejected_payloads": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "rejected_queries": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -2111,6 +2175,7 @@
             "type": "boolean"
           },
           "unreported_rejections": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -2377,6 +2442,7 @@
             "$ref": "#/$defs/Result"
           },
           "omitted_parts": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
@@ -2406,14 +2472,17 @@
         "description": "Provider-reported token cost; cache_hit counts tokens inside prompt.",
         "properties": {
           "cache_hit": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "generated": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           },
           "prompt": {
+            "maximum": 18446744073709551615,
             "minimum": 0,
             "type": "integer"
           }
@@ -2481,12 +2550,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "part",
           "required": true,
           "summary": "Echoed part index."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "offset",
           "required": true,
           "summary": "Echoed byte offset."
@@ -2513,24 +2586,32 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "bytes",
           "required": true,
           "summary": "Original byte length of this part."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "next_offset",
           "required": true,
           "summary": "Offset to continue within this part."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "next_part",
           "required": true,
           "summary": "Next part index; reset offset when it advances."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "total_parts",
           "required": true,
           "summary": "Parts in the committed response."
@@ -2555,12 +2636,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "turn",
           "required": true,
           "summary": "Zero-based turn index."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "step",
           "required": true,
           "summary": "Zero-based step index within the turn."
@@ -2585,12 +2670,16 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "removed_archives",
           "required": true,
           "summary": "Archives deleted."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "removed_bytes",
           "required": true,
           "summary": "Bytes reclaimed."
@@ -2634,24 +2723,32 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "attempts",
           "required": true,
           "summary": "Automatic attempts for this logical request."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "succeeded",
           "required": true,
           "summary": "Successful automatic compactions."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "limit",
           "required": true,
           "summary": "Configured attempt limit."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "threshold",
           "required": true,
           "summary": "Token threshold; zero disables the automatic policy."
@@ -2729,12 +2826,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "removed_turns",
           "required": true,
           "summary": "Turns replaced by the summary."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "revision",
           "required": true,
           "summary": "Display revision after compaction."
@@ -2753,6 +2854,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "cycle",
           "required": false,
           "summary": "Automatic attempt number that produced this summary."
@@ -2938,6 +3041,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "bytes",
           "required": false,
           "summary": "Display marker: original UTF-8 byte length of the shortened value."
@@ -2985,12 +3090,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "rejected_queries",
           "required": false,
           "summary": "Cumulative query rejections for this IO client at settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "unreported_rejections",
           "required": false,
           "summary": "Rejection notices dropped by a full feedback mailbox at settlement."
@@ -3042,6 +3151,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "sequence",
           "required": true,
           "summary": "Monotonic event sequence allocated at admission; not a replay cursor."
@@ -3060,18 +3171,24 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "count",
           "required": false,
           "summary": "Events awaiting transport."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "bytes",
           "required": false,
           "summary": "Encoded bytes queued in the application outbox."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "transport_bytes",
           "required": false,
           "summary": "Bytes still held by the transport write queue."
@@ -3157,36 +3274,48 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "revision",
           "required": true,
           "summary": "Display-state revision within one worker; not persisted."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "start",
           "required": true,
           "summary": "Requested turn cursor."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "step",
           "required": true,
           "summary": "Requested step cursor."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "next",
           "required": true,
           "summary": "Next turn cursor; equals total at the end."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "next_step",
           "required": true,
           "summary": "Next step cursor; zero when the turn is finished."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "total",
           "required": true,
           "summary": "Total turns in this revision."
@@ -3206,6 +3335,8 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "index",
           "required": true,
           "summary": "Zero-based step index within its turn."
@@ -3219,12 +3350,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "tool_calls",
           "required": true,
           "summary": "Number of proposed calls; arguments and results are not returned."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_parts",
           "required": true,
           "summary": "Response parts outside this preview."
@@ -3264,6 +3399,8 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "index",
           "required": true,
           "summary": "Zero-based canonical turn index."
@@ -3284,12 +3421,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_user_parts",
           "required": true,
           "summary": "User parts outside the display projection."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_steps",
           "required": true,
           "summary": "Model steps after this page that remain to be fetched."
@@ -3375,12 +3516,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "completed_exchanges",
           "required": true,
           "summary": "Model responses committed during that invocation."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "committed_response_sequence",
           "required": true,
           "summary": "Persisted count of committed responses; not a replay cursor."
@@ -3405,6 +3550,8 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "max_archives",
           "required": true,
           "summary": "Archives kept after compaction; zero disables cleanup."
@@ -3423,6 +3570,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_items",
           "required": true,
           "summary": "Entries left out of this batch."
@@ -3441,6 +3590,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "bytes",
           "required": true,
           "summary": "Original UTF-8 byte length of the summary."
@@ -3572,6 +3723,8 @@
         {
           "default": 0,
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "start",
           "required": false,
           "summary": "History turn cursor."
@@ -3579,12 +3732,16 @@
         {
           "default": 0,
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "step",
           "required": false,
           "summary": "First step within the history turn."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "limit",
           "required": false,
           "summary": "Requested history turn count; limits and defaults belong to the application."
@@ -3599,6 +3756,8 @@
         {
           "default": 0,
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "part",
           "required": false,
           "summary": "Answer part index, defaulted to 0."
@@ -3606,6 +3765,8 @@
         {
           "default": 0,
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "offset",
           "required": false,
           "summary": "Byte offset within the part, defaulted to 0."
@@ -3728,6 +3889,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "revision",
           "nullable": true,
           "required": true,
@@ -3805,6 +3968,8 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "index",
           "required": true,
           "summary": "Zero-based step index within its turn."
@@ -3831,12 +3996,16 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "tool_calls",
           "required": true,
           "summary": "Number of proposed calls, whether or not they are displayed."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_parts",
           "required": true,
           "summary": "Response parts outside this preview."
@@ -3923,18 +4092,24 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "exchanges",
           "required": true,
           "summary": "Committed task and compact responses in this logical request."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "task_exchanges",
           "required": false,
           "summary": "Committed task responses."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "compact_exchanges",
           "required": false,
           "summary": "Committed summary responses."
@@ -3961,36 +4136,48 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_display_events",
           "required": false,
           "summary": "Display events omitted since the previous settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_query_events",
           "required": false,
           "summary": "Query responses omitted since the previous settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_feedback_events",
           "required": false,
           "summary": "Rejection feedback omitted since the previous settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "coalesced_metadata_events",
           "required": false,
           "summary": "Replayable metadata events coalesced since the previous settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "rejected_queries",
           "required": false,
           "summary": "Cumulative query rejections for this IO client at settlement."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "unreported_rejections",
           "required": false,
           "summary": "Rejection notices dropped by a full feedback mailbox at settlement."
@@ -4107,18 +4294,24 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "rejected_payloads",
           "required": true,
           "summary": "Cumulative payload-queue overflow count for this IO client."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "rejected_queries",
           "required": false,
           "summary": "Cumulative history/answer quota or envelope rejections."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "unreported_rejections",
           "required": false,
           "summary": "Rejection notices dropped by a full feedback mailbox."
@@ -4145,8 +4338,7 @@
           "summary": "Automatic-compaction counters and policy."
         },
         {
-          "enumeration": "Capability",
-          "kind": "enumerations",
+          "kind": "texts",
           "name": "capabilities",
           "required": true,
           "summary": "Feature names this binary may serve. A listed name is not a claim that the feature is enabled here; tolerate names you do not know."
@@ -4368,6 +4560,8 @@
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "omitted_parts",
           "required": false,
           "summary": "Output parts outside this projection."
@@ -4393,18 +4587,24 @@
       "fields": [
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "prompt",
           "required": true,
           "summary": "Prompt tokens reported by the provider."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "generated",
           "required": true,
           "summary": "Generated tokens reported by the provider."
         },
         {
           "kind": "integer",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
           "name": "cache_hit",
           "required": true,
           "summary": "Prompt tokens served from cache; do not add them to a total."

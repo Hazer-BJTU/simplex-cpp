@@ -14,6 +14,7 @@
 #include <openssl/evp.h>
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -47,6 +48,12 @@ Json canonical_field(const FieldView& field) {
     entry["kind"] = kind_name(field.kind);
     entry["name"] = field.name;
     entry["required"] = field.required;
+    // Every wire integer is a uint64 count/cursor. Include its representable
+    // range in the canonical contract as well as the exported JSON Schema.
+    if (field.kind == Kind::integer) {
+        entry["minimum"] = 0;
+        entry["maximum"] = std::numeric_limits<std::uint64_t>::max();
+    }
     if (field.nullable) {
         entry["nullable"] = true;
     }
@@ -297,7 +304,8 @@ Json schema_type(const FieldView& field) {
             type = Json{{"type", "string"}};
             break;
         case Kind::integer:
-            type = Json{{"type", "integer"}, {"minimum", 0}};
+            type = Json{{"type", "integer"}, {"minimum", 0},
+                        {"maximum", std::numeric_limits<std::uint64_t>::max()}};
             break;
         case Kind::boolean:
             type = Json{{"type", "boolean"}};

@@ -70,6 +70,7 @@ export default defineConfig({
                 ['Support policy', '/providers/index'],
                 ['DeepSeek', '/providers/deepseek'],
                 ['Qwen', '/providers/qwen'],
+                ['GLM (Zhipu AI)', '/providers/glm'],
                 ['Custom Chat Completions', '/providers/chat-completions'],
             ]),
             group('Reference', [

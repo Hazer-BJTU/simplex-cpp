@@ -1,0 +1,112 @@
+[
+  {
+    "name": "history cursor 0",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "history cursor 9223372036854775807",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 9223372036854775807
+    },
+    "valid": true
+  },
+  {
+    "name": "history cursor 9223372036854775808",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 9223372036854775808
+    },
+    "valid": true
+  },
+  {
+    "name": "history cursor 18446744073709551615",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 18446744073709551615
+    },
+    "valid": true
+  },
+  {
+    "name": "history cursor -1",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": -1
+    },
+    "valid": false
+  },
+  {
+    "name": "history cursor -9223372036854775809",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": -9223372036854775809
+    },
+    "valid": false
+  },
+  {
+    "name": "history cursor 18446744073709551616",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 18446744073709551616
+    },
+    "valid": false
+  },
+  {
+    "name": "history cursor 1.5",
+    "record": "PayloadRequest",
+    "value": {
+      "operation": "history",
+      "request_id": "q",
+      "start": 1.5
+    },
+    "valid": false
+  },
+  {
+    "name": "capabilities ['session-history', 'future-feature']",
+    "record": "StatusData",
+    "value": {
+      "active": false,
+      "stopping": false,
+      "storage_failed": false,
+      "rejected_payloads": 0,
+      "capabilities": [
+        "session-history",
+        "future-feature"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "capabilities ['session-history', 1]",
+    "record": "StatusData",
+    "value": {
+      "active": false,
+      "stopping": false,
+      "storage_failed": false,
+      "rejected_payloads": 0,
+      "capabilities": [
+        "session-history",
+        1
+      ]
+    },
+    "valid": false
+  }
+]

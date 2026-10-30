@@ -85,7 +85,7 @@ enum class FailureStage { model_request, other };
 
 enum class ToolStatus { succeeded, rejected };
 
-/** Capability names a worker may advertise in `status.capabilities`. */
+/** Known capability names for producers; status accepts additional names as strings. */
 enum class Capability { session_history, context_compact, auto_compact, answer_pages };
 
 template <>
@@ -731,7 +731,7 @@ struct StatusData {
     std::optional<EventQueue> event_queue;
     std::optional<MemoryRetention> memory_retention;
     std::optional<AutoCompact> auto_compact;
-    std::vector<Capability> capabilities;
+    std::vector<std::string> capabilities;
     std::optional<LoopProgress> loop;
 
     friend constexpr std::string_view wire_name(const StatusData&) { return "StatusData"; }
@@ -755,7 +755,7 @@ struct StatusData {
                                     "Effective archive retention."),
             record<AutoCompact>("auto_compact", &StatusData::auto_compact,
                                 "Automatic-compaction counters and policy."),
-            enumerations<Capability>("capabilities", &StatusData::capabilities,
+            texts("capabilities", &StatusData::capabilities,
                   "Feature names this binary may serve. A listed name is not a claim that the "
                   "feature is enabled here; tolerate names you do not know."),
             record<LoopProgress>("loop", &StatusData::loop, "Loop recovery state when available."),

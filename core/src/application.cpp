@@ -481,10 +481,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                                                  client.queued_write_bytes()};
         value.memory_retention = protocol::MemoryRetention{config.memory_retention.max_archives};
         value.auto_compact = compact_counters();
-        value.capabilities = {protocol::Capability::session_history,
-                              protocol::Capability::context_compact,
-                              protocol::Capability::auto_compact,
-                              protocol::Capability::answer_pages};
+        value.capabilities = {"session-history",
+                             "context-compact",
+                             "auto-compact",
+                             "answer-pages"};
         if (state.loop) value.loop = loop_progress(*state.loop);
         return value;
     }
