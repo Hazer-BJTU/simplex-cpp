@@ -160,3 +160,9 @@ File and directory sync remain blocking OS operations. This API never detaches
 work: coroutine callers should use a blocking executor and join settlement before
 releasing ownership. Cancellation does not change exact comparisons, source
 scan counts, metadata preservation or directory-durability semantics.
+
+Streaming replacement scratch buffers are fixed-size heap allocations, not
+large automatic arrays. This keeps verification and prefix-copy fallback safe
+on small pthread stacks (including musl defaults), without changing the 64 KiB
+IO chunk size, cancellation checkpoints or scan budget. `test_edit_small_stack`
+exercises exact edits on an explicit 128 KiB pthread stack on every build host.
