@@ -61,22 +61,34 @@ Create one container and leave it running while the Hub uses it. Do not use
 after a worker exits, until its allocation is deleted.
 
 ```sh
+# Export on the host before creating the container (both alternatives below).
+export MODEL_API_KEY='your-api-key'
+
 # Host networking: the worker can reach the Hub's loopback listeners.
 docker run -d --name simplex-worker --network host \
-    -e DEEPSEEK_API_KEY \
+    -e MODEL_API_KEY \
     simplex-worker:latest
 
 # Alternatively, keep Docker's bridge network and map the host by name:
 docker run -d --name simplex-worker \
     --add-host host.docker.internal:host-gateway \
-    -e DEEPSEEK_API_KEY \
+    -e MODEL_API_KEY \
     simplex-worker:latest
 ```
 
 The container's own environment is the worker's environment. Model credentials
-must be present there, because the worker expands `${DEEPSEEK_API_KEY}` from its
+must be present there, because the worker expands `${MODEL_API_KEY}` from its
 own process environment; `docker exec` does not copy the Hub's environment into
-the container.
+the container. Exporting the key on the host after container creation does not
+update the retained container. The bundled worker YAML uses
+`api_key: ${MODEL_API_KEY}`; if you choose another variable, change both the YAML
+and the container environment.
+
+Verify presence without printing the credential:
+
+```sh
+docker exec simplex-worker sh -c 'test -n "$MODEL_API_KEY" && echo "the container can see the key"'
+```
 
 Only the allocation directory (`management.root`) holds worker state. It lives
 inside the container, so mount it if the container may be recreated:
@@ -84,7 +96,7 @@ inside the container, so mount it if the container may be recreated:
 ```sh
 docker run -d --name simplex-worker --network host \
     -v simplex-worker-allocations:/var/lib/simplex/allocations \
-    -e DEEPSEEK_API_KEY simplex-worker:latest
+    -e MODEL_API_KEY simplex-worker:latest
 ```
 
 The Hub does not need a bind mount of its session directory. It generates the
@@ -94,7 +106,6 @@ effective configuration inside the container.
 ## Configure the Hub
 
 ```sh
-export MODEL_API_KEY='your-api-key'
 simplex-hub --listen 0.0.0.0:8800 --panel-token YOUR_RANDOM_PANEL_TOKEN
 ```
 

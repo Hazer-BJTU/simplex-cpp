@@ -143,7 +143,7 @@ and the offline mock provider. In **Configurations**, create a launch file and
 a worker file from the default templates. Set `management.executable` to
 `/src/build/bin/simplex` in the local launch file and configure the worker provider
 explicitly. Save both and select them for your session. Add
-`-e DEEPSEEK_API_KEY=sk-...` to use a real provider as well — a session chooses
+`-e MODEL_API_KEY=sk-...` to use a real provider as well — a session chooses
 its profile either way — and `-v simplex-hub-data:/data` to keep sessions after
 the container is gone. `docker run -it --rm simplex-hub-test bash` gives a shell
 in the same tree. Volumes and bind mounts retain worker-written state on the
@@ -248,12 +248,15 @@ Provide the model credential to the **container's** environment, for example
 when creating it:
 
 ```sh
-docker run -d --name simplex-worker --network host -e DEEPSEEK_API_KEY \
+export MODEL_API_KEY='your-api-key'
+docker run -d --name simplex-worker --network host -e MODEL_API_KEY \
     simplex-worker:latest
 ```
 
-The worker expands `${DEEPSEEK_API_KEY}` from its own environment, which is the
-container's; `docker exec` does not forward the hub's environment. When the key
+The worker expands `${MODEL_API_KEY}` from its own environment, which is the
+container's; `docker exec` does not forward the hub's environment. Export it
+before creating the container; later host exports do not update a retained
+container. The bundled YAML uses `api_key: ${MODEL_API_KEY}`. When the key
 is missing, the worker reports:
 
 ```
@@ -263,7 +266,7 @@ Worker: required credential variable is unset or empty
 To check the forwarding on its own, before blaming the API:
 
 ```sh
-docker exec simplex-worker sh -c 'test -n "$DEEPSEEK_API_KEY" && echo "the container can see the key"'
+docker exec simplex-worker sh -c 'test -n "$MODEL_API_KEY" && echo "the container can see the key"'
 ```
 
 Two things to know before reading the result:
@@ -781,7 +784,7 @@ the runner's Ubuntu.
 | --- | --- |
 | A session shows *worker not connected* forever | wrong `worker.bin`, missing `plugins/` next to the binary, or a startup failure visible in the Process → Logs tab |
 | `cannot spawn ... ENOENT` | `worker.bin` does not exist; check the path after path resolution |
-| The worker starts and exits immediately | the provider profile is missing a credential (`DEEPSEEK_API_KEY`), or another worker already owns the session lock |
+| The worker starts and exits immediately | the provider profile is missing a credential (`MODEL_API_KEY`), or another worker already owns the session lock |
 | A confirmation is denied with "identity mismatch" | a worker the hub does not know opened a confirmation for that session; check the event connection log |
 | A confirmation is denied after ~15 s | the event connection never identified the worker; check that the event socket reconnected |
 | Log lines are missing in the panel | older records are evicted; oversized newest records keep a UTF-8 prefix and truncation notice within `limits.logRingBytes` (minimum 64 bytes, default 256 KiB). The best-effort `sessions/<session>/logs/worker.log` can retain a longer prefix; inspect `log_truncated_bytes`, `file_log_dropped`, and `file_log_failed` |

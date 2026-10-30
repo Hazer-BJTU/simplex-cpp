@@ -64,3 +64,20 @@ test('documented Hub auto-compact policy maps to worker fields and session overr
     assert.equal(overridden.worker.auto_compact_threshold, 0);
     assert.equal(overridden.worker.max_auto_compactions, 7);
 });
+
+test('retained Docker examples forward the bundled worker credential before container creation', () => {
+    const template = readFileSync(new URL('../schemas/worker.yaml', import.meta.url), 'utf8');
+    const credential = template.match(/api_key:\s*["']?\$\{([A-Z_]+)\}/)?.[1];
+    assert.equal(credential, 'MODEL_API_KEY');
+    const tutorial = readFileSync(new URL('../../docs/deployment/docker-worker.md', import.meta.url), 'utf8');
+    for (const text of [tutorial, readme]) {
+        const shell = [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+        const commands = shell.match(/docker run -d --name simplex-worker[^`]+?simplex-worker:latest/g);
+        assert.ok(commands?.length);
+        for (const command of commands) assert.ok(command.includes(`-e ${credential}`));
+        assert.ok(shell.indexOf(`export ${credential}=`) < shell.indexOf('docker run -d --name simplex-worker'));
+        assert.ok(text.includes(`test -n "$${credential}"`));
+        assert.ok(text.includes(`api_key: \${${credential}}`));
+        assert.ok(!text.includes('DEEPSEEK_API_KEY'));
+    }
+});
