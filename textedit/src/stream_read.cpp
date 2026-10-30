@@ -4,6 +4,7 @@
 #include "line_break.hpp"
 
 #include "fileio/streaming.hpp"
+#include "fileio/cancellation.hpp"
 
 #include "stream_read_sinks.hpp"
 
@@ -47,8 +48,10 @@ struct ScanTotals {
  */
 template <typename Sink>
 ScanTotals scan_file(
-    const std::filesystem::path& path, std::size_t max_file_bytes, Sink& sink)
+    const std::filesystem::path& path, std::size_t max_file_bytes,
+    Sink& sink, std::stop_token stop)
 {
+    fileio::check_cancelled(stop);
     auto file = fileio::SequentialFile::open(path);
     ScanTotals totals;
     std::string carry;
@@ -56,6 +59,7 @@ ScanTotals scan_file(
     std::size_t line = 0;
     sink.begin_row(line, 0);
     for (;;) {
+        fileio::check_cancelled(stop);
         const auto chunk = file.next();
         if (chunk.empty()) break;
         if (file.observed_bytes() > max_file_bytes) {
@@ -163,7 +167,8 @@ BoundedLineReadResult read_lines_stream(
     LineReadFormat format,
     std::size_t output_bytes,
     std::size_t max_file_bytes,
-    bool repair)
+    bool repair,
+    std::stop_token stop)
 {
     if (format != LineReadFormat::Plain && format != LineReadFormat::LineIndex &&
         format != LineReadFormat::ByteRange) {
@@ -173,7 +178,7 @@ BoundedLineReadResult read_lines_stream(
     OutputText writer(output_bytes, repair);
     if (format == LineReadFormat::Plain) {
         PlainSelectionSink sink(start_line, line_count, with_slack(output_bytes, kScalarSlack));
-        const auto totals = scan_file(path, max_file_bytes, sink);
+        const auto totals = scan_file(path, max_file_bytes, sink, stop);
         result.total_bytes = totals.bytes;
         result.total_lines = totals.lines;
         if (start_line > result.total_lines) {
@@ -187,7 +192,7 @@ BoundedLineReadResult read_lines_stream(
         writer.append(sink.bytes);
     } else {
         RowSelectionSink sink(start_line, line_count, output_bytes);
-        const auto totals = scan_file(path, max_file_bytes, sink);
+        const auto totals = scan_file(path, max_file_bytes, sink, stop);
         result.total_bytes = totals.bytes;
         result.total_lines = totals.lines;
         if (start_line > result.total_lines) {
@@ -263,7 +268,8 @@ BoundedReadResult read_bytes_stream(
     ByteReadFormat format,
     std::size_t output_bytes,
     std::size_t max_file_bytes,
-    bool repair)
+    bool repair,
+    std::stop_token stop)
 {
     if (format != ByteReadFormat::Plain && format != ByteReadFormat::HexEscaped) {
         throw std::invalid_argument("unknown byte read format");
@@ -272,7 +278,7 @@ BoundedReadResult read_bytes_stream(
         ? with_slack(output_bytes / 4, kScalarSlack)
         : with_slack(output_bytes, kScalarSlack);
     ByteSelectionSink sink(start_byte, byte_count, cap);
-    const auto totals = scan_file(path, max_file_bytes, sink);
+    const auto totals = scan_file(path, max_file_bytes, sink, stop);
     if (start_byte > totals.bytes) {
         throw std::out_of_range("start byte is beyond the input");
     }
@@ -308,12 +314,13 @@ LineReadResult read_file_lines(
     std::size_t start_line,
     std::size_t line_count,
     LineReadFormat format,
-    std::size_t max_file_bytes)
+    std::size_t max_file_bytes,
+    std::stop_token stop)
 {
     check_limit(max_file_bytes);
     const auto bounded = read_lines_stream(
         path, start_line, line_count, format,
-        std::numeric_limits<std::size_t>::max(), max_file_bytes, false);
+        std::numeric_limits<std::size_t>::max(), max_file_bytes, false, stop);
     LineReadResult result;
     static_cast<ReadResult&>(result) = static_cast<const ReadResult&>(bounded);
     result.start_line = bounded.start_line;
@@ -326,12 +333,13 @@ ReadResult read_file_bytes(
     std::size_t start_byte,
     std::size_t byte_count,
     ByteReadFormat format,
-    std::size_t max_file_bytes)
+    std::size_t max_file_bytes,
+    std::stop_token stop)
 {
     check_limit(max_file_bytes);
     const auto bounded = read_bytes_stream(
         path, start_byte, byte_count, format,
-        std::numeric_limits<std::size_t>::max(), max_file_bytes, false);
+        std::numeric_limits<std::size_t>::max(), max_file_bytes, false, stop);
     return static_cast<const ReadResult&>(bounded);
 }
 
@@ -341,11 +349,12 @@ BoundedLineReadResult read_file_lines_bounded(
     std::size_t line_count,
     LineReadFormat format,
     std::size_t output_bytes,
-    std::size_t max_file_bytes)
+    std::size_t max_file_bytes,
+    std::stop_token stop)
 {
     check_limit(max_file_bytes);
     return read_lines_stream(path, start_line, line_count, format,
-                             output_bytes, max_file_bytes, true);
+                             output_bytes, max_file_bytes, true, stop);
 }
 
 BoundedReadResult read_file_bytes_bounded(
@@ -354,11 +363,12 @@ BoundedReadResult read_file_bytes_bounded(
     std::size_t byte_count,
     ByteReadFormat format,
     std::size_t output_bytes,
-    std::size_t max_file_bytes)
+    std::size_t max_file_bytes,
+    std::stop_token stop)
 {
     check_limit(max_file_bytes);
     return read_bytes_stream(path, start_byte, byte_count, format,
-                             output_bytes, max_file_bytes, true);
+                             output_bytes, max_file_bytes, true, stop);
 }
 
 } // namespace textedit

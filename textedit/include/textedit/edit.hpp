@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <stop_token>
 #include <string_view>
 #include <system_error>
 
@@ -91,6 +92,13 @@ struct PreparedEdit {
  * still race after the final check. The path is not a workspace restriction.
  * max_file_bytes bounds the scanned source, the resulting size and every
  * candidate byte; a replacement that cannot fit is rejected before the scan.
+ * The optional stop token is checked between scan/copy/verification chunks
+ * and immediately before the rename phase. Cancellation throws
+ * std::system_error(operation_canceled) and removes the unpublished candidate.
+ * After the final checkpoint, rename and directory sync settle normally even
+ * if a stop races them: Modified/PublishedSyncFailed must remain visible.
+ * One in-progress OS operation is not interruptible. This API is synchronous;
+ * offload it when the caller must service control traffic while awaiting it.
  * Previews are collected from the verification re-read of the source, so they
  * cost no extra pass and follow the final match offset exactly.
  */
@@ -99,6 +107,7 @@ struct PreparedEdit {
     std::string_view old_text,
     std::string_view new_text,
     std::size_t context_lines = 3,
-    std::size_t max_file_bytes = 16 * 1024 * 1024);
+    std::size_t max_file_bytes = 16 * 1024 * 1024,
+    std::stop_token stop = {});
 
 } // namespace textedit

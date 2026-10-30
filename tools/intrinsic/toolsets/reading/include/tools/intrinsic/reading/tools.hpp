@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tools/intrinsic/tool_base.hpp"
+#include "tools/intrinsic/file_work.hpp"
 
 namespace tools::intrinsic {
 
@@ -8,7 +9,9 @@ namespace tools::intrinsic {
  * Read a regular file as text lines or bytes. Immutable per-instance limits;
  * ReadOnly and Trusted;
  * relative paths use the host working directory, with no workspace sandbox.
- * IO is synchronous and bounded by the textedit file limit. No confirmation,
+ * Blocking scans run on the bounded FileWork executor, not the calling strand.
+ * Cooperative cancellation is checked between source chunks; invoke joins
+ * its job before returning. No confirmation,
  * file writes or shared cursors are involved. Concurrent invocations are safe
  * but do not promise a snapshot of files modified by other actors.
  */
@@ -24,7 +27,7 @@ public:
     static constexpr std::uint64_t kDefaultCount = 200;
 
     /// Load the runtime YAML declaration; a missing declaration disables routing.
-    ReadTextTool();
+    explicit ReadTextTool(std::shared_ptr<FileWork> work = std::make_shared<FileWork>());
 
     /// Validate combinations and materialize defaults before registry execution.
     void ensure_arguments(model_io::InvokeQuery& query) const override;
@@ -36,6 +39,7 @@ public:
         const model_io::InvokeQuery& query) override;
 
 private:
+    std::shared_ptr<FileWork> work_;
     std::size_t max_file_bytes_ = kMaxFileBytes;
     std::size_t max_output_bytes_ = kMaxOutputBytes;
 };

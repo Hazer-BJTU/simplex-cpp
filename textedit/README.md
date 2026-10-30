@@ -201,3 +201,19 @@ not examined. No conversion, normalization or full-file scan occurs. Files
 changing during inspection are not a consistent snapshot, and this result must
 not serve as a write precondition or security decision. Allocation failures can
 throw; invalid sample limits throw `std::invalid_argument`.
+
+## Blocking calls and cooperative cancellation
+
+The file-reading overloads and `str_replace_file` accept an optional final
+`std::stop_token`. They remain synchronous APIs with bounded scan memory, not
+bounded execution time. The intrinsic adapters run them on a bounded blocking
+executor so worker status/cancellation can proceed during a large scan.
+
+Reads check before opening and between 64 KiB source chunks. Exact edits also
+check while copying/writing candidates and verifying the source. An observed
+stop throws `std::system_error` with `operation_canceled`; unpublished candidates
+are removed during unwinding. The final check precedes the atomic rename phase.
+Once that phase starts, no stop check can replace its result: `Modified` and
+`PublishedSyncFailed` still describe the visible publication. Individual OS
+calls may block until storage responds, and callers must join them rather than
+detach work or destroy borrowed arguments on cancellation.

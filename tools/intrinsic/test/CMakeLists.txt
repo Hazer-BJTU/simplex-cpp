@@ -1,4 +1,4 @@
-# Tests for the intrinsic shared core, with no toolset involved — these are the
+# Tests for the intrinsic shared core. Except for test_file_work, these are the
 # pieces a second toolset family inherits unchanged, so a regression in them
 # would otherwise surface as a puzzling failure in whichever family noticed
 # first.
@@ -66,3 +66,8 @@ endfunction()
 intrinsic_add_test(test_tool_base)
 intrinsic_add_test(test_tool_declaration)
 intrinsic_add_test(test_skill_declaration)
+
+intrinsic_add_test(test_file_work)
+target_link_libraries(test_file_work PRIVATE tools_intrinsic_reading tools_intrinsic_editing)
+set_target_properties(test_file_work PROPERTIES ENABLE_EXPORTS ON)
+set_tests_properties(test_file_work PROPERTIES TIMEOUT 30)

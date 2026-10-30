@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <stop_token>
 #include <string_view>
 
 namespace textedit {
@@ -109,6 +110,10 @@ struct BoundedLineReadResult : BoundedReadResult {
  * is checked on observed bytes, never on metadata alone, and SIZE_MAX is invalid
  * because one lookahead byte must fit. Zero allows empty files. IO failures
  * throw std::system_error; invalid paths/limits throw std::invalid_argument.
+ * An optional stop token is checked before opening and between fixed-size
+ * source chunks. Cancellation throws std::system_error(operation_canceled).
+ * This is still a blocking API: a single OS operation cannot be interrupted;
+ * callers needing responsive control should run it on a blocking executor.
  * A file modified by another actor while it is scanned is not a snapshot:
  * totals and the selection describe the bytes this scan observed.
  */
@@ -117,7 +122,8 @@ struct BoundedLineReadResult : BoundedReadResult {
     std::size_t start_line,
     std::size_t line_count,
     LineReadFormat format = LineReadFormat::Plain,
-    std::size_t max_file_bytes = 16 * 1024 * 1024);
+    std::size_t max_file_bytes = 16 * 1024 * 1024,
+    std::stop_token stop = {});
 
 /**
  * File counterpart of read_bytes with the same scan and error contract. Byte
@@ -130,7 +136,8 @@ struct BoundedLineReadResult : BoundedReadResult {
     std::size_t start_byte,
     std::size_t byte_count,
     ByteReadFormat format = ByteReadFormat::Plain,
-    std::size_t max_file_bytes = 16 * 1024 * 1024);
+    std::size_t max_file_bytes = 16 * 1024 * 1024,
+    std::stop_token stop = {});
 
 /**
  * Model-facing line read with an enforced display budget.
@@ -178,7 +185,8 @@ struct BoundedLineReadResult : BoundedReadResult {
     std::size_t line_count,
     LineReadFormat format,
     std::size_t output_bytes,
-    std::size_t max_file_bytes = 16 * 1024 * 1024);
+    std::size_t max_file_bytes = 16 * 1024 * 1024,
+    std::stop_token stop = {});
 
 [[nodiscard]] BoundedReadResult read_file_bytes_bounded(
     const std::filesystem::path& path,
@@ -186,6 +194,7 @@ struct BoundedLineReadResult : BoundedReadResult {
     std::size_t byte_count,
     ByteReadFormat format,
     std::size_t output_bytes,
-    std::size_t max_file_bytes = 16 * 1024 * 1024);
+    std::size_t max_file_bytes = 16 * 1024 * 1024,
+    std::stop_token stop = {});
 
 } // namespace textedit

@@ -15,6 +15,8 @@
 namespace {
 enum class Failure { None, FileSync, DirectorySync };
 Failure failure = Failure::None;
+std::stop_source* cancel_source = nullptr;
+bool cancel_on_directory = false;
 
 struct InjectFailure {
     explicit InjectFailure(Failure value) { failure = value; }
@@ -66,6 +68,7 @@ extern "C" int fsync(int descriptor)
     struct stat status {};
     if (::fstat(descriptor, &status) == 0) {
         const bool directory = S_ISDIR(status.st_mode);
+        if (cancel_source && directory == cancel_on_directory) cancel_source->request_stop();
         if ((directory && failure == Failure::DirectorySync) ||
             (!directory && failure == Failure::FileSync)) {
             errno = EIO;
@@ -102,4 +105,41 @@ BOOST_AUTO_TEST_CASE(directory_sync_failure_reports_visible_publication)
     }
     BOOST_TEST(scratch.read() == "new");
     scratch.no_temporary_files();
+}
+
+BOOST_AUTO_TEST_CASE(cancellation_at_file_sync_prevents_publication)
+{
+    Scratch scratch;
+    scratch.write("old");
+    std::stop_source stop;
+    struct Reset { ~Reset() { cancel_source = nullptr; } } reset;
+    cancel_source = &stop;
+    cancel_on_directory = false;
+    BOOST_CHECK_EXCEPTION((void)textedit::str_replace_file(
+        scratch.root / "source", "old", "new", 3, 1024, stop.get_token()),
+        std::system_error, [](const auto& error) {
+            return error.code() == std::errc::operation_canceled;
+        });
+    BOOST_TEST(scratch.read() == "old");
+    scratch.no_temporary_files();
+}
+
+BOOST_AUTO_TEST_CASE(cancellation_after_publication_does_not_hide_result_or_sync_failure)
+{
+    for (const auto failure_mode : {Failure::None, Failure::DirectorySync}) {
+        Scratch scratch;
+        scratch.write("old");
+        std::stop_source stop;
+        struct Reset { ~Reset() { cancel_source = nullptr; } } reset;
+        cancel_source = &stop;
+        cancel_on_directory = true;
+        InjectFailure inject(failure_mode);
+        const auto result = textedit::str_replace_file(
+            scratch.root / "source", "old", "new", 3, 1024, stop.get_token());
+        BOOST_TEST(stop.stop_requested());
+        BOOST_CHECK(result.status == (failure_mode == Failure::None
+            ? textedit::EditStatus::Modified : textedit::EditStatus::PublishedSyncFailed));
+        BOOST_TEST(scratch.read() == "new");
+        scratch.no_temporary_files();
+    }
 }

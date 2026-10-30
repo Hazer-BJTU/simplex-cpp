@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tools/intrinsic/toolset_base.hpp"
+#include "tools/intrinsic/file_work.hpp"
 
 namespace tools::intrinsic {
 
@@ -13,7 +14,7 @@ namespace tools::intrinsic {
 class ReadingToolSet final : public IntrinsicToolSet {
 public:
     /// Build the tool catalogue and load the optional model-facing skill.
-    ReadingToolSet();
+    explicit ReadingToolSet(std::shared_ptr<FileWork> work = std::make_shared<FileWork>());
     std::string_view name() const noexcept override;
 };
 

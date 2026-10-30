@@ -10,7 +10,13 @@ Hosts can link `tools_intrinsic_reading` and register
 confirmation bus is needed: the tool keeps immutable per-instance limits and
 declares `ReadOnly` / `Trusted`.
 Concurrent calls own their buffers, but external file modifications are not a
-consistent snapshot. IO is synchronous on the invoking thread.
+consistent snapshot. Blocking scans run on a `FileWork` executor instead of the
+invoking strand. The core shares one thread and a 32-call admission bound with
+the editing tools; exceeding it produces an ordinary tool failure. Standalone
+hosts may pass a shared `FileWork` with a stop-token provider into either toolset.
+The provider runs on the calling executor and snapshots the current run token.
+Every invocation awaits its job, including cancellation and candidate cleanup;
+shutdown must keep the calling executor running until those awaits finish.
 
 ## Calls
 
@@ -47,7 +53,7 @@ Files over the configured limit (default 1 GiB) fail, and the limit is enforced
 on bytes actually read, so a file that grows during the scan cannot outrun it.
 The host scans the file once with fixed buffers: input memory does not scale with
 file size, while the rendered output stays inside the display budget. A large
-file therefore costs synchronous scan time, not memory. Counting line totals
+file therefore costs blocking-thread scan time, not full-file memory. Counting line totals
 still traverses the whole file.
 
 ## Host configuration
@@ -74,7 +80,7 @@ Each tool reads its selected YAML once and owns its limits. Editing the file
 changes newly constructed tools only; calls do not reread it. Limits apply to
 both line and byte modes. A clipping hint includes the effective output limit.
 The output cap covers rendered text, not metadata/framing. Increasing limits
-increases potential synchronous IO and memory use; even a one-byte output limit
+increases potential blocking IO and display memory use; even a one-byte output limit
 is valid, though an indexed label or UTF-8 character may not fit.
 
 Configuration is not an invocation argument, provider tool definition, injected
@@ -137,3 +143,10 @@ newline and malformed continuation runs exercise bounded memory and boundary
 behavior. Core tests verify default registration and guidance injection. CI
 also hides source schemas and runs the staged test executable to prove the
 installed declarations, configuration and skill load beside it.
+
+Cancellation is cooperative: the reader checks the captured stop token before
+opening and between fixed-size source chunks. It returns the normal tool-error
+record when cancelled, and the loop records that result before ending the run.
+Already-blocked OS calls cannot be forcibly interrupted. Bounded memory is not
+a wall-clock bound on storage latency; offloading keeps status, cancel and
+network handlers responsive while the filesystem call finishes.

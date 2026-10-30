@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stop_token>
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -48,13 +50,21 @@ public:
  * modify the destination; a directory-sync failure after rename throws
  * AtomicWriteError with published() set. External writers that ignore this
  * protocol can still race after the final check.
+ *
+ * The optional stop token is checked at bounded scan/copy/write/verification
+ * boundaries and just before rename. A stop observed there throws
+ * std::system_error(operation_canceled); destruction removes the candidate.
+ * There are no cancellation checkpoints after entering the final rename phase:
+ * callers must receive the actual publication/durability outcome. OS calls
+ * already in progress (including fsync) cannot be forcibly interrupted.
  */
 class StagedReplacement {
 public:
     /** Open the source; create the candidate lazily; see the class contract. */
     explicit StagedReplacement(
         const std::filesystem::path& path,
-        std::size_t buffer_bytes = kStreamBufferBytes);
+        std::size_t buffer_bytes = kStreamBufferBytes,
+        std::stop_token stop = {});
 
     StagedReplacement(StagedReplacement&& other) noexcept;
     StagedReplacement& operator=(StagedReplacement&& other) noexcept;
@@ -130,6 +140,7 @@ private:
     int candidate_ = -1;
     int directory_ = -1;
     bool consumed_ = false;
+    std::stop_token stop_;
 };
 
 } // namespace fileio

@@ -51,3 +51,24 @@ diagnostics. The setting belongs to this tool instance: it never appears in
 advertised schemas or invocation arguments, so a model cannot widen or narrow
 it. A selected `SIMPLEX_EDITING_SCHEMA_DIR` override replaces the installed
 declaration as a whole.
+
+## Execution and cancellation
+
+The tool awaits a shared `FileWork` executor (one blocking thread, at most 32
+active/queued calls in the core worker). The registry still awaits each
+SerialWrite invocation before admitting the next, so offloading does not change
+write ordering. A standalone host can supply the same executor and a provider
+of its current run's `std::stop_token` to both reading and editing toolsets.
+
+Cancellation is checked between source, prefix-copy, candidate-write and
+verification chunks and immediately before the final rename phase. Before that
+boundary, cancellation produces a tool-error result, leaves the destination
+unchanged and removes the private candidate. After the boundary, the operation
+finishes publication and directory sync and reports `modified` or
+`published_sync_failed`, even if cancellation races it. Do not interpret a
+cancelled run as proof that none of its edits were published.
+
+All jobs are joined before invocation returns, including failure and cancellation;
+the worker drains its tool batch before shutdown. Single OS calls such as read,
+write and fsync cannot be forcibly cancelled. Their duration may delay job
+settlement on slow storage, but does not occupy the application/control strand.
