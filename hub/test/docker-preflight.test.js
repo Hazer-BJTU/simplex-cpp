@@ -1,15 +1,19 @@
 /** Docker startup checks: read-only, ordered, and never a container lifetime command. */
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
-import { DockerPreflightError, preflightDockerTarget } from '../src/launch/docker-preflight.ts';
+import { DockerPreflightError, DOCKER_PREFLIGHT_CLEANUP_MS, preflightDockerTarget } from '../src/launch/docker-preflight.ts';
 import { normalizeDockerPreflight } from '../src/launch/managed-launcher.ts';
 import { managementPolicy, readManagedSession } from '../src/launch/managed-sessions.ts';
 import { ConfigurationStore } from '../src/configurations/store.ts';
 import { snapshotConfigs } from '../src/configurations/session.ts';
-import { startTestHub } from './helpers/hub.js';
+import { createHub } from '../src/hub.ts';
+import { hubRoot } from '../src/config.ts';
+import { createLogger } from '../src/log.ts';
+import { startTestHub, testConfig } from './helpers/hub.js';
 
 const endpoints = {
     events: 'ws://127.0.0.1:8800/worker/events?token=secret-token',
@@ -37,8 +41,22 @@ const state = JSON.parse(process.env.STATE);
 if (args[0] === 'inspect') {
     if (state.inspect === 'missing') { console.error('Error: No such object: ' + args.at(-1)); process.exit(1); }
     if (state.inspect === 'daemon') { console.error('permission denied while connecting to the Docker daemon'); process.exit(1); }
-    if (state.inspect === 'hang') { setInterval(() => {}, 1000); }
-    else {
+    if (state.inspect === 'credentials') {
+        console.error('cannot connect https://operator:FAKE_AUDIT_SECRET@daemon.invalid/?token=QUERY_TOKEN');
+        process.exit(1);
+    }
+    if (state.inspect === 'environment') {
+        console.error('daemon rejected environment ' + process.env.AUDIT_SECRET);
+        process.exit(1);
+    }
+    if (state.inspect === 'noisy') {
+        console.error('X'.repeat(20000));
+        process.exit(1);
+    }
+    if (state.inspect === 'hang' || state.inspect === 'hang-secret') {
+        if (state.inspect === 'hang-secret') console.error('inspect failed for FAKE_AUDIT_SECRET');
+        setInterval(() => {}, 1000);
+    } else {
         const hosts = JSON.stringify(state.extraHosts ?? []);
         process.stdout.write([state.status, String(state.running), state.networkMode, hosts].join('\\t') + '\\n');
         process.exit(0);
@@ -49,8 +67,12 @@ if (args[0] === 'inspect') {
         process.exit(127);
     }
     if (state.exec === 'failed') { console.error('worker refused to start'); process.exit(2); }
-    if (state.exec === 'hang') { setInterval(() => {}, 1000); }
-    else if (args[3] === '--version' || !state.delegate) { process.stdout.write('simplex 1.1.2\\n'); process.exit(0); }
+    if (state.exec === 'secret-missing') { console.error('exec failed for FAKE_AUDIT_SECRET'); process.exit(127); }
+    if (state.exec === 'secret') { console.error('exec failed for FAKE_AUDIT_SECRET'); process.exit(2); }
+    if (state.exec === 'hang' || state.exec === 'secret-hang') {
+        if (state.exec === 'secret-hang') console.error('exec failed for FAKE_AUDIT_SECRET');
+        setInterval(() => {}, 1000);
+    } else if (args[3] === '--version' || !state.delegate) { process.stdout.write('simplex 1.1.2\\n'); process.exit(0); }
     else {
         const child = spawn(args[2], args.slice(3), { stdio: 'inherit' });
         child.on('exit', code => { process.exitCode = code ?? 1; });
@@ -64,13 +86,68 @@ if (args[0] === 'inspect') {
     return {
         root,
         executable,
-        env: { CALLS: calls, STATE: JSON.stringify(description) },
+        env: { CALLS: calls, STATE: JSON.stringify(description), AUDIT_SECRET: 'FAKE_ENV_SECRET' },
         calls() {
             return existsSync(calls)
                 ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
                 : [];
         },
     };
+}
+
+/**
+ * A Docker CLI whose inspect answer is immediate and whose exec never returns.
+ * The shell keeps the inspect phase far below the deadline, so the timeout under
+ * test is the executable probe rather than Node startup.
+ */
+function hangingExecFixture(t) {
+    const root = mkdtempSync(join(tmpdir(), 'simplex-docker-preflight-'));
+    const executable = join(root, 'docker');
+    writeFileSync(executable, `#!/bin/sh
+if [ "$1" = "inspect" ]; then
+    printf 'running\\ttrue\\thost\\t[]\\n'
+    exit 0
+fi
+exec sleep 1000
+`, { mode: 0o700 });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return { root, executable, env: {} };
+}
+
+/**
+ * A wrapper that leaves a descendant holding both inherited pipes. The direct
+ * process dies at the deadline, but `close` cannot arrive until the background
+ * sleep ends; only the cleanup allowance can settle the call.
+ */
+function pipeHoldingFixture(t) {
+    const root = mkdtempSync(join(tmpdir(), 'simplex-docker-preflight-'));
+    const executable = join(root, 'docker');
+    writeFileSync(executable, `#!/bin/sh
+sleep 5 &
+wait
+`, { mode: 0o700 });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return { root, executable, env: {} };
+}
+
+/**
+ * A wrapper that answers both probes and exits 0 while a helper inherits the
+ * pipes. `close` never arrives; only the recorded exit status can prove success.
+ */
+function answeringWrapperFixture(t) {
+    const root = mkdtempSync(join(tmpdir(), 'simplex-docker-preflight-'));
+    const executable = join(root, 'docker');
+    writeFileSync(executable, `#!/bin/sh
+if [ "$1" = "inspect" ]; then
+    printf 'running\\ttrue\\thost\\t[]\\n'
+else
+    printf 'simplex test\\n'
+fi
+sleep 5 &
+exit 0
+`, { mode: 0o700 });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return { root, executable, env: {} };
 }
 
 function targetFor(fixture, preflight) {
@@ -93,6 +170,33 @@ async function check(fixture, { preflight, endpointsOverride = endpoints, execut
 function codeOf(error) {
     assert.ok(error instanceof DockerPreflightError, String(error));
     return error.code;
+}
+
+/** Persist one Docker launch configuration and the snapshot a start reads. */
+function saveLaunch(ctx, name, fixture, preflight) {
+    const store = new ConfigurationStore(ctx.config);
+    store.save('launch', name, JSON.stringify({
+        management: {
+            target: { kind: 'docker', command: fixture.executable, args: [], container: 'retained',
+                ...(preflight === undefined ? {} : { preflight }) },
+            executable: 'simplex', cwd: fixture.root, env: fixture.env,
+            root: '/only-on-target/allocations',
+        },
+    }), null);
+    snapshotConfigs(store, name, { launchConfig: name, workerConfig: 'default' });
+}
+
+/** Start a hub whose log lines are captured at one level. */
+async function startLoggedHub(t, level) {
+    const config = testConfig({});
+    const lines = [];
+    const hub = createHub({
+        config, hubRoot, version: 'test',
+        log: createLogger({ level, sink: line => lines.push(line) }),
+    });
+    await hub.start();
+    t.after(() => hub.stop());
+    return { config, hub, lines };
 }
 
 it('runs the container and installation checks in order without a lifetime command', async t => {
@@ -120,14 +224,62 @@ it('reports a missing container separately from a stopped one', async t => {
     assert.deepEqual(stopped.calls().map(call => call[0]), ['inspect']);
 });
 
-it('keeps a sanitized Docker CLI diagnostic without exposing the environment', async t => {
-    const fixture = dockerFixture(t, { inspect: 'daemon' });
-    await assert.rejects(check(fixture), error => {
+it('keeps CLI diagnostics private and public text controlled', async t => {
+    const daemon = dockerFixture(t, { inspect: 'daemon' });
+    await assert.rejects(check(daemon), error => {
         assert.equal(codeOf(error), 'inspect-failed');
-        assert.match(error.message, /permission denied/);
-        assert.ok(!error.message.includes('CALLS'));
+        assert.match(error.message, /cannot inspect container "retained" \(exit 1\)/);
+        assert.match(error.message, /check Docker CLI permissions/,
+            'a controlled hint keeps a permission failure actionable');
+        assert.ok(!error.message.includes('permission denied'),
+            'CLI stderr must not enter the public message');
+        assert.match(error.detail ?? '', /permission denied/);
         return true;
     });
+    const credentials = dockerFixture(t, { inspect: 'credentials' });
+    await assert.rejects(check(credentials), error => {
+        assert.equal(codeOf(error), 'inspect-failed');
+        assert.match(error.message, /check that the Docker daemon is reachable/);
+        for (const secret of ['FAKE_AUDIT_SECRET', 'QUERY_TOKEN']) {
+            assert.ok(!error.message.includes(secret), `${secret} must not reach the public message`);
+            assert.ok(error.detail?.includes(secret), `${secret} stays available privately`);
+        }
+        return true;
+    });
+    const environment = dockerFixture(t, { inspect: 'environment' });
+    await assert.rejects(check(environment), error => {
+        assert.equal(codeOf(error), 'inspect-failed');
+        assert.ok(!error.message.includes('FAKE_ENV_SECRET'));
+        assert.ok(error.detail?.includes('FAKE_ENV_SECRET'));
+        return true;
+    });
+    const noisy = dockerFixture(t, { inspect: 'noisy' });
+    await assert.rejects(check(noisy), error => {
+        assert.equal(codeOf(error), 'inspect-failed');
+        assert.equal(error.detail?.length, 200, 'the private diagnostic stays bounded');
+        assert.ok(!error.message.includes('XXXXXXXXXX'));
+        return true;
+    });
+});
+
+it('keeps CLI text private for probe failures and timeouts', async t => {
+    const cases = [
+        [{ inspect: 'hang-secret' }, 'inspect-timeout'],
+        [{ exec: 'secret-missing' }, 'executable-missing'],
+        [{ exec: 'secret' }, 'executable-failed'],
+        [{ exec: 'secret-hang' }, 'executable-timeout'],
+    ];
+    for (const [state, code] of cases) {
+        const fixture = dockerFixture(t, state);
+        await assert.rejects(check(fixture, { preflight: { timeoutMs: 1000 } }), error => {
+            assert.equal(codeOf(error), code);
+            assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'),
+                `${code} must not forward CLI text`);
+            assert.ok(error.detail?.includes('FAKE_AUDIT_SECRET'),
+                `${code} keeps the raw line privately`);
+            return true;
+        });
+    }
 });
 
 it('refuses a container whose installation cannot answer --version', async t => {
@@ -179,6 +331,36 @@ it('requires an explicit host mapping for host.docker.internal', async t => {
     await check(mapped, { endpointsOverride: internal });
 });
 
+it('echoes only Docker vocabulary from inspect labels', async t => {
+    const tokenStatus = dockerFixture(t, { status: 'FAKE_AUDIT_SECRET', running: false });
+    await assert.rejects(check(tokenStatus, { preflight: { executable: false } }), error => {
+        assert.equal(codeOf(error), 'container-not-running');
+        assert.match(error.message, /status: unknown/);
+        assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'));
+        return true;
+    });
+    const paused = dockerFixture(t, { status: 'paused', running: false });
+    await assert.rejects(check(paused, { preflight: { executable: false } }), error => {
+        assert.match(error.message, /status: paused/);
+        return true;
+    });
+    const tokenNetwork = dockerFixture(t, { networkMode: 'FAKE_AUDIT_SECRET' });
+    await assert.rejects(check(tokenNetwork), error => {
+        assert.equal(codeOf(error), 'endpoint-loopback');
+        assert.match(error.message, /network mode "user-defined"/);
+        assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'));
+        return true;
+    });
+    const bridged = dockerFixture(t, { networkMode: 'bridge' });
+    await assert.rejects(check(bridged), error => {
+        assert.match(error.message, /network mode "bridge"/);
+        return true;
+    });
+    // A shared network namespace is accepted; its reference stays diagnosable.
+    const shared = dockerFixture(t, { networkMode: 'container:abc123' });
+    await check(shared);
+});
+
 it('honors the per-check switches and the overall disable switch', async t => {
     const containerOnly = dockerFixture(t);
     await check(containerOnly, { preflight: { executable: false, endpoint: { enabled: false } } });
@@ -204,11 +386,14 @@ it('always requires existence and reports a stopped container when the probe is 
 
 it('reports an unresponsive Docker CLI or an unusable command', async t => {
     const hanging = dockerFixture(t, { inspect: 'hang' });
+    let started = Date.now();
     await assert.rejects(check(hanging, { preflight: { timeoutMs: 100 } }), error => {
         assert.equal(codeOf(error), 'inspect-timeout');
         assert.match(error.message, /100 ms/);
         return true;
     });
+    assert.ok(Date.now() - started < 100 + DOCKER_PREFLIGHT_CLEANUP_MS + 1000,
+        'a timed-out inspect must settle within its deadline and cleanup allowance');
     const unavailable = dockerFixture(t);
     await assert.rejects(preflightDockerTarget({
         target: { kind: 'docker', command: join(unavailable.root, 'absent'), args: [], container: 'retained' },
@@ -217,11 +402,83 @@ it('reports an unresponsive Docker CLI or an unusable command', async t => {
         assert.equal(codeOf(error), 'docker-unavailable');
         return true;
     });
-    const hangingExec = dockerFixture(t, { exec: 'hang' });
+    // Inspect answers immediately here, so the deadline under test cannot be
+    // consumed by Node startup before the hanging executable probe runs.
+    const hangingExec = hangingExecFixture(t);
+    started = Date.now();
     await assert.rejects(check(hangingExec, { preflight: { timeoutMs: 100 } }), error => {
         assert.equal(codeOf(error), 'executable-timeout');
+        assert.match(error.message, /100 ms/);
         return true;
     });
+    assert.ok(Date.now() - started < 100 + DOCKER_PREFLIGHT_CLEANUP_MS + 1000,
+        'a timed-out executable probe must settle within its deadline and cleanup allowance');
+});
+
+it('settles a timed-out command when a descendant keeps its pipes open', async t => {
+    const fixture = pipeHoldingFixture(t);
+    const started = Date.now();
+    await assert.rejects(check(fixture, { preflight: { timeoutMs: 80 } }), error => {
+        assert.equal(codeOf(error), 'inspect-timeout');
+        return true;
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 80 + DOCKER_PREFLIGHT_CLEANUP_MS + 1200,
+        `preflight settled after ${elapsed} ms; it must not wait for the inherited pipes`);
+});
+
+it('keeps the real status when a command exits before the deadline', async t => {
+    // The wrapper answers both probes and exits 0; the helper it leaves behind
+    // keeps `close` away. The recorded exit status must win over the deadline.
+    const fixture = answeringWrapperFixture(t);
+    const started = Date.now();
+    await check(fixture, { preflight: { timeoutMs: 200 } });
+    assert.ok(Date.now() - started < (200 + DOCKER_PREFLIGHT_CLEANUP_MS) * 2 + 1500,
+        'a command that exited before its deadline must not be reported as a timeout');
+});
+
+it('lets the process exit after settlement when a descendant holds the pipes', async t => {
+    // Without releasing the pipe read ends, the event loop would stay alive for
+    // as long as the wrapper's descendant holds the write ends (5 s here).
+    const fixture = pipeHoldingFixture(t);
+    const moduleUrl = new URL('../src/launch/docker-preflight.ts', import.meta.url).href;
+    const script = `
+import { preflightDockerTarget } from ${JSON.stringify(moduleUrl)};
+const target = { kind: 'docker', command: ${JSON.stringify(fixture.executable)}, args: [],
+    container: 'retained', preflight: { timeoutMs: 50 } };
+try {
+    await preflightDockerTarget({
+        target, executable: 'simplex', cwd: ${JSON.stringify(fixture.root)}, env: {},
+        endpoints: {
+            events: 'ws://127.0.0.1:1/events',
+            confirm: 'ws://127.0.0.1:1/confirm',
+            tools: 'ws://127.0.0.1:1/tools',
+        },
+    });
+    process.stdout.write('resolved\\n');
+} catch (error) {
+    process.stdout.write('settled:' + error.code + '\\n');
+}
+`;
+    const started = Date.now();
+    const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+            cwd: fixture.root, stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; });
+        const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error('the preflight process stayed alive on inherited pipes'));
+        }, 3000);
+        child.once('exit', code => {
+            clearTimeout(timer);
+            resolve({ code, output, elapsed: Date.now() - started });
+        });
+    });
+    assert.equal(result.code, 0);
+    assert.match(result.output, /settled:inspect-timeout/);
+    assert.ok(result.elapsed < 2500, `the process exited after ${result.elapsed} ms`);
 });
 
 it('normalizes omitted checks and rejects unusable policies', () => {
@@ -260,6 +517,76 @@ it('refuses to bind an allocation when the container is missing', async t => {
     assert.equal(readManagedSession(ctx.config, 'preflight-failure'), null,
         'a failed preflight must leave the session unbound and editable');
     assert.deepEqual(fixture.calls().map(call => call[0]), ['inspect']);
+});
+
+it('bounds startup ownership when a preflight deadline expires', async t => {
+    const fixture = pipeHoldingFixture(t);
+    const ctx = await startTestHub({});
+    t.after(() => ctx.hub.stop());
+    saveLaunch(ctx, 'docker-preflight-timeout', fixture, { timeoutMs: 50 });
+    const session = ctx.hub.registry.create('docker-preflight-timeout');
+    const bound = 50 + DOCKER_PREFLIGHT_CLEANUP_MS + 1200;
+    let started = Date.now();
+    const first = await ctx.hub.supervisor.start(session);
+    assert.equal(first.ok, false);
+    assert.match(first.error, /^docker preflight failed: Docker did not answer within 50 ms/);
+    assert.ok(Date.now() - started < bound,
+        'a timed-out preflight must not keep the startup reservation');
+    // Ownership must be released: the same session can be tried again and
+    // fails on its own deadline instead of waiting on the previous start.
+    started = Date.now();
+    const second = await ctx.hub.supervisor.start(session);
+    assert.equal(second.ok, false);
+    assert.ok(Date.now() - started < bound,
+        'a repeated start must not wait on the previous timeout');
+    assert.equal(readManagedSession(ctx.config, 'docker-preflight-timeout'), null,
+        'a timed-out preflight must leave the session unbound');
+});
+
+it('shutdown does not wait for a preflight that exceeded its deadline', async t => {
+    const fixture = pipeHoldingFixture(t);
+    const ctx = await startTestHub({});
+    let stopped = false;
+    t.after(async () => { if (!stopped) await ctx.hub.stop(); });
+    saveLaunch(ctx, 'docker-preflight-shutdown', fixture, { timeoutMs: 50 });
+    const session = ctx.hub.registry.create('docker-preflight-shutdown');
+    const pending = ctx.hub.supervisor.start(session);
+    // Let the start reach the preflight before shutdown takes its inventory.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const started = Date.now();
+    await ctx.hub.stop();
+    stopped = true;
+    const result = await pending;
+    assert.equal(result.ok, false);
+    assert.ok(Date.now() - started < 50 + DOCKER_PREFLIGHT_CLEANUP_MS + 1200,
+        'shutdown must not wait for a pipe held by the Docker CLI');
+});
+
+it('keeps private CLI text out of public errors and default logs', async t => {
+    const fixture = dockerFixture(t, { inspect: 'credentials' });
+    const ctx = await startLoggedHub(t, 'info');
+    saveLaunch(ctx, 'docker-preflight-log', fixture);
+    const session = ctx.hub.registry.create('docker-preflight-log');
+    const result = await ctx.hub.supervisor.start(session);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /cannot inspect container "retained" \(exit 1\)/);
+    const log = ctx.lines.join('\n');
+    assert.match(log, /docker preflight failed: cannot inspect container "retained" \(exit 1\)/);
+    for (const secret of ['FAKE_AUDIT_SECRET', 'QUERY_TOKEN']) {
+        assert.ok(!result.error.includes(secret), `${secret} must not reach the public result`);
+        assert.ok(!log.includes(secret), `${secret} must not reach the default log`);
+    }
+
+    // Deliberate debug logging is the only retained copy of the raw line; the
+    // public result still excludes it.
+    const debugCtx = await startLoggedHub(t, 'debug');
+    saveLaunch(debugCtx, 'docker-preflight-debug', fixture);
+    const debugResult = await debugCtx.hub.supervisor.start(
+        debugCtx.hub.registry.create('docker-preflight-debug'));
+    assert.equal(debugResult.ok, false);
+    assert.match(debugCtx.lines.join('\n'),
+        /docker preflight diagnostic: cannot connect https:\/\/operator:FAKE_AUDIT_SECRET@daemon\.invalid\//);
+    assert.ok(!debugResult.error.includes('FAKE_AUDIT_SECRET'));
 });
 
 it('dispatches a managed worker only after the preflight passes', async t => {
