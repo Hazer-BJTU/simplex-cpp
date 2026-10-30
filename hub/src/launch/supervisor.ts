@@ -512,6 +512,11 @@ export class WorkerSupervisor {
         } catch (error) {
             if (error instanceof DockerPreflightError) {
                 this.log.warn(`session ${session.id}: docker preflight failed: ${error.message}`);
+                // Raw CLI text may contain operator credentials; only an
+                // explicitly enabled debug log receives the private detail.
+                if (error.detail) {
+                    this.log.debug(`session ${session.id}: docker preflight diagnostic: ${error.detail}`);
+                }
                 return { ok: false, error: `docker preflight failed: ${error.message}`, config: specSource };
             }
             const message = error instanceof Error ? error.message : String(error);

@@ -7,9 +7,11 @@
  * installation, unreachable Hub address) fails as an actionable start error
  * instead of an allocation that can never launch.
  *
- * The checks are read-only and use only the Docker CLI. Public messages name
- * the container and, for CLI failures, a short sanitized detail line. They never
- * include argv, environment values or an endpoint URL with its session token.
+ * The checks are read-only and use only the Docker CLI. Public messages name the
+ * container, the exit status and the configured deadline. They never echo CLI
+ * stdout/stderr, argv, environment values or an endpoint URL with its session
+ * token. The first CLI diagnostic line is retained privately on the error for
+ * deliberate inspection and is never part of the public message or default logs.
  */
 import { spawn } from 'node:child_process';
 import { normalizeDockerPreflight } from './managed-launcher.ts';
@@ -36,11 +38,17 @@ export type DockerPreflightCode =
 /** A start refusal caused by an unusable Docker target. */
 export class DockerPreflightError extends Error {
     readonly code: DockerPreflightCode;
+    /**
+     * Private CLI diagnostic, kept out of the public message and default logs.
+     * It may contain operator credentials; inspect it deliberately.
+     */
+    readonly detail: string | null;
 
-    constructor(code: DockerPreflightCode, message: string) {
+    constructor(code: DockerPreflightCode, message: string, detail: string | null = null) {
         super(message);
         this.name = 'DockerPreflightError';
         this.code = code;
+        this.detail = detail;
     }
 }
 
@@ -67,19 +75,49 @@ interface DockerCommandResult {
 /** Keep diagnostics bounded; a Docker daemon can produce arbitrary output. */
 const DIAGNOSTIC_BYTES = 8192;
 
-/** One line of CLI diagnostics, without control characters or newlines. */
-function detailLine(text: string): string {
+/**
+ * Time allowed after the deadline for a killed command's pipes to close.
+ *
+ * A wrapper can leave a descendant holding the inherited stdout/stderr, so the
+ * `close` event may never arrive. The call settles anyway once this allowance
+ * expires; the promise never waits on a pipe another process owns.
+ */
+export const DOCKER_PREFLIGHT_CLEANUP_MS = 250;
+
+/**
+ * Private CLI diagnostic: one line, no control characters, at most 200
+ * characters. It never enters a public message or the default log.
+ */
+function diagnosticLine(text: string): string | null {
     const line = text.split('\n').map(part => part.trim()).find(Boolean) ?? '';
-    return line.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200);
+    return line ? line.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200) : null;
 }
 
+/** Public CLI failure identity: exit status only, never CLI output. */
 function failure(result: DockerCommandResult): string {
     if (result.signal) return `terminated by ${result.signal}`;
-    const detail = detailLine(result.stderr);
-    return detail ? `exit ${result.code ?? 'unknown'}: ${detail}` : `exit ${result.code ?? 'unknown'}`;
+    return `exit ${result.code ?? 'unknown'}`;
 }
 
-/** Run one Docker CLI command without a shell, bounded and with a deadline. */
+/**
+ * Controlled public hint for a common CLI refusal. The decision reads stderr,
+ * but only a fixed sentence reaches the message; the raw line stays private.
+ */
+function failureHint(result: DockerCommandResult): string {
+    if (/permission denied/i.test(result.stderr)) return '; check Docker CLI permissions';
+    if (/(?:cannot connect|connection refused|is the docker daemon running)/i.test(result.stderr)) {
+        return '; check that the Docker daemon is reachable';
+    }
+    return '';
+}
+
+/**
+ * Run one Docker CLI command without a shell, bounded and with a deadline.
+ *
+ * The deadline kills the direct child; a fixed cleanup allowance then settles
+ * the call even when a descendant keeps the pipes open. `error`, `close` and
+ * both timers race only into the first settlement.
+ */
 function dockerCommand(
     target: DockerTarget,
     args: string[],
@@ -94,8 +132,10 @@ function dockerCommand(
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: false,
             });
-        } catch {
-            reject(new DockerPreflightError('docker-unavailable', 'cannot run the configured Docker command'));
+        } catch (error) {
+            const detail = diagnosticLine(error instanceof Error ? error.message : String(error));
+            reject(new DockerPreflightError('docker-unavailable',
+                'cannot run the configured Docker command', detail));
             return;
         }
         const stdout: Buffer[] = [];
@@ -104,11 +144,30 @@ function dockerCommand(
         let stderrBytes = 0;
         let timedOut = false;
         let settled = false;
-        const timer = setTimeout(() => {
-            timedOut = true;
-            child.kill('SIGKILL');
-        }, timeoutMs);
-        timer.unref?.();
+        let killTimer: NodeJS.Timeout | undefined;
+        let settleTimer: NodeJS.Timeout | undefined;
+        const finish = (error?: DockerPreflightError, code: number | null = null,
+                        signal: NodeJS.Signals | null = null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(killTimer);
+            clearTimeout(settleTimer);
+            // A descendant may still hold the write ends; closing our read ends
+            // is what makes settlement independent of it.
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve({
+                code,
+                signal,
+                stdout: Buffer.concat(stdout).toString('utf8'),
+                stderr: Buffer.concat(stderr).toString('utf8'),
+                timedOut,
+            });
+        };
         child.stdout?.on('data', (chunk: Buffer) => {
             if (stdoutBytes >= DIAGNOSTIC_BYTES) return;
             const slice = chunk.subarray(0, DIAGNOSTIC_BYTES - stdoutBytes);
@@ -121,24 +180,26 @@ function dockerCommand(
             stderr.push(slice);
             stderrBytes += slice.length;
         });
-        child.once('error', () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            reject(new DockerPreflightError('docker-unavailable', 'cannot run the configured Docker command'));
+        child.once('error', (error: Error) => {
+            finish(new DockerPreflightError('docker-unavailable',
+                'cannot run the configured Docker command', diagnosticLine(error.message)));
         });
-        child.once('close', (code, signal) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve({
-                code,
-                signal,
-                stdout: Buffer.concat(stdout).toString('utf8'),
-                stderr: Buffer.concat(stderr).toString('utf8'),
-                timedOut,
-            });
-        });
+        child.once('close', (code, signal) => finish(undefined, code, signal));
+        killTimer = setTimeout(() => {
+            timedOut = true;
+            try {
+                child.kill('SIGKILL');
+            } catch {
+                // The allowance below still settles when the signal cannot be sent.
+            }
+            settleTimer = setTimeout(() => {
+                // Reached only when close never arrived: the deadline expired and
+                // a process outside this one still holds the inherited pipes.
+                finish();
+            }, DOCKER_PREFLIGHT_CLEANUP_MS);
+            settleTimer.unref?.();
+        }, timeoutMs);
+        killTimer.unref?.();
     });
 }
 
@@ -149,6 +210,15 @@ interface ContainerState {
     extraHosts: string[];
 }
 
+/**
+ * Echo a Docker-reported label only when it still looks like Docker's own
+ * vocabulary. Public messages never forward arbitrary CLI output.
+ */
+function inspectLabel(value: string, fallback: string): string {
+    return /^(?:[A-Za-z0-9_.-]{1,64}|container:[A-Za-z0-9_.-]{1,64})$/.test(value)
+        ? value : fallback;
+}
+
 /** Parse the compact description produced by `docker inspect --format`. */
 function parseContainerState(stdout: string): ContainerState {
     const [line] = stdout.split('\n');
@@ -156,7 +226,8 @@ function parseContainerState(stdout: string): ContainerState {
     const status = fields[0]?.trim() ?? '';
     const networkMode = fields[2]?.trim() ?? '';
     if (!status || !networkMode) {
-        throw new DockerPreflightError('inspect-failed', 'Docker returned an unexpected container description');
+        throw new DockerPreflightError('inspect-failed',
+            'Docker returned an unexpected container description', diagnosticLine(stdout));
     }
     let extraHosts: string[] = [];
     if (fields[3]) {
@@ -214,7 +285,8 @@ function checkEndpoint(
     if (loopback(host) && state.networkMode !== 'host' && !state.networkMode.startsWith('container:')) {
         throw new DockerPreflightError('endpoint-loopback',
             `the advertised ${channel} endpoint uses ${host}:${portOf(url)}, but container`
-            + ` "${container}" uses network mode "${state.networkMode}"; set worker.connectHost or`
+            + ` "${container}" uses network mode "${inspectLabel(state.networkMode, 'unknown')}";`
+            + ` set worker.connectHost or`
             + ` the ${channel} endpoint to an address reachable from the container`);
     }
     if (host === 'host.docker.internal'
@@ -243,14 +315,16 @@ export async function preflightDockerTarget({
         { cwd, env, timeoutMs: policy.timeoutMs });
     if (inspect.timedOut) {
         throw new DockerPreflightError('inspect-timeout',
-            `Docker did not answer within ${policy.timeoutMs} ms while inspecting container "${container}"`);
+            `Docker did not answer within ${policy.timeoutMs} ms while inspecting container "${container}"`,
+            diagnosticLine(inspect.stderr));
     }
     if (inspect.code !== 0) {
         if (/no such (?:object|container)/i.test(inspect.stderr)) {
             throw new DockerPreflightError('container-missing', `container "${container}" does not exist`);
         }
         throw new DockerPreflightError('inspect-failed',
-            `cannot inspect container "${container}" (${failure(inspect)})`);
+            `cannot inspect container "${container}" (${failure(inspect)})${failureHint(inspect)}`,
+            diagnosticLine(inspect.stderr));
     }
     const state = parseContainerState(inspect.stdout);
     // `container: false` opts out of the running assertion, not out of the
@@ -258,7 +332,7 @@ export async function preflightDockerTarget({
     // stopped container, so report that state instead of a misleading CLI error.
     if (!state.running && (policy.container || policy.executable)) {
         throw new DockerPreflightError('container-not-running',
-            `container "${container}" is not running (status: ${state.status})`);
+            `container "${container}" is not running (status: ${inspectLabel(state.status, 'unknown')})`);
     }
     if (policy.executable) {
         const probe = await dockerCommand(target, ['exec', container, executable, '--version'],
@@ -266,15 +340,17 @@ export async function preflightDockerTarget({
         if (probe.timedOut) {
             throw new DockerPreflightError('executable-timeout',
                 `"${executable} --version" did not answer inside container "${container}"`
-                + ` within ${policy.timeoutMs} ms`);
+                + ` within ${policy.timeoutMs} ms`, diagnosticLine(probe.stderr));
         }
         if (probe.code === 126 || probe.code === 127) {
             throw new DockerPreflightError('executable-missing',
-                `"${executable}" is not executable inside container "${container}" (${failure(probe)})`);
+                `"${executable}" is not executable inside container "${container}" (${failure(probe)})`,
+                diagnosticLine(probe.stderr));
         }
         if (probe.code !== 0) {
             throw new DockerPreflightError('executable-failed',
-                `"${executable} --version" failed inside container "${container}" (${failure(probe)})`);
+                `"${executable} --version" failed inside container "${container}" (${failure(probe)})`,
+                diagnosticLine(probe.stderr));
         }
     }
     if (policy.endpoint.enabled) {
