@@ -11,9 +11,11 @@
 
 namespace tools::intrinsic {
 
-StrReplaceEditTool::StrReplaceEditTool()
-    : DeclaredTool(editing::schema_directory() / "str_replace_edit.yaml")
+StrReplaceEditTool::StrReplaceEditTool(std::shared_ptr<FileWork> work)
+    : DeclaredTool(editing::schema_directory() / "str_replace_edit.yaml"),
+      work_(std::move(work))
 {
+    if (!work_) throw std::invalid_argument("file work executor is required");
     initialize_configuration([this](const nlohmann::json& config) {
         for (const auto& [key, value] : config.items()) {
             if (key != "max_file_bytes") {
@@ -66,8 +68,12 @@ boost::asio::awaitable<model_io::Content> StrReplaceEditTool::invoke(
 
     textedit::EditResult edit;
     try {
-        edit = textedit::str_replace_file(
-            path, old_text, new_text, context, max_file_bytes_);
+        const auto file_limit = max_file_bytes_;
+        edit = co_await work_->run(
+            [path, old_text, new_text, context, file_limit](std::stop_token stop) {
+                return textedit::str_replace_file(
+                    path, old_text, new_text, context, file_limit, stop);
+            });
     } catch (const std::exception& error) {
         invoke_failed(std::string("str_replace_edit: ") + error.what());
     }

@@ -578,13 +578,25 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
         registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
             store, &eventbus::default_async_bus()));
-        registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>());
+        // File tools share one bounded worker. Snapshot cancellation on this
+        // strand, then let the blocking job own only that run's token.
+        auto file_work = std::make_shared<tools::intrinsic::FileWork>(
+            [weak = weak_from_this()] {
+                if (const auto self = weak.lock()) {
+                    std::lock_guard lock(self->control_mutex);
+                    return self->run_stop.get_token();
+                }
+                std::stop_source stopped;
+                stopped.request_stop();
+                return stopped.get_token();
+            });
+        registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>(file_work));
         if (config.persistence && state_store->backend() == persistence::Backend::Sqlite) {
             registry.add(std::make_shared<tools::intrinsic::ArchiveMemoryToolSet>(
                 persistence::make_sqlite_archive_reader(session_id, config.state_directory),
                 storage_executor.get_executor()));
         }
-        registry.add(std::make_shared<tools::intrinsic::EditingToolSet>());
+        registry.add(std::make_shared<tools::intrinsic::EditingToolSet>(file_work));
         if (modality_assist_model) {
             registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
                 modality_assist_model));

@@ -148,3 +148,15 @@ The two publications are not one transaction; callers must handle a postcommit
 publication failure explicitly. `atomic_write()` uses the same implementation
 for immediate publication. As with other filesystem operations, coroutine users
 should construct, publish and destroy staged writes on their storage executor.
+
+### Cooperative cancellation of streaming replacements
+
+`StagedReplacement` accepts an optional final `std::stop_token`, retained across
+moves. It checks between bounded reads, writes, prefix copies and verification
+chunks, and immediately before rename. `operation_canceled` means publication
+was not attempted; destruction removes the candidate. Once the final rename
+phase is entered, late stops do not mask success or `AtomicWriteError::published()`.
+File and directory sync remain blocking OS operations. This API never detaches
+work: coroutine callers should use a blocking executor and join settlement before
+releasing ownership. Cancellation does not change exact comparisons, source
+scan counts, metadata preservation or directory-durability semantics.

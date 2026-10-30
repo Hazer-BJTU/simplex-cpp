@@ -1,6 +1,7 @@
 #include "fileio/staged_replace.hpp"
 
 #include "fileio/atomic_write.hpp"
+#include "fileio/cancellation.hpp"
 
 #include "posix_identity.hpp"
 
@@ -28,12 +29,13 @@ constexpr std::size_t kCompareChunk = 64 * 1024;
 /** Read from both descriptors and require identical bytes. */
 void compare_exact(
     int left, int right, std::uintmax_t bytes, std::uintmax_t base,
-    SourceObserver* observer)
+    SourceObserver* observer, std::stop_token stop)
 {
     std::array<char, kCompareChunk> first{};
     std::array<char, kCompareChunk> second{};
     std::uintmax_t compared = 0;
     while (compared < bytes) {
+        check_cancelled(stop);
         const auto want = static_cast<std::size_t>(
             std::min<std::uintmax_t>(first.size(), bytes - compared));
         const auto left_count = detail::read_some(left, first.data(), want);
@@ -52,11 +54,13 @@ void compare_exact(
 }
 
 /** Require `bytes` bytes of `descriptor` to equal `expected`. */
-void compare_expected(int descriptor, std::uintmax_t bytes, std::string_view expected)
+void compare_expected(
+    int descriptor, std::uintmax_t bytes, std::string_view expected, std::stop_token stop)
 {
     std::array<char, kCompareChunk> chunk{};
     std::uintmax_t consumed = 0;
     while (consumed < bytes) {
+        check_cancelled(stop);
         const auto want = static_cast<std::size_t>(
             std::min<std::uintmax_t>(chunk.size(), bytes - consumed));
         const auto count = detail::read_some(descriptor, chunk.data(), want);
@@ -69,12 +73,14 @@ void compare_expected(int descriptor, std::uintmax_t bytes, std::string_view exp
 }
 
 /** Require both descriptors to end together with identical remaining bytes. */
-void compare_to_end(int left, int right, std::uintmax_t base, SourceObserver* observer)
+void compare_to_end(
+    int left, int right, std::uintmax_t base, SourceObserver* observer, std::stop_token stop)
 {
     std::array<char, kCompareChunk> first{};
     std::array<char, kCompareChunk> second{};
     std::uintmax_t compared = 0;
     for (;;) {
+        check_cancelled(stop);
         const auto left_count = detail::read_some(left, first.data(), first.size());
         const auto right_count = detail::read_some(right, second.data(), second.size());
         if (left_count != right_count) {
@@ -90,11 +96,12 @@ void compare_to_end(int left, int right, std::uintmax_t base, SourceObserver* ob
 }
 
 /** Discard exactly `bytes` bytes from one descriptor. */
-void skip_bytes(int descriptor, std::uintmax_t bytes)
+void skip_bytes(int descriptor, std::uintmax_t bytes, std::stop_token stop)
 {
     std::array<char, kCompareChunk> chunk{};
     std::uintmax_t skipped = 0;
     while (skipped < bytes) {
+        check_cancelled(stop);
         const auto want = static_cast<std::size_t>(
             std::min<std::uintmax_t>(chunk.size(), bytes - skipped));
         const auto count = detail::read_some(descriptor, chunk.data(), want);
@@ -106,8 +113,11 @@ void skip_bytes(int descriptor, std::uintmax_t bytes)
 } // namespace
 
 StagedReplacement::StagedReplacement(
-    const std::filesystem::path& path, std::size_t buffer_bytes)
+    const std::filesystem::path& path, std::size_t buffer_bytes,
+    std::stop_token stop)
+    : stop_(stop)
 {
+    check_cancelled(stop_);
     if (buffer_bytes < kMinBufferBytes || buffer_bytes > kMaxBufferBytes) {
         throw std::invalid_argument("stream buffer must be between 4 bytes and 1 MiB");
     }
@@ -135,7 +145,8 @@ StagedReplacement::StagedReplacement(StagedReplacement&& other) noexcept
       source_(std::exchange(other.source_, -1)),
       candidate_(std::exchange(other.candidate_, -1)),
       directory_(std::exchange(other.directory_, -1)),
-      consumed_(std::exchange(other.consumed_, false))
+      consumed_(std::exchange(other.consumed_, false)),
+      stop_(other.stop_)
 {
     other.temporary_path_.clear();
     other.source_bytes_ = 0;
@@ -158,6 +169,7 @@ StagedReplacement& StagedReplacement::operator=(StagedReplacement&& other) noexc
         candidate_ = std::exchange(other.candidate_, -1);
         directory_ = std::exchange(other.directory_, -1);
         consumed_ = std::exchange(other.consumed_, false);
+        stop_ = other.stop_;
         other.temporary_path_.clear();
         other.source_bytes_ = 0;
         other.candidate_bytes_ = 0;
@@ -195,8 +207,10 @@ void StagedReplacement::ensure_candidate()
 
 std::string_view StagedReplacement::next_source()
 {
+    check_cancelled(stop_);
     if (source_ < 0) return {};
     for (;;) {
+        check_cancelled(stop_);
         const auto count = ::read(source_, buffer_.data(), buffer_.size());
         if (count < 0) {
             if (errno == EINTR) continue;
@@ -242,8 +256,9 @@ void StagedReplacement::copy_prefix(std::uintmax_t bytes)
     // The kernel copies from the source without another user-space read, so the
     // scan budget stays at two source reads.
     while (copied < bytes) {
+        check_cancelled(stop_);
         const auto want = static_cast<std::size_t>(
-            std::min<std::uintmax_t>(bytes - copied, 1u << 30));
+            std::min<std::uintmax_t>(bytes - copied, kCompareChunk));
         auto offset = static_cast<off_t>(copied);
         const auto count = ::copy_file_range(source_, &offset, candidate_, nullptr, want, 0);
         if (count > 0) {
@@ -259,6 +274,7 @@ void StagedReplacement::copy_prefix(std::uintmax_t bytes)
         // source scan position untouched.
         std::array<char, kCompareChunk> chunk{};
         while (copied < bytes) {
+            check_cancelled(stop_);
             const auto want = static_cast<std::size_t>(
                 std::min<std::uintmax_t>(chunk.size(), bytes - copied));
             const auto count = ::pread(source_, chunk.data(), want, static_cast<off_t>(copied));
@@ -278,8 +294,14 @@ void StagedReplacement::write(std::string_view bytes)
 {
     if (consumed_) throw std::logic_error("replacement candidate is closed");
     ensure_candidate();
-    detail::write_all(candidate_, bytes);
-    candidate_bytes_ += bytes.size();
+    while (!bytes.empty()) {
+        check_cancelled(stop_);
+        const auto count = std::min(bytes.size(), kCompareChunk);
+        detail::write_all(candidate_, bytes.substr(0, count));
+        candidate_bytes_ += count;
+        bytes.remove_prefix(count);
+    }
+
 }
 
 void StagedReplacement::finish_candidate()
@@ -303,6 +325,7 @@ void StagedReplacement::finish_candidate()
     if (::fchmod(candidate_, static_cast<mode_t>(mode & 0777)) != 0) {
         detail::fail("preserve editable file permissions");
     }
+    check_cancelled(stop_);
     if (::fsync(candidate_) != 0) detail::fail("sync replacement file");
     if (::close(std::exchange(candidate_, -1)) != 0) {
         detail::fail("close replacement file");
@@ -338,11 +361,11 @@ void StagedReplacement::verify_against_source(
     confirm_source_unchanged(reopened.get());
 
     detail::Descriptor candidate(detail::open_source(temporary_path_));
-    compare_exact(reopened.get(), candidate.get(), match_byte, 0, observer);
-    skip_bytes(candidate.get(), replaced);
-    compare_expected(reopened.get(), matched_source.size(), matched_source);
+    compare_exact(reopened.get(), candidate.get(), match_byte, 0, observer, stop_);
+    skip_bytes(candidate.get(), replaced, stop_);
+    compare_expected(reopened.get(), matched_source.size(), matched_source, stop_);
     compare_to_end(reopened.get(), candidate.get(), match_byte + matched_source.size(),
-                   observer);
+                   observer, stop_);
 
     struct stat after {};
     if (::fstat(reopened.get(), &after) != 0) detail::fail("inspect compared file");
@@ -355,6 +378,7 @@ void StagedReplacement::publish(
     std::uintmax_t match_byte, std::string_view matched_source,
     SourceObserver* observer)
 {
+    check_cancelled(stop_);
     if (source_ < 0 || consumed_) {
         throw std::logic_error("replacement candidate is already consumed");
     }
@@ -375,6 +399,9 @@ void StagedReplacement::publish(
     if (!detail::same_file(original, current)) {
         throw ReplaceConflict("file changed before replacement");
     }
+    // Final cancellation boundary. Once entered, report publication (including
+    // directory-sync failure) even if a stop races rename or fsync.
+    check_cancelled(stop_);
     if (::rename(temporary_path_.c_str(), destination_.c_str()) != 0) {
         detail::fail("publish replacement file");
     }

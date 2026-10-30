@@ -10,9 +10,11 @@
 
 namespace tools::intrinsic {
 
-ReadTextTool::ReadTextTool()
-    : DeclaredTool(reading::schema_directory() / "read_text.yaml")
+ReadTextTool::ReadTextTool(std::shared_ptr<FileWork> work)
+    : DeclaredTool(reading::schema_directory() / "read_text.yaml"),
+      work_(std::move(work))
 {
+    if (!work_) throw std::invalid_argument("file work executor is required");
     initialize_configuration([this](const nlohmann::json& config) {
         for (const auto& [key, value] : config.items()) {
             if (key != "max_file_bytes" && key != "max_output_bytes") {
@@ -77,47 +79,52 @@ boost::asio::awaitable<model_io::Content> ReadTextTool::invoke(
     const auto start = static_cast<std::size_t>(optional_uint(query, "start", 0));
     const auto count = static_cast<std::size_t>(optional_uint(query, "count", kDefaultCount));
     try {
-        ToolResult output;
-        output.field("path", path);
-        textedit::BoundedReadResult selected;
-        if (mode == "lines") {
-            const auto layout = format == "line_index" ? textedit::LineReadFormat::LineIndex
-                : format == "byte_range" ? textedit::LineReadFormat::ByteRange
-                : textedit::LineReadFormat::Plain;
-            auto lines = textedit::read_file_lines_bounded(
-                path, start, count, layout, max_output_bytes_, max_file_bytes_);
-            output.field("lines_read", lines.lines_read);
-            selected = std::move(lines);
-        } else {
-            const auto layout = format == "hex_escaped" ? textedit::ByteReadFormat::HexEscaped
-                : textedit::ByteReadFormat::Plain;
-            selected = textedit::read_file_bytes_bounded(
-                path, start, count, layout, max_output_bytes_, max_file_bytes_);
-        }
+        const auto file_limit = max_file_bytes_;
+        const auto output_limit = max_output_bytes_;
+        co_return co_await work_->run(
+            [path, mode, format, start, count, file_limit, output_limit](std::stop_token stop) {
+                ToolResult output;
+                output.field("path", path);
+                textedit::BoundedReadResult selected;
+                if (mode == "lines") {
+                    const auto layout = format == "line_index" ? textedit::LineReadFormat::LineIndex
+                        : format == "byte_range" ? textedit::LineReadFormat::ByteRange
+                        : textedit::LineReadFormat::Plain;
+                    auto lines = textedit::read_file_lines_bounded(
+                        path, start, count, layout, output_limit, file_limit, stop);
+                    output.field("lines_read", lines.lines_read);
+                    selected = std::move(lines);
+                } else {
+                    const auto layout = format == "hex_escaped" ? textedit::ByteReadFormat::HexEscaped
+                        : textedit::ByteReadFormat::Plain;
+                    selected = textedit::read_file_bytes_bounded(
+                        path, start, count, layout, output_limit, file_limit, stop);
+                }
 
-        // Probe separately: this is advisory evidence, never a read precondition
-        // or a guarantee that a concurrently changing file matches the selection.
-        const auto probe = textedit::probe_utf8_file(path);
-        std::vector<std::string> hints;
-        if (probe.likelihood == textedit::Utf8TextLikelihood::Unlikely) {
-            hints.emplace_back("File may not be UTF-8 text; use bytes with hex_escaped for exact bytes.");
-        }
-        if (selected.display_replaced) {
-            hints.emplace_back("Invalid UTF-8 bytes replaced for display; use hex_escaped for exact bytes.");
-        }
-        if (selected.output_truncated) {
-            hints.emplace_back(std::format(
-                "Output clipped to {} bytes; reduce count and reread. For a single long line, use byte mode.",
-                max_output_bytes_));
-        }
-        output.field("total_lines", selected.total_lines)
-            .field("total_bytes", selected.total_bytes)
-            .field("reached_end", selected.reached_end)
-            .field("output_truncated", selected.output_truncated)
-            .field("display_replaced", selected.display_replaced)
-            .field("hints", hints)
-            .block("text", std::move(selected.text), selected.output_truncated);
-        co_return output.render();
+                // Probe separately: this is advisory evidence, never a read precondition
+                // or a guarantee that a concurrently changing file matches the selection.
+                const auto probe = textedit::probe_utf8_file(path);
+                std::vector<std::string> hints;
+                if (probe.likelihood == textedit::Utf8TextLikelihood::Unlikely) {
+                    hints.emplace_back("File may not be UTF-8 text; use bytes with hex_escaped for exact bytes.");
+                }
+                if (selected.display_replaced) {
+                    hints.emplace_back("Invalid UTF-8 bytes replaced for display; use hex_escaped for exact bytes.");
+                }
+                if (selected.output_truncated) {
+                    hints.emplace_back(std::format(
+                        "Output clipped to {} bytes; reduce count and reread. For a single long line, use byte mode.",
+                        output_limit));
+                }
+                output.field("total_lines", selected.total_lines)
+                    .field("total_bytes", selected.total_bytes)
+                    .field("reached_end", selected.reached_end)
+                    .field("output_truncated", selected.output_truncated)
+                    .field("display_replaced", selected.display_replaced)
+                    .field("hints", hints)
+                    .block("text", std::move(selected.text), selected.output_truncated);
+                return output.render();
+        });
     } catch (const std::exception& error) {
         invoke_failed(std::string("read_text: ") + error.what());
     }

@@ -29,7 +29,8 @@ EditResult str_replace_file(
     std::string_view old_text,
     std::string_view new_text,
     std::size_t context_lines,
-    std::size_t max_file_bytes)
+    std::size_t max_file_bytes,
+    std::stop_token stop)
 {
     if (old_text.empty()) {
         throw std::invalid_argument("old_text must not be empty");
@@ -47,7 +48,7 @@ EditResult str_replace_file(
     }
 
     EditResult result;
-    fileio::StagedReplacement staged(path);
+    fileio::StagedReplacement staged(path, fileio::kStreamBufferBytes, stop);
     const bool changed = old_text != new_text;
     CandidateWriter writer(staged, max_file_bytes);
     // A no-op edit publishes nothing, so it writes nothing either.

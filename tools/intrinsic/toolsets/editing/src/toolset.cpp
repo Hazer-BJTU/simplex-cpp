@@ -6,9 +6,9 @@
 
 namespace tools::intrinsic {
 
-EditingToolSet::EditingToolSet()
+EditingToolSet::EditingToolSet(std::shared_ptr<FileWork> work)
 {
-    register_tools({std::make_shared<StrReplaceEditTool>()});
+    register_tools({std::make_shared<StrReplaceEditTool>(std::move(work))});
     declare_capability_group("editing", {"str_replace_edit"});
     load_skill(editing::schema_directory() / "skill.yaml");
 }

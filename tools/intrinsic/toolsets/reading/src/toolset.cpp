@@ -6,9 +6,9 @@
 
 namespace tools::intrinsic {
 
-ReadingToolSet::ReadingToolSet()
+ReadingToolSet::ReadingToolSet(std::shared_ptr<FileWork> work)
 {
-    register_tools({std::make_shared<ReadTextTool>()});
+    register_tools({std::make_shared<ReadTextTool>(std::move(work))});
     declare_capability_group("reading", {"read_text"});
     load_skill(reading::schema_directory() / "skill.yaml");
 }

@@ -13,6 +13,7 @@
 #include <iterator>
 #include <thread>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #ifdef __linux__
 #include <sys/syscall.h>
@@ -20,6 +21,27 @@ namespace storage_delay {
 std::atomic<bool> armed{false};
 std::atomic<bool> entered{false};
 std::atomic<bool> release{false};
+}
+namespace file_delay {
+std::atomic<bool> armed{false};
+std::atomic<bool> entered{false};
+std::atomic<bool> release{false};
+ino_t inode = 0;
+dev_t device = 0;
+}
+/** Pause only the tool's source scan, leaving WebSocket/storage reads alone. */
+extern "C" ssize_t read(int descriptor, void* output, size_t count) {
+    if (file_delay::armed.load()) {
+        struct stat info {};
+        if (::fstat(descriptor, &info) == 0 && info.st_ino == file_delay::inode
+            && info.st_dev == file_delay::device && !file_delay::entered.exchange(true)) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!file_delay::release && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    }
+    return static_cast<ssize_t>(::syscall(SYS_read, descriptor, output, count));
 }
 /** Block one real directory durability fence to exercise control during a save. */
 extern "C" int fsync(int descriptor) {
@@ -49,6 +71,7 @@ struct Model : llm::LLMModel {
     std::atomic<int> calls{0};
     std::chrono::milliseconds delay{40};
     bool hold_first = false;
+    std::string file_to_read;
     std::atomic<bool> fail_model{false};
 
     asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState) override {
@@ -65,6 +88,14 @@ struct Model : llm::LLMModel {
         model_io::Content content;
         content.raw = "offline-answer";
         item.content.push_back(content);
+        if (!file_to_read.empty()) {
+            model_io::InvokeQuery query;
+            query.id = "file-read";
+            query.name = "read_text";
+            query.arguments = {{"path", file_to_read}, {"mode", "bytes"},
+                               {"format", "hex_escaped"}, {"start", 0}, {"count", 1}};
+            item.invokes = std::vector<model_io::InvokeQuery>{query};
+        }
         co_return item;
     }
 };
@@ -77,7 +108,7 @@ struct Scratch {
 };
 
 enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
-                  ProtocolFailure, History, ModelFailure, StorageWait, QueryRejection };
+                  ProtocolFailure, History, ModelFailure, StorageWait, QueryRejection, FileRead, FileReadStop };
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
@@ -144,6 +175,24 @@ sections:
     if (mode == Mode::ModelFailure) model->fail_model = true;
     if (mode == Mode::Cancel || mode == Mode::Stop) model->delay = std::chrono::seconds(10);
     if (mode == Mode::History) model->delay = std::chrono::milliseconds(500);
+#ifdef __linux__
+    struct ResetFileDelay {
+        ~ResetFileDelay() { file_delay::release = true; file_delay::armed = false; }
+    } reset_file_delay;
+    if (mode == Mode::FileRead || mode == Mode::FileReadStop) {
+        const auto source = scratch.root / "large-source";
+        std::ofstream(source) << "file";
+        std::filesystem::resize_file(source, 128 * 1024 * 1024);
+        struct stat info {};
+        BOOST_REQUIRE(::stat(source.c_str(), &info) == 0);
+        file_delay::inode = info.st_ino;
+        file_delay::device = info.st_dev;
+        file_delay::entered = false;
+        file_delay::release = false;
+        file_delay::armed = true;
+        model->file_to_read = source.string();
+    }
+#endif
     core::Application app(io.get_executor(), config, "test", model);
     int completed = 0;
     int rejected = 0;
@@ -153,6 +202,9 @@ sections:
     bool answer_rejected = false;
     bool storage_status_requested = false;
     bool storage_status_received = false;
+    int file_statuses = 0;
+    std::string file_run;
+    std::chrono::steady_clock::time_point file_status_started;
     auto peer = [&]() -> asio::awaitable<void> {
         beast::websocket::stream<asio::ip::tcp::socket> socket(
             co_await acceptor.async_accept(asio::use_awaitable));
@@ -222,11 +274,48 @@ sections:
                     stopper.join();
                     continue;
                 }
+                if (mode == Mode::FileRead || mode == Mode::FileReadStop) {
+                    file_run = event.at("run_id").get<std::string>();
+                    continue;
+                }
                 if (mode == Mode::History || mode == Mode::StorageWait) continue;
                 Json signal = {{"type", "signal"}, {"data", {
                     {"operation", "cancel"}, {"run_id", mode == Mode::Cancel
                         ? event.at("run_id").get<std::string>() : "stale-run"}}}};
                 co_await send(signal);
+            } else if (name == "model_response"
+                       && (mode == Mode::FileRead || mode == Mode::FileReadStop)) {
+#ifdef __linux__
+                for (int attempt = 0; attempt < 200 && !file_delay::entered; ++attempt) {
+                    asio::steady_timer wait(co_await asio::this_coro::executor,
+                                            std::chrono::milliseconds(5));
+                    co_await wait.async_wait(asio::use_awaitable);
+                }
+                BOOST_REQUIRE(file_delay::entered.load());
+#endif
+                file_status_started = std::chrono::steady_clock::now();
+                co_await send(Json{{"type", "signal"}, {"data", {{"operation", "status"}}}});
+            } else if (name == "status"
+                       && (mode == Mode::FileRead || mode == Mode::FileReadStop)) {
+                BOOST_CHECK(std::chrono::steady_clock::now() - file_status_started
+                            < std::chrono::milliseconds(500));
+                BOOST_TEST(event.at("data").at("active") == true);
+                ++file_statuses;
+                if (mode == Mode::FileReadStop) {
+                    app.stop(); // Shutdown must join the still-running scan.
+#ifdef __linux__
+                    file_delay::release = true;
+#endif
+                } else if (file_statuses == 1) {
+                    co_await send(Json{{"type", "signal"}, {"data", {
+                        {"operation", "cancel"}, {"run_id", file_run}}}});
+                    // Cancel itself replies with status. Await that reply before
+                    // unblocking IO, proving cancellation reached the worker.
+                } else {
+#ifdef __linux__
+                    file_delay::release = true;
+#endif
+                }
             } else if (name == "model_response" && mode == Mode::StorageWait) {
 #ifdef __linux__
                 for (int attempt = 0; attempt < 100 && !storage_delay::entered; ++attempt) {
@@ -403,6 +492,12 @@ sections:
         } else if (mode == Mode::History) {
             BOOST_TEST(history_during_run);
             BOOST_TEST(completed == 1);
+        } else if (mode == Mode::FileRead || mode == Mode::FileReadStop) {
+            BOOST_TEST(file_statuses == (mode == Mode::FileRead ? 2 : 1));
+            BOOST_TEST(model->calls.load() == 1);
+            const auto state = snapshot();
+            BOOST_CHECK(state.loop->status == model_io::LoopStatus::Cancelled);
+            BOOST_TEST(Json(state).dump().find("cancelled before") != std::string::npos);
         } else if (mode == Mode::Cancel || mode == Mode::Stop) {
             if (mode == Mode::Cancel) BOOST_TEST(cancelled);
             const auto state = snapshot();
@@ -1022,4 +1117,9 @@ BOOST_AUTO_TEST_CASE(sqlite_application_lifecycle) {
 BOOST_AUTO_TEST_CASE(sqlite_checkpoint_does_not_block_control_channel) {
     scenario(Mode::StorageWait, false, false, "deepseek", true);
 }
+#endif
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(status_and_cancel_during_large_file_scan) { scenario(Mode::FileRead); }
+BOOST_AUTO_TEST_CASE(shutdown_joins_large_file_scan) { scenario(Mode::FileReadStop); }
 #endif

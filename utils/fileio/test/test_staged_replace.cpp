@@ -160,3 +160,26 @@ BOOST_FIXTURE_TEST_CASE(publish_rejects_a_second_use, Scratch)
     staged.publish(0, "old");
     BOOST_CHECK_THROW(staged.publish(0, "old"), std::logic_error);
 }
+
+BOOST_AUTO_TEST_CASE(cancellation_during_verification_removes_candidate_and_preserves_source)
+{
+    Scratch scratch;
+    const auto path = scratch.write("prefix-old-suffix");
+    std::stop_source stop;
+    struct CancelObserver : fileio::SourceObserver {
+        std::stop_source& stop;
+        explicit CancelObserver(std::stop_source& value) : stop(value) {}
+        void observe(std::uintmax_t, std::string_view) override { stop.request_stop(); }
+    } observer(stop);
+    {
+        fileio::StagedReplacement staged(path, 4, stop.get_token());
+        BOOST_TEST(scan(staged) == "prefix-old-suffix");
+        staged.copy_prefix(7);
+        staged.write("new-suffix");
+        BOOST_TEST(scratch.candidates() == 1u);
+        BOOST_CHECK_EXCEPTION(staged.publish(7, "old", &observer), std::system_error,
+            [](const auto& error) { return error.code() == std::errc::operation_canceled; });
+    }
+    BOOST_TEST(scratch.candidates() == 0u);
+    BOOST_TEST(scratch.read(path) == "prefix-old-suffix");
+}
