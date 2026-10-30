@@ -31,6 +31,12 @@ class SchemaTest(unittest.TestCase):
         schema = dict(SCHEMA, **{"$ref": "#/$defs/" + record})
         self.assertEqual(Validator(schema).is_valid(value), valid, repr(value))
 
+    def test_shared_integer_and_capability_boundaries(self):
+        cases = json.loads(Path(__file__).with_name("boundary-cases.json").read_text())
+        for case in cases:
+            with self.subTest(case["name"]):
+                self.check(case["record"], case["value"], case["valid"])
+
     def test_payload_operation_scope(self):
         self.check("PayloadRequest", dict(operation="answer", request_id="q", source=SOURCE, part=0, offset=0))
         self.check("PayloadRequest", dict(operation="answer", request_id="q", source=SOURCE, unknown=True), False)

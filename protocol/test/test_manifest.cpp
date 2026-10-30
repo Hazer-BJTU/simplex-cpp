@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <string>
@@ -179,8 +180,10 @@ BOOST_AUTO_TEST_CASE(constraints_defaults_and_policies_are_inside_the_contract) 
     };
     BOOST_TEST(!find_field("request_id").contains("min_length"));
     BOOST_TEST(!find_field("request_id").contains("max_length"));
-    BOOST_TEST(!find_field("limit").contains("maximum"));
-    BOOST_TEST(!find_field("limit").contains("minimum"));
+    // Representation bounds are structural; application page-size quotas are not.
+    BOOST_TEST(find_field("limit").at("maximum").get<std::uint64_t>()
+               == std::numeric_limits<std::uint64_t>::max());
+    BOOST_TEST(find_field("limit").at("minimum").get<std::uint64_t>() == 0);
     BOOST_TEST(!find_field("limit").contains("default"));
     BOOST_TEST(!canonical.at("records").contains("Options"));
     BOOST_TEST(!canonical.at("enumerations").contains("ConfirmationMode"));
@@ -211,7 +214,7 @@ BOOST_AUTO_TEST_CASE(schema_publishes_the_same_constraints) {
             found_history = true;
             const auto& active = branch.at("then").at("properties").at("limit");
             BOOST_TEST(active.at("minimum").get<std::uint64_t>() == 0);
-            BOOST_TEST(!active.contains("maximum"));
+            BOOST_TEST(active.at("maximum").get<std::uint64_t>() == std::numeric_limits<std::uint64_t>::max());
         }
     }
     BOOST_TEST(found_history);

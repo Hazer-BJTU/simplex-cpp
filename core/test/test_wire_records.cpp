@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(metadata_events_keep_their_emitted_shape) {
     protocol::StatusData status;
     status.storage_failed = true;
     status.rejected_payloads = 1;
-    status.capabilities = {protocol::Capability::session_history, protocol::Capability::answer_pages};
+    status.capabilities = {"session-history", "answer-pages"};
     BOOST_TEST(protocol::to_json(status) == Json({
         {"active", false}, {"stopping", false}, {"storage_failed", true},
         {"rejected_payloads", 1},

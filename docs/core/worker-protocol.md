@@ -31,6 +31,13 @@ Delivery, cancellation, recovery and security still follow this guide. Provider
 options, confirmation policy choices, remote routes and tool arguments remain
 runtime business policy, not a closed structural compatibility vocabulary.
 
+Unsigned counts and cursors accept integers from 0 through 18446744073709551615
+(UINT64_MAX). Consumers must preserve integer precision when using that range;
+application paging limits remain separate. `status.capabilities` is an extensible
+list of strings: ignore unfamiliar names when deciding which features to use,
+and preserve them when forwarding status. Operations and lifecycle statuses
+remain closed vocabularies.
+
 ## Contents
 
 - [Connections and configuration](#connections-and-configuration)

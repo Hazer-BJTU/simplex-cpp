@@ -90,7 +90,10 @@ not a closed protocol vocabulary. The codec preserves them for application
 validation, which reports unsupported values as business errors. The protocol
 keeps request field types and basic operation combinations, but does not impose
 ID/text length limits, page-size quotas or application-owned resource defaults.
-Unsigned counts/cursors still require unsigned integers. Status diagnostics
+Unsigned counts/cursors accept the full range 0 through 18446744073709551615
+(UINT64_MAX); this representable range is part of the fingerprint and Schema.
+Status capabilities are an extensible string list: unknown names round-trip,
+while the `Capability` enumeration documents known names for producers. Status diagnostics
 remain described in detail. Application parsing retains its runtime safeguards separately from structural decoding.
 
 **Two libraries.** `protocol_lib` (`libsimplex_protocol.so`) is the descriptors

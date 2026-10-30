@@ -264,14 +264,27 @@ void decode_one(M& target, const Json& input, const std::string& path) {
         if (!input.is_number_integer() && !input.is_number_unsigned()) {
             throw ValidationError(path, "expected an integer");
         }
-        if constexpr (std::is_signed_v<Type>) {
-            if (input.is_number_unsigned() && input.get<std::uint64_t>() > static_cast<std::uint64_t>(
-                                                                       std::numeric_limits<Type>::max())) {
+        // nlohmann reports unsigned values as integers too. Inspect their
+        // storage first so values above INT64_MAX never undergo a signed cast.
+        if (input.is_number_unsigned()) {
+            if (input.get<std::uint64_t>() > static_cast<std::uint64_t>(
+                    std::numeric_limits<Type>::max())) {
                 throw ValidationError(path, "integer is out of range");
             }
         } else {
-            if (input.is_number_integer() && input.get<std::int64_t>() < 0) {
-                throw ValidationError(path, "expected a nonnegative integer");
+            const auto value = input.get<std::int64_t>();
+            if constexpr (std::is_signed_v<Type>) {
+                if (value < std::numeric_limits<Type>::min()
+                    || value > std::numeric_limits<Type>::max()) {
+                    throw ValidationError(path, "integer is out of range");
+                }
+            } else {
+                if (value < 0) {
+                    throw ValidationError(path, "expected a nonnegative integer");
+                }
+                if (static_cast<std::uint64_t>(value) > std::numeric_limits<Type>::max()) {
+                    throw ValidationError(path, "integer is out of range");
+                }
             }
         }
         target = input.get<Type>();
@@ -367,7 +380,10 @@ void check_constraints(const FieldType& field, const Json& value, const std::str
     }
     if ((constraints.minimum || constraints.maximum)
         && (value.is_number_unsigned() || value.is_number_integer())) {
-        const auto number = value.get<std::int64_t>();
+        if (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) {
+            throw ValidationError(path, "expected a nonnegative integer");
+        }
+        const auto number = value.get<std::uint64_t>();
         if (constraints.minimum && number < *constraints.minimum) {
             throw ValidationError(path, "value is below the minimum");
         }

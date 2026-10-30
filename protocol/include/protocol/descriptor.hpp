@@ -51,7 +51,7 @@ public:
 /** How a described value is spelled on the wire. */
 enum class Kind {
     text,
-    integer,
+    integer,  // Unsigned 64-bit count/cursor, independent of application quotas.
     boolean,
     any,
     enumeration,
@@ -313,8 +313,7 @@ Field<T, M> texts(std::string_view name, M T::*member, std::string_view summary,
 /**
  * A closed vocabulary spelled as a JSON array of strings.
  *
- * The names are the worker's own advertised set, not a claim that a capability
- * is enabled; a consumer still has to tolerate names it does not know.
+ * Use texts() instead for extensible feature names that consumers must preserve.
  */
 template <class E, class T, class M>
     requires is_described_enum<E>

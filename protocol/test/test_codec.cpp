@@ -4,6 +4,7 @@
 #include "protocol/wire.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -378,7 +379,7 @@ BOOST_AUTO_TEST_CASE(producer_shapes_validate_without_loss) {
     BOOST_CHECK_NO_THROW(validate_event_data(envelope));
 }
 
-BOOST_AUTO_TEST_CASE(capabilities_are_a_closed_vocabulary) {
+BOOST_AUTO_TEST_CASE(capabilities_preserve_unknown_feature_names) {
     // The worker advertises names a consumer can match; a listed name is not a
     // claim that the feature is enabled for this configuration.
     const Json status = Json{{"active", false}, {"stopping", false}, {"storage_failed", false},
@@ -388,10 +389,13 @@ BOOST_AUTO_TEST_CASE(capabilities_are_a_closed_vocabulary) {
     BOOST_TEST(parsed.capabilities.size() == 2);
     BOOST_TEST(protocol::to_json(parsed) == status);
 
-    // An unknown spelling is refused here, so a new capability has to reach the
-    // contract before it can be advertised.
+    // Future feature names round-trip without changing known-feature checks.
     Json unknown = status;
     unknown["capabilities"] = Json::array({"session-history", "telepathy"});
+    const auto future = protocol::from_json<StatusData>(unknown);
+    BOOST_TEST(protocol::to_json(future) == unknown);
+    BOOST_TEST(future.capabilities.front() == "session-history");
+    unknown["capabilities"].push_back(42);
     BOOST_CHECK_THROW(protocol::from_json<StatusData>(unknown), ValidationError);
 }
 
@@ -509,4 +513,56 @@ BOOST_AUTO_TEST_CASE(conditional_envelopes_and_ignored_cursors_share_rules) {
     BOOST_TEST(!rejects_payload(Json{{"operation", "history"}, {"request_id", "q"}, {"source", 42}}));
     BOOST_TEST(!rejects_payload(Json{{"operation", "answer"}, {"request_id", "q"},
                                     {"source", source_json()}, {"part", 0}, {"offset", 0}}));
+}
+
+// Shared exact JSON inputs are also read by the independent Python validator.
+// Loading from text preserves integer boundaries without JavaScript rounding.
+BOOST_AUTO_TEST_CASE(shared_integer_and_capability_boundaries) {
+    std::ifstream input(PROTOCOL_BOUNDARY_CASES_PATH);
+    BOOST_REQUIRE(input.good());
+    const auto cases = Json::parse(input);
+    for (const auto& test : cases) {
+        BOOST_TEST_CONTEXT(test.at("name").get<std::string>()) {
+            const auto& value = test.at("value");
+            const bool valid = test.at("valid").get<bool>();
+            const auto round_trip = [&] {
+                if (test.at("record") == "PayloadRequest") {
+                    return protocol::to_json(protocol::from_json<PayloadRequest>(value));
+                }
+                return protocol::to_json(protocol::from_json<StatusData>(value));
+            };
+            if (valid) {
+                BOOST_TEST(round_trip() == value);
+            } else {
+                BOOST_CHECK_THROW(round_trip(), ValidationError);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(unsigned_cursor_accepts_both_json_integer_representations) {
+    Json request{{"operation", "history"}, {"request_id", "q"}};
+    for (const auto value : {std::uint64_t{0}, std::uint64_t{9223372036854775807ULL},
+                             std::uint64_t{9223372036854775808ULL},
+                             std::numeric_limits<std::uint64_t>::max()}) {
+        request["start"] = value;
+        BOOST_TEST(*protocol::from_json<PayloadRequest>(request).start == value);
+        if (value <= std::uint64_t{9223372036854775807ULL}) {
+            request["start"] = static_cast<std::int64_t>(value);
+            BOOST_TEST(*protocol::from_json<PayloadRequest>(request).start == value);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(unsigned_constraint_bounds_do_not_wrap) {
+    const auto field = integer("start", &PayloadRequest::start, "Test cursor.")
+        .minimum(9223372036854775808ULL)
+        .maximum(std::numeric_limits<std::uint64_t>::max());
+    BOOST_CHECK_NO_THROW(detail::check_constraints(
+        field, Json(std::numeric_limits<std::uint64_t>::max()), "start"));
+    BOOST_CHECK_NO_THROW(detail::check_constraints(
+        field, Json(std::uint64_t{9223372036854775808ULL}), "start"));
+    BOOST_CHECK_THROW(detail::check_constraints(
+        field, Json(std::uint64_t{9223372036854775807ULL}), "start"), ValidationError);
+    BOOST_CHECK_THROW(detail::check_constraints(field, Json(-1), "start"), ValidationError);
 }
