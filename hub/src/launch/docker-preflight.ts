@@ -143,6 +143,10 @@ function dockerCommand(
         let stdoutBytes = 0;
         let stderrBytes = 0;
         let timedOut = false;
+        let deadlineExpired = false;
+        let exitedBeforeDeadline = false;
+        let exitCode: number | null = null;
+        let exitSignal: NodeJS.Signals | null = null;
         let settled = false;
         let killTimer: NodeJS.Timeout | undefined;
         let settleTimer: NodeJS.Timeout | undefined;
@@ -165,7 +169,9 @@ function dockerCommand(
                 signal,
                 stdout: Buffer.concat(stdout).toString('utf8'),
                 stderr: Buffer.concat(stderr).toString('utf8'),
-                timedOut,
+                // A command that exited on its own before the deadline is not a
+                // timeout, even when a descendant kept `close` from arriving.
+                timedOut: timedOut && !exitedBeforeDeadline,
             });
         };
         child.stdout?.on('data', (chunk: Buffer) => {
@@ -184,8 +190,16 @@ function dockerCommand(
             finish(new DockerPreflightError('docker-unavailable',
                 'cannot run the configured Docker command', diagnosticLine(error.message)));
         });
+        child.once('exit', (code, signal) => {
+            // `exit` does not wait for inherited pipes, so it records whether the
+            // command finished on its own before the deadline killed it.
+            exitedBeforeDeadline = !deadlineExpired;
+            exitCode = code;
+            exitSignal = signal;
+        });
         child.once('close', (code, signal) => finish(undefined, code, signal));
         killTimer = setTimeout(() => {
+            deadlineExpired = true;
             timedOut = true;
             try {
                 child.kill('SIGKILL');
@@ -193,9 +207,12 @@ function dockerCommand(
                 // The allowance below still settles when the signal cannot be sent.
             }
             settleTimer = setTimeout(() => {
-                // Reached only when close never arrived: the deadline expired and
-                // a process outside this one still holds the inherited pipes.
-                finish();
+                // Reached when no close arrives within the allowance: the pipes
+                // are held outside this process, but an exiting command already
+                // reported its real status.
+                finish(undefined,
+                    exitedBeforeDeadline ? exitCode : null,
+                    exitedBeforeDeadline ? exitSignal : null);
             }, DOCKER_PREFLIGHT_CLEANUP_MS);
             settleTimer.unref?.();
         }, timeoutMs);
@@ -210,13 +227,27 @@ interface ContainerState {
     extraHosts: string[];
 }
 
+/** Docker's closed container-state vocabulary; anything else is not echoed. */
+const DOCKER_STATUSES = new Set([
+    'created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead',
+]);
+
+/** Echo a status only when it is one Docker defines. */
+function dockerStatus(value: string): string {
+    return DOCKER_STATUSES.has(value) ? value : 'unknown';
+}
+
 /**
- * Echo a Docker-reported label only when it still looks like Docker's own
- * vocabulary. Public messages never forward arbitrary CLI output.
+ * Echo only the built-in network modes and a syntactically valid container
+ * reference. A user-defined network name is replaced by a fixed phrase, so a
+ * CLI cannot place arbitrary text in a public message.
  */
-function inspectLabel(value: string, fallback: string): string {
-    return /^(?:[A-Za-z0-9_.-]{1,64}|container:[A-Za-z0-9_.-]{1,64})$/.test(value)
-        ? value : fallback;
+function dockerNetworkMode(value: string): string {
+    if (value === 'host' || value === 'none' || value === 'bridge' || value === 'default') {
+        return value;
+    }
+    const container = value.startsWith('container:') ? value.slice('container:'.length) : '';
+    return /^[A-Za-z0-9_.-]{1,64}$/.test(container) ? value : 'user-defined';
 }
 
 /** Parse the compact description produced by `docker inspect --format`. */
@@ -285,7 +316,7 @@ function checkEndpoint(
     if (loopback(host) && state.networkMode !== 'host' && !state.networkMode.startsWith('container:')) {
         throw new DockerPreflightError('endpoint-loopback',
             `the advertised ${channel} endpoint uses ${host}:${portOf(url)}, but container`
-            + ` "${container}" uses network mode "${inspectLabel(state.networkMode, 'unknown')}";`
+            + ` "${container}" uses network mode "${dockerNetworkMode(state.networkMode)}";`
             + ` set worker.connectHost or`
             + ` the ${channel} endpoint to an address reachable from the container`);
     }
@@ -332,7 +363,7 @@ export async function preflightDockerTarget({
     // stopped container, so report that state instead of a misleading CLI error.
     if (!state.running && (policy.container || policy.executable)) {
         throw new DockerPreflightError('container-not-running',
-            `container "${container}" is not running (status: ${inspectLabel(state.status, 'unknown')})`);
+            `container "${container}" is not running (status: ${dockerStatus(state.status)})`);
     }
     if (policy.executable) {
         const probe = await dockerCommand(target, ['exec', container, executable, '--version'],

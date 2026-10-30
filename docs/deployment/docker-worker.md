@@ -192,11 +192,12 @@ refuses an installation probe.
 Every Docker CLI call uses `preflight.timeoutMs`. A timed-out call is killed and
 settles within a fixed cleanup allowance, even when a wrapper leaves a descendant
 holding the CLI pipes, so a failed check cannot hold the session's startup
-reservation or Hub shutdown. The public error names the container and, for a CLI
-failure, only the exit status; it never includes CLI output, argv, environment
-values or the endpoint URL with its session token. The first CLI diagnostic line
-is kept privately on the error and appears only when Hub debug logging is
-explicitly enabled.
+reservation or Hub shutdown. A command that exits before its deadline keeps its
+own exit status even when a descendant delays pipe closure. The public error
+names the container and, for a CLI failure, only the exit status; it never
+includes CLI output, argv, environment values or the endpoint URL with its
+session token. The first CLI diagnostic line is kept privately on the error and
+appears only when Hub debug logging is explicitly enabled.
 
 ## Lifecycle
 

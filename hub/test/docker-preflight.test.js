@@ -1,5 +1,6 @@
 /** Docker startup checks: read-only, ordered, and never a container lifetime command. */
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,8 +53,10 @@ if (args[0] === 'inspect') {
         console.error('X'.repeat(20000));
         process.exit(1);
     }
-    if (state.inspect === 'hang') { setInterval(() => {}, 1000); }
-    else {
+    if (state.inspect === 'hang' || state.inspect === 'hang-secret') {
+        if (state.inspect === 'hang-secret') console.error('inspect failed for FAKE_AUDIT_SECRET');
+        setInterval(() => {}, 1000);
+    } else {
         const hosts = JSON.stringify(state.extraHosts ?? []);
         process.stdout.write([state.status, String(state.running), state.networkMode, hosts].join('\\t') + '\\n');
         process.exit(0);
@@ -64,8 +67,12 @@ if (args[0] === 'inspect') {
         process.exit(127);
     }
     if (state.exec === 'failed') { console.error('worker refused to start'); process.exit(2); }
-    if (state.exec === 'hang') { setInterval(() => {}, 1000); }
-    else if (args[3] === '--version' || !state.delegate) { process.stdout.write('simplex 1.1.2\\n'); process.exit(0); }
+    if (state.exec === 'secret-missing') { console.error('exec failed for FAKE_AUDIT_SECRET'); process.exit(127); }
+    if (state.exec === 'secret') { console.error('exec failed for FAKE_AUDIT_SECRET'); process.exit(2); }
+    if (state.exec === 'hang' || state.exec === 'secret-hang') {
+        if (state.exec === 'secret-hang') console.error('exec failed for FAKE_AUDIT_SECRET');
+        setInterval(() => {}, 1000);
+    } else if (args[3] === '--version' || !state.delegate) { process.stdout.write('simplex 1.1.2\\n'); process.exit(0); }
     else {
         const child = spawn(args[2], args.slice(3), { stdio: 'inherit' });
         child.on('exit', code => { process.exitCode = code ?? 1; });
@@ -116,8 +123,28 @@ function pipeHoldingFixture(t) {
     const root = mkdtempSync(join(tmpdir(), 'simplex-docker-preflight-'));
     const executable = join(root, 'docker');
     writeFileSync(executable, `#!/bin/sh
-sleep 2 &
+sleep 5 &
 wait
+`, { mode: 0o700 });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return { root, executable, env: {} };
+}
+
+/**
+ * A wrapper that answers both probes and exits 0 while a helper inherits the
+ * pipes. `close` never arrives; only the recorded exit status can prove success.
+ */
+function answeringWrapperFixture(t) {
+    const root = mkdtempSync(join(tmpdir(), 'simplex-docker-preflight-'));
+    const executable = join(root, 'docker');
+    writeFileSync(executable, `#!/bin/sh
+if [ "$1" = "inspect" ]; then
+    printf 'running\\ttrue\\thost\\t[]\\n'
+else
+    printf 'simplex test\\n'
+fi
+sleep 5 &
+exit 0
 `, { mode: 0o700 });
     t.after(() => rmSync(root, { recursive: true, force: true }));
     return { root, executable, env: {} };
@@ -235,6 +262,26 @@ it('keeps CLI diagnostics private and public text controlled', async t => {
     });
 });
 
+it('keeps CLI text private for probe failures and timeouts', async t => {
+    const cases = [
+        [{ inspect: 'hang-secret' }, 'inspect-timeout'],
+        [{ exec: 'secret-missing' }, 'executable-missing'],
+        [{ exec: 'secret' }, 'executable-failed'],
+        [{ exec: 'secret-hang' }, 'executable-timeout'],
+    ];
+    for (const [state, code] of cases) {
+        const fixture = dockerFixture(t, state);
+        await assert.rejects(check(fixture, { preflight: { timeoutMs: 1000 } }), error => {
+            assert.equal(codeOf(error), code);
+            assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'),
+                `${code} must not forward CLI text`);
+            assert.ok(error.detail?.includes('FAKE_AUDIT_SECRET'),
+                `${code} keeps the raw line privately`);
+            return true;
+        });
+    }
+});
+
 it('refuses a container whose installation cannot answer --version', async t => {
     const missing = dockerFixture(t, { exec: 'missing' });
     await assert.rejects(check(missing), error => {
@@ -282,6 +329,36 @@ it('requires an explicit host mapping for host.docker.internal', async t => {
         networkMode: 'bridge', extraHosts: ['host.docker.internal:host-gateway'],
     });
     await check(mapped, { endpointsOverride: internal });
+});
+
+it('echoes only Docker vocabulary from inspect labels', async t => {
+    const tokenStatus = dockerFixture(t, { status: 'FAKE_AUDIT_SECRET', running: false });
+    await assert.rejects(check(tokenStatus, { preflight: { executable: false } }), error => {
+        assert.equal(codeOf(error), 'container-not-running');
+        assert.match(error.message, /status: unknown/);
+        assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'));
+        return true;
+    });
+    const paused = dockerFixture(t, { status: 'paused', running: false });
+    await assert.rejects(check(paused, { preflight: { executable: false } }), error => {
+        assert.match(error.message, /status: paused/);
+        return true;
+    });
+    const tokenNetwork = dockerFixture(t, { networkMode: 'FAKE_AUDIT_SECRET' });
+    await assert.rejects(check(tokenNetwork), error => {
+        assert.equal(codeOf(error), 'endpoint-loopback');
+        assert.match(error.message, /network mode "user-defined"/);
+        assert.ok(!error.message.includes('FAKE_AUDIT_SECRET'));
+        return true;
+    });
+    const bridged = dockerFixture(t, { networkMode: 'bridge' });
+    await assert.rejects(check(bridged), error => {
+        assert.match(error.message, /network mode "bridge"/);
+        return true;
+    });
+    // A shared network namespace is accepted; its reference stays diagnosable.
+    const shared = dockerFixture(t, { networkMode: 'container:abc123' });
+    await check(shared);
 });
 
 it('honors the per-check switches and the overall disable switch', async t => {
@@ -348,6 +425,60 @@ it('settles a timed-out command when a descendant keeps its pipes open', async t
     const elapsed = Date.now() - started;
     assert.ok(elapsed < 80 + DOCKER_PREFLIGHT_CLEANUP_MS + 1200,
         `preflight settled after ${elapsed} ms; it must not wait for the inherited pipes`);
+});
+
+it('keeps the real status when a command exits before the deadline', async t => {
+    // The wrapper answers both probes and exits 0; the helper it leaves behind
+    // keeps `close` away. The recorded exit status must win over the deadline.
+    const fixture = answeringWrapperFixture(t);
+    const started = Date.now();
+    await check(fixture, { preflight: { timeoutMs: 200 } });
+    assert.ok(Date.now() - started < (200 + DOCKER_PREFLIGHT_CLEANUP_MS) * 2 + 1500,
+        'a command that exited before its deadline must not be reported as a timeout');
+});
+
+it('lets the process exit after settlement when a descendant holds the pipes', async t => {
+    // Without releasing the pipe read ends, the event loop would stay alive for
+    // as long as the wrapper's descendant holds the write ends (5 s here).
+    const fixture = pipeHoldingFixture(t);
+    const moduleUrl = new URL('../src/launch/docker-preflight.ts', import.meta.url).href;
+    const script = `
+import { preflightDockerTarget } from ${JSON.stringify(moduleUrl)};
+const target = { kind: 'docker', command: ${JSON.stringify(fixture.executable)}, args: [],
+    container: 'retained', preflight: { timeoutMs: 50 } };
+try {
+    await preflightDockerTarget({
+        target, executable: 'simplex', cwd: ${JSON.stringify(fixture.root)}, env: {},
+        endpoints: {
+            events: 'ws://127.0.0.1:1/events',
+            confirm: 'ws://127.0.0.1:1/confirm',
+            tools: 'ws://127.0.0.1:1/tools',
+        },
+    });
+    process.stdout.write('resolved\\n');
+} catch (error) {
+    process.stdout.write('settled:' + error.code + '\\n');
+}
+`;
+    const started = Date.now();
+    const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+            cwd: fixture.root, stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; });
+        const timer = setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error('the preflight process stayed alive on inherited pipes'));
+        }, 3000);
+        child.once('exit', code => {
+            clearTimeout(timer);
+            resolve({ code, output, elapsed: Date.now() - started });
+        });
+    });
+    assert.equal(result.code, 0);
+    assert.match(result.output, /settled:inspect-timeout/);
+    assert.ok(result.elapsed < 2500, `the process exited after ${result.elapsed} ms`);
 });
 
 it('normalizes omitted checks and rejects unusable policies', () => {
