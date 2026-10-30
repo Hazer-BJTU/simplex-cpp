@@ -179,8 +179,17 @@ export interface SnapshotState {
     readonly error: string | null;
 }
 
+/** An execution sent on the current channel, awaiting worker admission. */
+export interface PendingExecution {
+    readonly requestId: string;
+    readonly workerId: string | null;
+    readonly operation: string;
+}
+
 /** The state held by the store. */
 export interface PanelState {
+    /** Shared by composer, recovery actions and palette; not a delivery receipt. */
+    pendingExecutions: ReadonlyMap<SessionId, PendingExecution>;
     plans: ReadonlyMap<SessionId, SessionPlan>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
@@ -270,6 +279,8 @@ export interface PanelActions {
     /** The client supplies confirmedReplacement only for a current zero-cursor legacy reply. */
     applySubscribed(message: SubscribedMessage, confirmedReplacement?: boolean): ApplyEffects;
     applyEvent(message: EventMessage): void;
+    /** Publish or retire the client-owned reservation for one execution. */
+    setPendingExecution(sessionId: SessionId, pending: PendingExecution | null): void;
     setCancelPending(sessionId: SessionId, pending: boolean): void;
     setModelOption(sessionId: SessionId, name: string, value: unknown): void;
     /** Account for a transient worker reply without advancing hub replay. */
@@ -371,6 +382,7 @@ const INITIAL: PanelState = {
         ignoredFrames: 0,
     },
     authRequired: false,
+    pendingExecutions: new Map(),
     plans: new Map(),
     sessions: new Map(),
     views: new Map(),
@@ -967,6 +979,13 @@ export function createPanelStore() {
             })));
         },
 
+        setPendingExecution(sessionId, pending) {
+            if ((get().pendingExecutions.get(sessionId) ?? null) === pending) return;
+            const pendingExecutions = new Map(get().pendingExecutions);
+            if (pending) pendingExecutions.set(sessionId, pending);
+            else pendingExecutions.delete(sessionId);
+            set({ pendingExecutions });
+        },
         setCancelPending(sessionId, pending) {
             set(withView(get(), sessionId, (view) => ({ ...view, cancelPending: pending })));
         },
@@ -1341,6 +1360,9 @@ export function createPanelStore() {
         },
 
         failInput(sessionId, requestId, reason) {
+            if (get().pendingExecutions.get(sessionId)?.requestId === requestId) {
+                get().setPendingExecution(sessionId, null);
+            }
             const pending = get().view(sessionId).items.find(
                 (item): item is OutboxItem => (
                     item.kind === 'outbox' && item.requestId === requestId

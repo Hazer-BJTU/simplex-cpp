@@ -35,6 +35,9 @@ export function CommandPalette() {
     const open = usePanel((state) => state.paletteOpen);
     const setOpen = usePanel((state) => state.setPaletteOpen);
     const togglePalette = usePanel((state) => state.togglePalette);
+    const pending = usePanel(state => state.pendingExecutions);
+    const connection = usePanel(state => state.connection.state);
+    const compactSupported = usePanel(state => state.hasCapability('context-compact'));
     const sessions = usePanel((state) => state.sessions);
     const views = usePanel((state) => state.views);
     const confirmMode = usePanel((state) => state.confirmMode);
@@ -74,16 +77,25 @@ export function CommandPalette() {
         selected,
         running: selected !== null && isRunning(sessions.get(selected)),
         runActive: selected !== null && Boolean(views.get(selected)?.runActive),
+        executionAvailable: selected !== null && connection === 'open'
+            && sessions.get(selected)?.connected === true
+            && sessions.get(selected)?.kind !== 'headless'
+            && !views.get(selected)?.runActive && !pending.has(selected),
+        compactSupported: compactSupported && selected !== null
+            && sessions.get(selected)?.worker_capabilities?.includes('context-compact') === true,
         inspectorOpen,
         confirmMode: selected !== null ? confirmMode.get(selected) ?? 'ask' : 'ask',
         pingMs,
-    }), [sessions, views, selected, inspectorOpen, confirmMode, pingMs]);
+    }), [sessions, views, selected, inspectorOpen, confirmMode, pingMs, pending, connection, compactSupported]);
 
     const commands = useMemo(() => buildCommands(input), [input]);
 
     /** Perform one entry. The palette describes; this is the only place it acts. */
     function perform(action: PaletteAction): void {
         switch (action.kind) {
+            case 'execute':
+                client.sendInput(action.session, [], action.operation);
+                return;
             case 'select-session':
                 client.select(action.session);
                 return;

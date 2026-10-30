@@ -4,26 +4,23 @@ import { STUB, emit, open, reportUsage, runningSession, withSession } from './ha
 const result = { summary: 'A **saved summary**', memory_file: '/worker/memory/archive/state.md',
     removed_turns: 1, revision: 2, durable: true };
 
-test('the compact action appears and disappears with the context meter', async ({ page }) => {
+test('compaction is available before usage without changing composer geometry', async ({ page }) => {
     await open(page, '?session=demo');
     const meter = page.getByLabel('Token usage band');
     const compact = page.getByRole('button', { name: 'Compact', exact: true });
     const row = page.getByTestId('context-meter-row');
     const input = page.getByLabel('message', { exact: true });
-    // No response has reported usage yet, so there is no band to draw and no
-    // action that belongs to it. The row keeps its height — the first figure
-    // must not grow the composer — but draws nothing: an animated placeholder
-    // above the composer read as a broken meter.
+    // No usage is available yet. Compaction remains accessible and the row
+    // reserves the same height for the eventual meter.
     await expect(meter).toHaveCount(0);
     await expect(compact).toHaveCount(0);
     await expect(row.locator('.skeleton')).toHaveCount(0);
     expect((await row.boundingBox())!.height).toBeGreaterThan(0);
     const before = (await page.getByTestId('composer-surface').boundingBox())!;
     const inputBefore = (await input.boundingBox())!;
-    // A capability on its own is not enough: the row stays empty until there
-    // is a usage figure to put in it.
+    // Capabilities, not usage, determine action availability.
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
-    await expect(compact).toHaveCount(0);
+    await expect(compact).toBeVisible();
     await expect(row.locator('.skeleton')).toHaveCount(0);
     await reportUsage(page);
     await expect(meter).toBeVisible();
@@ -232,9 +229,9 @@ test('a lost worker channel releases the compact admission indicator', async ({ 
     await page.getByRole('button', { name: 'Compact', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Compacting…' })).toBeDisabled();
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
-    // The row belongs to the current worker's usage, so it disappears together
-    // with the meter when that identity goes away; there is no orphan action.
-    await expect(page.getByRole('button', { name: 'Compact', exact: true })).toHaveCount(0);
+    // The lost channel releases the pending indicator even if capabilities
+    // keep the disabled action visible.
+    await expect(page.getByRole('button', { name: 'Compacting…' })).toHaveCount(0);
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
     await emit(page, 'status', { active: false, capabilities: ['context-compact'] });
     await expect(page.getByRole('button', { name: 'Compact', exact: true })).toBeEnabled();

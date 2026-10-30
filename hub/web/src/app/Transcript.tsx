@@ -32,7 +32,7 @@ import type {
     RequestRecord,
 } from '../../../ui/index.ts';
 import { profile, profileCount } from '../lib/profile.ts';
-import { useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
+import { usePanel, useVisiblePanel, type PanelStore } from '../state/usePanel.ts';
 import type { NoteItem, OutboxItem, TranscriptItem } from '../state/view.ts';
 import { useTranscriptScroll } from './useTranscriptScroll.ts';
 import { createRoundProjection } from './roundProjection.ts';
@@ -173,6 +173,8 @@ function RunFailureNotice({ failure, actionable, compacting, sessionId, latest }
     latest: boolean;
 }) {
     const client = useClient();
+    const pending = usePanel(state => state.pendingExecutions.has(sessionId)
+        || state.connection.state !== 'open' || Boolean(state.views.get(sessionId)?.runActive));
     const model = failure.stage === 'model_request';
     const automatic = failure.operation === 'auto_compact';
     const compaction = compacting || failure.operation === 'compact';
@@ -213,7 +215,7 @@ function RunFailureNotice({ failure, actionable, compacting, sessionId, latest }
     const actions = actionable || latest ? (
         <>
             {actionable && (
-                <Button variant="secondary" size="sm"
+                <Button variant="secondary" size="sm" disabled={pending}
                     onClick={() => { client.sendInput(sessionId, [], 'continue'); }}>
                     Continue run
                 </Button>

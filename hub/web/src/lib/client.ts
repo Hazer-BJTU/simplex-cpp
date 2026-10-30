@@ -65,12 +65,15 @@ export interface PanelClient {
     refreshConversation(sessionId: SessionId): void;
     refreshSessions(): void;
     /**
-     * Send a message.
+     * Submit one execution using current session selections and a shared admission guard.
      *
      * `options.confirmation.mode` is carried on every payload rather than held
      * on the hub, because it is the panel's setting: the worker freezes the
      * policy per run, so sending it each time is what keeps a change take
-     * effect on the next run instead of the next restart.
+     * effect on the next run instead of the next restart. Current session
+     * selections take precedence over caller-supplied options. Other categories
+     * pass through. A false result creates no queued execution; transport
+     * failures refund a message draft through the store.
      */
     sendInput(
         sessionId: SessionId,
@@ -182,6 +185,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         token: () => tokens.get(),
         onState: (status) => {
             if (status.state !== 'open') {
+                for (const sessionId of store.getState().pendingExecutions.keys()) {
+                    store.getState().setPendingExecution(sessionId, null);
+                }
                 optionsRequested.clear();
                 subscriptionRequests.clear();
                 legacySubscriptions.clear();
@@ -338,7 +344,44 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     /** When the outstanding heartbeat was sent, so its reply can be timed. */
     let pendingPing = 0;
 
+    /** Settle only the matching request, or abandon it when its channel is lost.
+     * Hub receipt is not worker admission. Retained outbox entries are display
+     * history and must not lock a new connection or a replacement worker.
+     */
+    function reconcileExecutions(): void {
+        const state = store.getState();
+        for (const [id, pending] of state.pendingExecutions) {
+            const session = state.sessions.get(id);
+            const view = state.views.get(id);
+            const outbox = view?.items.find(item => item.kind === 'outbox'
+                && item.requestId === pending.requestId);
+            const record = view?.requests.get(pending.requestId);
+            // A replay may replace the local outbox. Correlated lifecycle
+            // evidence still settles admission without relying on that item.
+            const lifecycle = ['input_admitted', 'run_started', 'run_finished']
+                .some(name => {
+                    const event = view?.latestEvents[name];
+                    return event?.request_id === pending.requestId
+                        && event.worker_id === pending.workerId;
+                });
+            if (!session?.connected || session.identity.worker_id !== pending.workerId
+                || (outbox?.kind === 'outbox' && outbox.state !== 'pending')
+                || lifecycle || record?.state === 'rejected' || record?.state === 'unknown'
+                || state.connection.state !== 'open') {
+                store.getState().setPendingExecution(id, null);
+            }
+        }
+    }
+
     function handleMessage(message: HubMessage): void {
+        try {
+            consumeMessage(message);
+        } finally {
+            reconcileExecutions();
+        }
+    }
+
+    function consumeMessage(message: HubMessage): void {
         switch (message.type) {
             case 'welcome': {
                 for (const sessionId of historyRequests.keys()) {
@@ -569,6 +612,16 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             case 'error':
                 confirmations.rejected(message);
                 store.getState().applyError(message);
+                const refusedInput = message.request as {
+                    type?: unknown; session?: unknown; request_id?: unknown;
+                } | undefined;
+                if (refusedInput?.type === 'input' && typeof refusedInput.session === 'string'
+                    && typeof refusedInput.request_id === 'string'
+                    && store.getState().pendingExecutions.get(refusedInput.session)?.requestId
+                        === refusedInput.request_id) {
+                    store.getState().failInput(refusedInput.session, refusedInput.request_id,
+                        message.message || 'the hub refused the input');
+                }
                 const refusedSubscription = message.request as {
                     type?: unknown; session?: unknown; since?: unknown; request_id?: unknown;
                 } | undefined;
@@ -736,11 +789,31 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         sendInput(sessionId, parts, operation = 'message', options, recovery, display) {
             // A session can exist before its worker starts. Do not create an
             // outbox entry or send an input frame until a worker is attached.
-            const session = store.getState().sessions.get(sessionId);
-            if (!session?.connected) return false;
+            reconcileExecutions();
+            const state = store.getState();
+            const session = state.sessions.get(sessionId);
+            const view = state.views.get(sessionId);
+            if (!session?.connected || session.kind === 'headless'
+                || state.connection.state !== 'open' || view?.runActive
+                || state.pendingExecutions.has(sessionId)) return false;
             if (operation === 'compact' && (!store.getState().hasCapability('context-compact')
                 || !session.worker_capabilities?.includes('context-compact'))) return false;
+            // Read current choices here, not from a component render captured
+            // before the operator changed Ask/Approve or the selected model.
+            const currentOptions: PayloadOptions = {
+                ...options,
+                confirmation: { mode: state.confirmMode.get(sessionId) ?? 'ask' },
+            };
+            if (view?.modelCatalog?.worker_id === session.identity.worker_id
+                && Object.keys(view.modelSelection).length > 0) {
+                currentOptions.model = { ...view.modelSelection };
+            }
             const requestId = newRequestId();
+            // Reserve before publishing the outbox or touching the socket:
+            // reentrant subscribers and same-tick clicks see the same guard.
+            state.setPendingExecution(sessionId, {
+                requestId, workerId: session.identity.worker_id, operation,
+            });
             store.getState().beginInput(sessionId, requestId, parts, operation, recovery, display);
             const sent = socket.send({
                 type: 'input',
@@ -748,7 +821,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 request_id: requestId,
                 operation,
                 ...(operation === 'message' ? { content: [...parts] } : {}),
-                ...(options ? { options } : {}),
+                options: currentOptions,
             });
             if (!sent) {
                 store.getState().failInput(

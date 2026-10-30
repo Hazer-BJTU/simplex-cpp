@@ -419,16 +419,26 @@ a pid alone.
 
 The panel composer always sends messages; it has no command mode or Alt+Enter
 switch. During an active run, **Send** becomes **Cancel run** and preserves the
-draft. To continue a task, send a message such as “Continue”.
+draft. Sending “Continue” as text creates a **new message and turn**. To resume
+saved worker state without adding a message, choose **Continue run** in the
+Ctrl/Cmd+K palette. This is available for connected idle workers, including
+after cancellation, an exchange limit or history restoration; the worker
+validates whether its saved state can actually continue. The draft is kept.
 
 The inward-arrow icon beside the token meter is labelled **Compact** on hover.
 It archives the conversation and replaces the worker's context with a saved
 summary, without submitting or clearing the draft or skill snapshots. It is
 enabled when the connected worker and Hub support compaction and no run is
-active or awaiting compaction admission. The worker validates persistence and
-conversation state. A spinner indicates pending or active compaction; the
+active or awaiting execution admission, even before any token usage is reported.
+The worker validates persistence and conversation state. A spinner indicates pending or active compaction; the
 conversation displays its result or error. Cancellation uses **Cancel run**.
 The action's accessible description includes the reported archive-retention policy.
+
+Message, Continue and Compact all send the current confirmation and model
+selections. They share one session-level admission guard: repeated clicks or
+another entry point cannot enqueue another execution while acknowledgement is
+pending. Rejection or a lost connection releases that guard without automatically
+resending the request. After reconnecting, check worker status/history before retrying.
 
 History synchronizes automatically. **Refresh conversation** remains available
 in the global Ctrl/Cmd+K palette for manual recovery, including HTTP transcript
