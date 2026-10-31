@@ -398,7 +398,7 @@ def test_extension_discovery_uses_same_registry_and_rejects_missing(monkeypatch)
         ToolRegistry.load(["simplex_ptc_nonexistent_extension"])
 
 
-def test_cli_capabilities_empty_by_default():
+def test_cli_capabilities_only_manual_by_default():
     result = subprocess.run(
         [sys.executable, "-m", "simplex_ptc", "capabilities"],
         text=True,
@@ -406,7 +406,7 @@ def test_cli_capabilities_empty_by_default():
         timeout=10,
     )
     assert result.returncode == 0
-    assert json.loads(result.stdout)["tools"] == []
+    assert [entry["name"] for entry in json.loads(result.stdout)["tools"]] == ["manual"]
 
 
 def test_cleanup_removes_only_owned_staging_files(tmp_path):
@@ -570,8 +570,8 @@ def test_builtin_tool_names_are_rejected_without_advertising(name):
     registry = ToolRegistry()
     with pytest.raises(PTCError, match="reserved for Python builtins"):
         registry.add(ToolDescriptor(name, "Test", f"{name}()", "int", "none", "1"), lambda: 42)
-    assert registry.manifest() == []
-    assert registry.bindings() == {}
+    assert [entry["name"] for entry in registry.manifest()] == ["manual"]
+    assert set(registry.bindings()) == {"manual"}
 
 
 def test_distinct_host_name_and_builtins_work_after_restore(tmp_path):
@@ -588,4 +588,4 @@ def test_distinct_host_name_and_builtins_work_after_restore(tmp_path):
         assert result["result"] == [42, 2]
         assert result["output"] == "hello\n"
     assert effects == [[1, 2], [1, 2]]
-    assert registry.manifest()[0]["name"] == "tool_length"
+    assert [entry["name"] for entry in registry.manifest()] == ["manual", "tool_length"]

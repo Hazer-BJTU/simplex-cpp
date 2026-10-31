@@ -1,4 +1,4 @@
-"""Single-request CLI. Stdout is exclusively one JSON response (except --help)."""
+"""Single-request CLI. Machine commands emit JSON; repl provides a separate human console."""
 
 import argparse
 import contextlib
@@ -20,6 +20,10 @@ def parser() -> argparse.ArgumentParser:
         "--module", action="append", default=[], help="trusted installed extension module"
     )
     commands = root.add_subparsers(dest="command", required=True)
+    repl = commands.add_parser("repl", help="interactive manual-testing console")
+    repl.add_argument(
+        "--state-directory", type=Path, help="persist state here; default: temporary session"
+    )
     commands.add_parser("capabilities", help="describe the actual runtime and tool registry")
     execute = commands.add_parser("execute", help="execute one JSON request from stdin")
     execute.add_argument("--state-directory", type=Path, required=True)
@@ -74,10 +78,18 @@ def main() -> int:
     args = parser().parse_args()
 
     def interrupt(_signal, _frame):
+        if args.command == "repl":
+            # SIGTERM must exit the console rather than be mistaken for the
+            # interactive Ctrl-C action that merely clears input.
+            raise SystemExit(128 + _signal)
         raise KeyboardInterrupt("execution interrupted")
 
     old = signal.signal(signal.SIGTERM, interrupt)
     try:
+        if args.command == "repl":
+            from .repl import run_console
+
+            return run_console(args.state_directory, args.module)
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 response = dispatch(args)
