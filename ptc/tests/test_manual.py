@@ -16,7 +16,7 @@ def run(session, source):
     return session.execute(Request(str(info["revision"]), source, info["epoch"]))
 
 
-def test_directory_is_string_and_does_not_print_or_call_tools(tmp_path):
+def test_directory_is_typed_list_and_does_not_print_or_call_tools(tmp_path):
     registry = ToolRegistry()
     calls = []
     registry.add(
@@ -24,10 +24,9 @@ def test_directory_is_string_and_does_not_print_or_call_tools(tmp_path):
         lambda: calls.append(True),
     )
     result = run(Session(tmp_path, registry), "manual()")
-    assert (
-        result["result"]
-        == "manual: List available functions or describe exact function names.\nzebra: Example function."
-    )
+    assert [entry["name"] for entry in result["result"]] == ["manual", "zebra"]
+    assert result["result"][1]["summary"] == "Example function."
+    assert result["result"][1]["signature"] == "zebra() -> int"
     assert result["output"] == ""
     assert calls == []
 
@@ -35,6 +34,7 @@ def test_directory_is_string_and_does_not_print_or_call_tools(tmp_path):
 @pytest.mark.parametrize(
     "source, multiple",
     [
+        ("manual()", True),
         ('manual("manual")', False),
         ('manual(["manual"])', True),
         ('manual("manual", "manual")', True),
@@ -213,3 +213,21 @@ def test_complete_extension_description_uses_single_registration(tmp_path):
     assert result["result"]["inputs"] == list(descriptor.inputs)
     assert result["result"]["return_methods"] == list(descriptor.return_methods)
     assert result["result"]["examples"] == list(descriptor.examples)
+
+
+def test_directory_entries_support_members_methods_and_print_example(tmp_path):
+    registry = ToolRegistry.load(["simplex_ptc.tools.process"])
+    result = run(
+        Session(tmp_path, registry),
+        """for info in manual():
+    print(f"{info.name}: {info.summary}")
+[info.to_dict() for info in manual()]
+""",
+    )
+    assert result["status"] == "completed", result
+    assert result["output"].splitlines() == [
+        "manual: List available functions or describe exact function names.",
+        "run_command: Execute a shell command; kill or detach when waiting expires.",
+    ]
+    assert [entry["name"] for entry in result["result"]] == ["manual", "run_command"]
+    assert result["result"][1]["return_methods"]

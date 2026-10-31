@@ -4,17 +4,19 @@ from pydantic_monty import ClassInstance
 
 from .manual import ManualResult
 from .protocol import encode
+from .tools.process import CommandResult
 
 
 def plain_result(value: object, depth: int = 0) -> object:
     """Detach known live result objects recursively before final JSON conversion.
 
     Restored host proxies are deliberately not accepted: the original instance
-    is gone. Call manual again, or persist its plain to_dict result instead.
+    is gone. Persist the plain to_dict result instead. Re-querying read-only
+    manual data is safe; never replay a shell command just to recreate its object.
     """
     if depth > 128:
         raise ValueError("result exceeds nesting limit")
-    if type(value) is ManualResult:
+    if type(value) in (ManualResult, CommandResult):
         return value.to_dict()
     if type(value) in (list, tuple):
         return [plain_result(item, depth + 1) for item in value]
@@ -24,14 +26,14 @@ def plain_result(value: object, depth: int = 0) -> object:
 
 
 def validate_host_result(value: object, depth: int = 0) -> None:
-    """Allow only the explicit ManualResult wrapper in addition to plain data.
+    """Allow only the explicit built-in result wrappers in addition to plain data.
 
     Validation does not widen method policies or automatically wrap host objects.
     Future built-in result classes need an explicit addition here.
     """
     if depth > 128:
         raise ValueError("result exceeds nesting limit")
-    if type(value) is ClassInstance and type(value.value) is ManualResult:
+    if type(value) is ClassInstance and type(value.value) in (ManualResult, CommandResult):
         encode(value.value.to_dict())
     elif type(value) in (list, tuple):
         for item in value:

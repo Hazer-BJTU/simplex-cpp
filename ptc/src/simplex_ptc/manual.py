@@ -67,17 +67,15 @@ def wrap_manual(value: ManualResult) -> ClassInstance:
     )
 
 
-def manual(registry: "ToolRegistry", *names: object) -> str | ClassInstance | list[ClassInstance]:
+def manual(registry: "ToolRegistry", *names: object) -> ClassInstance | list[ClassInstance]:
     """List names or describe exact names; validate a batch before producing it."""
-    if not names:
-        return "\n".join(
-            f"{entry['name']}: {entry['description']}" for entry in registry.manifest()
-        )
     single = len(names) == 1 and isinstance(names[0], str)
     requested = names[0] if len(names) == 1 and isinstance(names[0], list) else names
     if not all(isinstance(name, str) for name in requested):
         raise TypeError("manual expects a name, a list of names, or positional names")
     available = {entry["name"]: entry for entry in registry.manifest()}
+    if not names:
+        requested = list(available)
     missing = [name for name in requested if name not in available]
     if missing:
         raise ValueError(f"unknown function names: {', '.join(missing)}")
@@ -113,13 +111,13 @@ def register_manual(registry: "ToolRegistry") -> None:
         ToolDescriptor(
             name="manual",
             description="List available functions or describe exact function names.",
-            signature="manual(*names: str | list[str]) -> str | ManualResult | list[ManualResult]",
-            result="No arguments: str. One string: ManualResult. A list or multiple strings: list[ManualResult].",
+            signature="manual(*names: str | list[str]) -> ManualResult | list[ManualResult]",
+            result="No arguments: list[ManualResult] for every registered function, sorted by name. One string: ManualResult. A list or multiple strings: list[ManualResult].",
             effects="Read-only registry lookup; does not invoke described functions or import modules.",
-            version="1",
+            version="2",
             details="Lists the current registry in name order. Exact queries preserve input order and duplicates. An empty list returns [].",
             inputs=(
-                "names: omit for a compact directory; pass one string, one list[str], or multiple strings. Do not mix lists with additional arguments.",
+                "names: omit for all registered functions as a list of ManualResult; pass one string, one list[str], or multiple strings. Do not mix lists with additional arguments.",
             ),
             return_attributes=(
                 "name: str — registered function name.",
@@ -149,7 +147,7 @@ def register_manual(registry: "ToolRegistry") -> None:
                 "A fresh ManualResult used as the final result is converted to plain data automatically, including inside lists/dicts.",
             ),
             examples=(
-                "print(manual())",
+                'for info in manual():\n    print(f"{info.name}: {info.summary}")',
                 'info = manual("manual")\nprint(info.render())\ninfo.to_dict()',
                 'manual(["manual"])',
                 'manual("manual", "manual")',
