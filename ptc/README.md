@@ -52,9 +52,11 @@ uv run simplex-ptc repl
 uv run simplex-ptc repl --state-directory /tmp/my-ptc-session
 ```
 
-The default session is temporary and is removed when the console exits. An
-explicit directory is retained. Single lines execute on Enter; `:paste` starts a
-multiline block and `:run` submits it. The block is executed as one snippet:
+The default session is temporary. On console exit its daemon is stopped and its
+lifetime lock released before the directory is removed. If cleanup cannot be
+confirmed, the console reports and preserves the directory. An explicit directory
+is retained; leaving that console does not stop the persistent daemon. Single
+lines execute on Enter; `:paste` starts a multiline block and `:run` submits it. The block is executed as one snippet:
 
 ```text
 ptc> manual()
@@ -81,16 +83,22 @@ commands (`execute`, `capabilities`, `session`) retain their JSON output contrac
 
 ## State and failure semantics
 
-Each state directory is one logical session. Each invocation owns a fresh Monty
-pool with one subprocess, restores its previous idle dump, executes one feed,
-and closes the pool. Supported globals and functions persist. Host handles,
-processes and callbacks do not. The interpreter does not mount host filesystems.
+Each state directory is one logical session managed by an automatically started
+local daemon. CLI/REPL calls connect through a private Unix domain socket; no
+systemd setup or manual service startup is required. The daemon owns admission,
+checkpoint publication, recovery, and reset. Each invocation still uses a fresh
+isolated runner and Monty checkout restored from the previous successful idle
+dump. Supported globals and functions persist. Host handles, processes and
+callbacks are not restored from checkpoints. The interpreter does not mount host
+filesystems.
 
-The directory contains `session.lock`, a single `checkpoint` (metadata, opaque
-dump and most recent response), and, while executing, `execution.pending`.
-Concurrent execution/reset fails with `busy`. Lock files are never removed;
-process exit releases the OS lock. State files are private data in a trusted
-operator-owned directory, not a snapshot import interface. Checksums detect
+The directory contains a daemon lifetime `daemon.lock`, `session.lock`, a single
+`checkpoint` (metadata, opaque dump and most recent response), and, while executing, `execution.pending`.
+Concurrent execution/reset fails with `busy`. Inspection and cancellation remain
+responsive while synchronous callbacks run in the isolated runner. Lock files
+are never removed; process exit releases the OS lock. A second daemon cannot
+own the same directory, including when clients resolve it through path aliases.
+State files are private data in a trusted operator-owned directory, not a snapshot import interface. Checksums detect
 accidental damage, not malicious replacement.
 
 A successful result is converted and bounded before publishing the new state.
@@ -119,10 +127,117 @@ repairs state. Incompatible/corrupt snapshots fail visibly; preserve the directo
 for diagnosis and explicitly select a new empty directory after such failures.
 There is no migration, source replay, or suspended-execution restoration.
 
-SIGTERM/Ctrl-C unwind owned runtime contexts where possible. SIGKILL cannot
-execute cleanup; pending records provide interruption detection on restart.
+SIGTERM/Ctrl-C in an executing client requests correlated cancellation; a plain
+client disconnect does not cancel or replay admitted work. The runner attempts
+normal cleanup before the daemon's cancellation deadline. Force termination or
+SIGKILL cannot guarantee cleanup; pending records identify unresolved execution
+on restart. External effects are never inferred from the restored heap.
 Never infer external effect rollback from the old checkpoint. A future worker
 must keep this directory separate from its conversation and compact archives.
+
+## Automatic daemon management
+
+Keep using `--state-directory`; it selects persistent state, not a socket pathname.
+Execute, REPL, inspect, recover and reset connect to the same daemon. Inspection
+may start a daemon but does not create a checkpoint or repair an interrupted
+execution. `capabilities` is a local probe and does not start a daemon.
+
+```sh
+simplex-ptc daemon status --state-directory /path/to/session
+simplex-ptc daemon stop --state-directory /path/to/session
+simplex-ptc session query --state-directory /path/to/session --execution-id ID --epoch EPOCH
+simplex-ptc session cancel --state-directory /path/to/session \
+  --execution-id ID --epoch EPOCH --generation GENERATION
+```
+
+`status` exposes the daemon generation, lifecycle, effective deadlines and active
+execution. `status` and `stop` never start a missing daemon. Use the original
+request epoch for query/cancel; omit it if the initial request had no epoch.
+Cancellation additionally requires the generation from daemon status, so a stale
+request cannot target a replacement daemon. Reset changes the durable session
+epoch; daemon restart changes the separate live-resource generation.
+
+`execute` submits once and polls its correlated result. A lost connection reports
+an uncertain outcome; it never silently resubmits source. `session query` returns
+`running`, a terminal response, or an explicit unknown/recovery error. Only the
+active request and latest outcome are available, not an execution history.
+Repeated active requests with identical source/context do not start another
+runner. Exact retries of the latest durable request retain the existing receipt
+semantics. Querying an unknown old ID never executes source. Do not reuse IDs.
+
+The current CLI's working directory and environment are transmitted for each
+execution and applied only in its runner. A later CLI call does not inherit the
+first caller's cwd/environment. Context has a separate 1 MiB limit and participates
+in request identity; changing it while retrying an ID is an identity conflict.
+Keep the original context when reconciling a request. Environment values are not
+included in daemon status or diagnostics. Plugins, runtime compatibility, and
+lifecycle policy must match the running daemon; mismatch fails instead of
+restarting it or discarding resources. Stop an idle daemon explicitly before
+changing its configuration. Existing checkpoint compatibility checks still apply.
+Compatible idle checkpoints from the pre-daemon interpreter remain readable, but
+old receipts lack the new execution-context digest: do not retry an old execution
+ID as a new daemon request. Inspect its receipt/state and continue with a new ID;
+source is not replayed to migrate state.
+
+Defaults are 15 minutes without execution/live resources, or 1 hour of unattended
+retention with future managed live resources. Admitted executions and explicit
+resource use renew activity; completion starts a fresh unattended interval.
+Polling status, a connected socket, or resource output does not keep a daemon
+alive. Running executions are exempt from idle expiry and retain their own
+runtime/tool limits. Operator flags go before the subcommand, for example:
+
+```sh
+simplex-ptc --idle-seconds 300 --resource-seconds 1800 --cleanup-seconds 10 \
+  repl --state-directory /path/to/session
+```
+
+Use the same flags on execution/inspection clients of that daemon. Management
+operations (`daemon status/stop`, `session query/cancel`) require matching protocol
+and directory identity but do not import plugins or require their old configuration;
+this permits stopping an old daemon after a plugin/configuration change. Management
+connections cannot execute, reset or recover state. Deadlines must be positive
+and finite. Shutdown closes admission first, interrupts active execution, attempts
+all owned resource cleanup, joins runners, and releases its lock. Cooperative
+runner/resource cleanup defaults to 10 seconds; transport/startup overhead can
+add time. A stuck runner is force-terminated with an unknown-effects outcome,
+not a rollback guarantee. A failed storage fence leaves recovery information.
+Stopping a daemon retains its checkpoint and does not delete user files.
+
+Current builtins register **no persistent resources**: file editors still close
+at each execution boundary; `run_command` remains a fresh shell with its existing
+kill/detach contract. In particular, detached commands are not made daemon-owned
+or automatically killed when the daemon stops. There is no persistent shell or
+managed process tool in this change. The internal `Resource`/`Resources` interface
+in `lifecycle.py` provides generation-scoped IDs, explicit use, liveness, and
+cooperative asynchronous cleanup for future adapters. Cleanup must respect
+cancellation/deadlines; it cannot block the control loop. Resources are never
+embedded in a checkpoint, and old-generation IDs fail with `resource_lost`.
+
+Socket paths are derived in a private `simplex-ptc` directory below a validated
+`XDG_RUNTIME_DIR`, or a private `simplex-ptc-UID` directory in the system temporary
+directory. State and runtime directories must be owned by the current user and
+private (mode 0700); endpoint/lock files are private too. Long state-directory
+paths do not need to fit the Unix socket pathname limit. A different runtime
+root cannot bypass the durable lifetime lock: a locked but unreachable owner
+produces an error, never unsafe takeover. Do not remove lock files or replace
+session directories while a daemon is running. Mixed use with older pre-daemon
+package versions is unsupported.
+
+Internal control uses versioned, length-prefixed JSON, bounded frames and at most
+32 concurrent connection handlers. Partial frames and blocked writes have a
+10-second deadline. Source, execution-context, public response and private
+checkpoint-transfer limits are separate. Daemon/runner standard streams are
+not inherited from the submitting client; their raw diagnostics are discarded,
+while bounded structured failures return through the CLI. Sandbox `print()`
+continues to be captured in the execution response. No new log archive grows
+without a bound.
+
+For Python embedding, `Client` provides the same daemon operations. The low-level
+`Session` remains available for package tests/direct embedding, but acquires the
+lifetime lock and refuses concurrent access to a daemon-owned directory. Only
+the daemon coordinator may bypass that reacquisition. Trusted configured host
+extensions and same-user clients are not isolated from one another by the socket;
+the Monty sandbox does not restrict arbitrary host callbacks.
 
 ## Limits and compatibility
 
@@ -269,10 +384,10 @@ job. Manage its logs, output, lifetime and later inspection yourself through
 shell commands. The returned PID is the shell/direct-child PID at launch; it can
 be reused and is not a durable identity or a safe later kill target by itself.
 
-There is **no task registry, status/log directory, supervisor, polling/control
-API, process restoration, or automatic record retention**. There is also no
+For shell commands there is **no task registry, status/log directory, supervisor,
+polling/control API, process restoration, or automatic record retention**. There is also no
 `spawn_process`. The only background housekeeping is a daemon wait thread to
-reap the direct child while the Python host is alive; it neither signals the
+reap the direct child while the invocation runner is alive; it neither signals the
 child nor keeps Python alive. A fresh POSIX session avoids inheriting the host's
 terminal session, but container/service cgroups, system shutdown and application
 behavior can still end the command. SIGKILL of the Python host cannot execute
@@ -477,8 +592,10 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 ```
 
-Tests exercise only this package, real Monty and local temporary storage, with
-fixture callbacks. There is no worker/Hub end-to-end integration. The independent
-PTC workflow runs only for `ptc/**` or its own workflow; native CI classifies those
+Tests exercise only this package, real Monty, local UDS/daemon/runner processes
+and temporary storage, with fixture callbacks. They cover concurrent startup,
+cancellation, disconnects, owner death, pending recovery and bounded lifecycle
+policies, and stop test daemons on teardown. There is no worker/Hub end-to-end
+integration. The independent PTC workflow runs only for `ptc/**` or its own workflow; native CI classifies those
 paths as independent. Changes to the shared CI classifier still conservatively
 run native validation. No Python dependency is added to the C++ build.
