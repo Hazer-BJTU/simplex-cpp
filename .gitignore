@@ -111,3 +111,11 @@ hub/performance-results/
 /install-local/
 /stage-portable/
 /worker-release/
+
+# Independent Python PTC interpreter.
+/ptc/.venv/
+/ptc/.pytest_cache/
+/ptc/.ruff_cache/
+/ptc/dist/
+/ptc/**/__pycache__/
+/ptc/**/*.egg-info/

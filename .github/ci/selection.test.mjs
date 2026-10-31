@@ -176,3 +176,13 @@ test('version-only decisions require transition metadata and preserve conservati
     invalid.changes.outputs.version_to = '0.1.3';
     assert.throws(() => checkResults(invalid));
 });
+
+for (const path of ['ptc/pyproject.toml', 'ptc/uv.lock', 'ptc/src/simplex_ptc/runtime.py',
+    'ptc/tests/test_session.py', 'ptc/README.md', '.github/workflows/ptc.yml']) {
+    test(`${path} is independent of native builds and worker E2E`, () => {
+        assert.equal(categoryForPath(path), 'interpreter');
+        assert.deepEqual(classifyPaths([path]), decisionsForCategory('independent'));
+        assert.deepEqual(classifyPaths([path, 'core/src/application.cpp']), decisionsForCategory('native'));
+        assert.deepEqual(classifyPaths([path, 'hub/src/hub.ts']), decisionsForCategory('integration'));
+    });
+}

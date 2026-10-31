@@ -8,7 +8,7 @@ complete local Git diff and derives all native producer/consumer decisions.
 | --- | --- | --- | --- | --- |
 | Native/runtime or unknown | Run | Run | Run | Run |
 | Hub integration | Skip | Run | Skip | Run |
-| Independent docs/panel | Skip | Skip | Skip | Skip |
+| Independent docs/panel/PTC | Skip | Skip | Skip | Skip |
 | Content-verified version-only | Skip | Skip | Skip | Skip |
 
 ## Separate manual musl validation
@@ -166,3 +166,13 @@ native, verified version-only and mixed PR/main changes. Use the selection summa
 and the Actions job list to confirm the table, intentional consumer skips and
 retained full native matrices. Record total runner minutes and wall time separately; local classifier
 tests demonstrate scheduling decisions, not measured production cost savings.
+
+## Independent PTC interpreter
+
+`ptc/**` and `.github/workflows/ptc.yml` select no native builds or worker
+integration jobs. `ptc.yml` separately tests the self-contained uv package only
+on PR/main changes to those two path patterns. Its tests do not use the worker,
+Hub, or release artifacts. Unrelated changes do not run interpreter CI. Mixed
+changes retain the union of each component's checks; shared classifier changes
+still select full native validation. Do not require the path-filtered PTC check
+unconditionally in branch rules, since an unrelated PR has no such check.
