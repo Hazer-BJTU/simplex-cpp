@@ -3,8 +3,9 @@
 An independent, experimental Python/uv package built on pinned Pydantic Monty.
 It executes a Python subset, preserves idle interpreter state across invocations,
 and exposes an extension registry with the read-only `manual()` builtin and an
-opt-in shell `run_command`. No file tools, worker integration, Hub networking,
-end-to-end integration tests, or release artifacts are included in this phase.
+opt-in shell `run_command` and UTF-8 `open_text` editor. No worker integration,
+Hub networking, end-to-end integration tests, or release artifacts are included
+in this phase.
 
 ## Install and run
 
@@ -294,6 +295,128 @@ incomplete; those descendants may then encounter the same pipe failures.
 Redirect potentially large or long-lived output to files yourself. Final JSON
 responses remain subject to the independent 48 KiB envelope budget.
 
+## Chunked file reading and explicit editing
+
+Enable the file module explicitly; it adds only `open_text`:
+
+```sh
+uv run simplex-ptc --module simplex_ptc.tools.files repl
+# Both optional modules can be selected in the same invocation:
+uv run simplex-ptc --module simplex_ptc.tools.process --module simplex_ptc.tools.files repl
+```
+
+Use one `:paste` block for a complete interaction with a file object:
+
+```python
+file = open_text("example.py", writable=True)
+part = file.read_lines(start=20, count=10)
+print(part.render())
+file.replace("old_value", "new_value")
+print(file.preview(context_lines=3).render())
+file.commit().to_dict()
+```
+
+`open_text(path, *, writable=False)` returns a wrapped host `TextFile`. Default
+access is read-only. It opens an existing regular file, not a directory, FIFO,
+device or final-component symlink. Relative paths use the host working directory;
+this is not a filesystem sandbox. The original path and `size_bytes` are exposed
+as data attributes. The methods are:
+
+| Method | Semantics |
+| --- | --- |
+| `read_lines(start=0, count=200)` | Selected original logical lines; LF, CRLF and CR are preserved. |
+| `read_bytes(start, count)` | Selected original UTF-8 bytes, with strict decoding. |
+| `replace(old_text, new_text)` | Stage one unique exact UTF-8 byte match; overlapping occurrences also count. |
+| `replace_range(start_byte, end_byte, text)` | Stage an original `[start_byte, end_byte)` range replacement. |
+| `insert(byte_offset, text)` | Stage insertion at an original UTF-8 boundary, including EOF. |
+| `preview(context_lines=3)` | Bounded before/after text, aligned zero-based line numbers, `-`/`+` changed-line markers. Accepts 0–20 context lines. |
+| `commit()` | Validate and atomically publish the complete staged edit plan, then close. |
+| `discard()` / `close()` | Idempotently discard pending edits and close; never save. |
+
+Indices are zero-based. Edits always refer to the version opened, so earlier
+staged insertions do not shift later edit coordinates. Reads still show the
+original file; preview shows the prospective result. Empty replacement text
+means deletion. Overlapping edits, two insertions at the same position, or an
+insertion touching another edit's start/end boundary are rejected instead of
+relying on implicit ordering. Adjacent nonempty replacement ranges are allowed.
+
+Reads return a flat `TextSlice` with `text`, `start_byte`, `end_byte` (exclusive),
+`start_line`, `end_line` (exclusive), and `truncated`. Line fields are null for
+byte reads. A partial last line counts in `end_line`; byte positions describe
+only the text actually returned. Reads past EOF return an empty fragment at EOF.
+`render()` returns the selected plain text, and `to_dict()` returns detached data.
+Always check `truncated` before using a fragment's returned range as an edit:
+a budget-cut fragment does not represent the entire requested range.
+
+Preview returns a flat `EditPreview(text, edit_count, truncated)`. It has
+`render()` and `to_dict()`, as does every data result. Long lines and excessive
+hunks are explicitly truncated; this never truncates the staged edits themselves.
+EOF insertions/deletions use an explicit `[EOF]` anchor where needed. Preview is
+not required before commit and does not implicitly publish anything.
+
+Commit returns a flat `CommitResult(path, changed, edit_count,
+original_size_bytes, size_bytes)`. No staged edits means no file rewrite. A
+successful commit closes the editor; reopen for another edit rather than reuse
+stale offsets. Only explicit `commit()` writes the target. Python failure after
+a successful commit **does not undo the committed file**; put commit after all
+checks. Separate file commits are not a multi-file atomic transaction.
+
+### Failure and resource ownership
+
+Any failed file operation invalidates **all still-open file editors** in the
+current invocation and discards their staged changes. Catching a match/range/IO
+error does not make earlier staged edits eligible for commit. Explicitly reopen
+to start a new batch. Already committed files are unaffected. At invocation exit,
+normal or exceptional, remaining editors close and discard without autosave.
+There is no undo stack, cross-invocation file handle or automatic recovery.
+
+TextFile is a host ClassInstance, not persistent data. Returning an editor as the
+final result is a conversion error, not an implicit save. Save a fragment,
+preview or receipt with `to_dict()` for use after session restore. Host methods
+on an old editor cannot be resumed in a later call. Cleanup errors prevent a new
+Python checkpoint from being acknowledged as successful.
+
+### UTF-8, streaming and limits
+
+This interface is for UTF-8 text, not arbitrary binary buffers. Invalid selected
+text or byte ranges splitting a code point fail explicitly; there is no lossy
+replacement decoding. Output-budget cuts alone trim an incomplete final code
+point. Every edited source byte, including deleted regions, is validated as
+UTF-8 before publication. Opening alone does not scan the whole file.
+
+- Maximum source and resulting file: 1 GiB.
+- Reads: at most 64 KiB of UTF-8 text per result; preview is also bounded.
+- At most 16 simultaneously open files and 128 staged edits per file.
+- Aggregate replacement data: 1 MiB per PTC invocation; closing/discarding releases
+  its budget. Exact-match patterns are at most 64 KiB.
+- Original data is read with bounded `pread` chunks; even a huge single line is
+  never accumulated in full. No whole-file buffer or per-byte/line index is built.
+- One unique-match search followed by commit scans source bytes twice; commit
+  also streams one destination write. Explicit previews may add before/after
+  scans, and repeated independent queries/searches naturally add their own IO.
+
+### Publication contract
+
+The editor pins the parent directory and file descriptor, checking device/inode,
+size, timestamps and metadata before/after operations and immediately before
+publication. Path replacement, parent retargeting and detected concurrent writes
+invalidate the batch. This is optimistic conflict detection, **not** an atomic
+compare-and-swap against an uncooperative writer: a final check-to-rename race
+still exists.
+
+Commit streams into a unique same-directory temporary file, preserves owner,
+group and ordinary permission bits, synchronizes it, replaces the target via the
+pinned directory descriptor, and synchronizes the directory. Writable opens
+reject multiple hard links, special permission bits and extended attributes/ACLs
+rather than silently losing unsupported metadata. Read-only access has no such
+metadata-preservation restriction.
+
+Failure before publication leaves the original target untouched and attempts to
+remove the temporary. Once replacement is attempted, an error explicitly says
+publication **may already have occurred**; inspect before retrying. A post-rename
+sync error is never described as rollback. Forced process termination can leave a
+`.simplex-edit-*` temporary beside the file; there is no automatic save or replay.
+
 ## Extensions
 
 Only `manual()` is built in by default. Install trusted modules into the same
@@ -326,12 +449,13 @@ Change a descriptor's version when implementation semantics change. Extensions
 are trusted host code; their descriptors do not confer permissions or sandbox
 their effects. Initial callbacks are synchronous and accept plain JSON-compatible arguments
 (string-keyed objects, arrays, strings, finite numbers, booleans and null; tuples
-become arrays). Results may also use the explicitly supported `ManualResult` or `CommandResult`
-ClassInstance wrappers. Arbitrary host objects and wrappers remain rejected.
+become arrays). Results may also use the explicitly supported `ManualResult`, `CommandResult`,
+`TextSlice`, `EditPreview`, or `CommitResult` ClassInstance wrappers. `TextFile`
+is an invocation-owned callable handle and is not a serializable final result. Arbitrary host objects and wrappers remain rejected.
 Nesting is limited to 128 levels. They must settle their own resources before returning, must not
 write directly to protocol fd 1, and must not retain live resources in returned
-values. Async callbacks and execution-owned resource services can be added when
-real adapters need them; this package does not pretend to provide those yet.
+values. The file module uses the invocation-local resource scope; it does not
+persist host handles. Async callbacks remain outside this implementation.
 
 ## Development
 

@@ -11,6 +11,7 @@ import pydantic_monty as monty
 
 from .extensions import ToolRegistry
 from .protocol import Output, PTCError
+from .resources import execution_resources
 
 # Dumps restore their limits instead of accepting new checkout limits. Include
 # this policy in checkpoint compatibility so an upgrade cannot silently weaken it.
@@ -38,7 +39,10 @@ def run(
     Pool shutdown joins the owned runtime even when load/feed/dump raises.
     """
     binary = Path(sysconfig.get_path("scripts")) / "monty"
-    with monty.Monty(binary_path=binary, max_processes=1, request_timeout=10.0) as pool:
+    with (
+        execution_resources(),
+        monty.Monty(binary_path=binary, max_processes=1, request_timeout=10.0) as pool,
+    ):
         with pool.checkout(limits=LIMITS) as session:
             if state is not None:
                 try:
