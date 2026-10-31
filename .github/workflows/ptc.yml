@@ -1,0 +1,48 @@
+name: PTC interpreter
+
+on:
+  pull_request:
+    paths:
+      - 'ptc/**'
+      - '.github/workflows/ptc.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ptc/**'
+      - '.github/workflows/ptc.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  interpreter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      max-parallel: 1
+      matrix:
+        python: ['3.12', '3.14']
+    defaults:
+      run:
+        working-directory: ptc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.11.3'
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+      - name: Install locked interpreter dependencies
+        run: uv sync --locked
+      - name: Lint
+        run: uv run --locked ruff check .
+      - name: Format
+        run: uv run --locked ruff format --check .
+      - name: Package-local tests (no worker or Hub integration)
+        run: uv run --locked pytest

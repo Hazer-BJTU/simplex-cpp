@@ -119,3 +119,12 @@ test('tag releases use the patched musl build and probe its staged Boost.Test', 
     assert.match(probe, /dl_iterate_phdr/);
     assert.match(probe, /SIMPLEX_EXPECT_BOOST_DIRECTORY="\$stage\/lib"/);
 });
+
+test('PTC tests have their own precise PR/main path filters and no native dependencies', () => {
+    const text = workflows.find((workflow) => workflow.name === 'ptc.yml').text;
+    assert.match(text, /pull_request:\n    paths:\n      - 'ptc\/\*\*'\n      - '\.github\/workflows\/ptc\.yml'/);
+    assert.match(text, /push:\n    branches: \[main\]\n    paths:\n      - 'ptc\/\*\*'\n      - '\.github\/workflows\/ptc\.yml'/);
+    assert.match(text, /uv sync --locked/);
+    assert.match(text, /uv run --locked pytest/);
+    assert.doesNotMatch(text, /workflow_run|workflow_dispatch|cmake|npm |docker |needs:/);
+});
