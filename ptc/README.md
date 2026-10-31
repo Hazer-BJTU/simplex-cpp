@@ -143,7 +143,9 @@ the session lock on the next operation. Other files are left untouched.
 ## Function manual and typed results
 
 ```python
-print(manual())  # str: names and short descriptions, sorted by name
+# No arguments returns all ManualResult objects, sorted by name.
+for info in manual():
+    print(f"{info.name}: {info.summary}")
 info = manual("manual")  # one wrapped ManualResult
 print(info.render())  # complete Python-style documentation
 info.signature  # member access
@@ -153,6 +155,7 @@ manual("manual", "manual")  # list, preserving order and duplicates
 manual([])  # empty list
 ```
 
+No arguments returns all registered functions as a list of ManualResult.
 One string returns one object; a list always returns a list. Multiple positional
 strings are equivalent to a list. Mixed list/positional inputs and non-string
 names raise `TypeError`; any unknown name raises `ValueError` for the entire

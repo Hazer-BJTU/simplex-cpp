@@ -18,7 +18,7 @@ def test_temporary_console_manual_multiline_and_failure():
     result = console("manual()\n:paste\nx = 40\nx + 2\n:run\n1 / 0\nx\n:quit\n")
     assert result.returncode == 0, result.stderr
     assert "Temporary test session" in result.stdout
-    assert "manual: List available functions" in result.stdout
+    assert '"name": "manual"' in result.stdout
     assert "[result]\n42" in result.stdout
     assert "[error: runtime_error]" in result.stdout
     assert "[result]\n40" in result.stdout
