@@ -65,3 +65,15 @@ def execution_resources():
             resources.abort()
     finally:
         _current.reset(token)
+
+
+def abort_file_operations() -> None:
+    """Invalidate active file work, including failures before a handler is entered.
+
+    Used by registry boundary cleanup and the direct Python entry wrapper. No
+    active scope means there are no editors to invalidate; keep the original
+    argument error instead of replacing it with a missing-scope error.
+    """
+    scope = _current.get()
+    if scope is not None:
+        scope.abort()

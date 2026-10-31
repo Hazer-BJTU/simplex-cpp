@@ -319,7 +319,9 @@ file.commit().to_dict()
 `open_text(path, *, writable=False)` returns a wrapped host `TextFile`. Default
 access is read-only. It opens an existing regular file, not a directory, FIFO,
 device or final-component symlink. Relative paths use the host working directory;
-this is not a filesystem sandbox. The original path and `size_bytes` are exposed
+intermediate symlinks and `..` are resolved by the filesystem in that order, not
+lexically collapsed. The absolute lookup spelling is retained for display and
+conflict checks. This is not a filesystem sandbox. The original path and `size_bytes` are exposed
 as data attributes. The methods are:
 
 | Method | Semantics |
@@ -365,7 +367,9 @@ checks. Separate file commits are not a multi-file atomic transaction.
 
 Any failed file operation invalidates **all still-open file editors** in the
 current invocation and discards their staged changes. Catching a match/range/IO
-error does not make earlier staged edits eligible for commit. Explicitly reopen
+error does not make earlier staged edits eligible for commit. This includes
+missing/extra entry-point arguments and argument conversion rejected by the
+registry before the file handler runs. Explicitly reopen
 to start a new batch. Already committed files are unaffected. At invocation exit,
 normal or exceptional, remaining editors close and discard without autosave.
 There is no undo stack, cross-invocation file handle or automatic recovery.
@@ -408,8 +412,12 @@ Commit streams into a unique same-directory temporary file, preserves owner,
 group and ordinary permission bits, synchronizes it, replaces the target via the
 pinned directory descriptor, and synchronizes the directory. Writable opens
 reject multiple hard links, special permission bits and extended attributes/ACLs
-rather than silently losing unsupported metadata. Read-only access has no such
-metadata-preservation restriction.
+rather than silently losing unsupported metadata. The temporary is also checked
+for inherited extended attributes/ACLs immediately after creation at mode 0600,
+before writing staged content or restoring permissions. Unsupported inherited
+metadata causes rejection and temporary cleanup; the target is unchanged. This
+can reject editing an ACL-free file inside a directory with a default ACL.
+Read-only access has no such metadata-preservation restriction.
 
 Failure before publication leaves the original target untouched and attempts to
 remove the temporary. Once replacement is attempted, an error explicitly says
@@ -455,7 +463,11 @@ is an invocation-owned callable handle and is not a serializable final result. A
 Nesting is limited to 128 levels. They must settle their own resources before returning, must not
 write directly to protocol fd 1, and must not retain live resources in returned
 values. The file module uses the invocation-local resource scope; it does not
-persist host handles. Async callbacks remain outside this implementation.
+persist host handles. `registry.add(descriptor, handler, on_error=cleanup)` can
+register synchronous failure cleanup covering boundary validation, argument
+binding, handler execution and result conversion. Cleanup must not publish
+side effects; cleanup failures are attached without hiding the original error.
+The file module uses this boundary to discard pending edits on rejected inputs. Async callbacks remain outside this implementation.
 
 ## Development
 

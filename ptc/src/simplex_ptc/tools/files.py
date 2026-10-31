@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 
 from pydantic_monty import ClassInstance
 
-from ..resources import MAX_OPEN_FILES, MAX_STAGED_BYTES, current_resources
+from ..resources import MAX_OPEN_FILES, MAX_STAGED_BYTES, abort_file_operations, current_resources
 
 BLOCK_BYTES = 64 * 1024
 MAX_FILE_BYTES = 1024 * 1024 * 1024
@@ -238,7 +238,10 @@ class TextFile:
     """
 
     def __init__(self, path: str, writable: bool, scope):
-        self.path = os.path.abspath(path)
+        # Anchor relative lookup without lexical normalization: alias/../file
+        # must let the kernel follow alias before applying '..'. The same
+        # spelling is retained for conflict checks and the display path.
+        self.path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
         self._scope = scope
         self._writable = writable
         self._fd = self._parent_fd = None
@@ -521,6 +524,14 @@ class TextFile:
                 os.close(fd)
                 raise
             with stream:
+                # A 0600 temporary can inherit a default access ACL. chmod can
+                # later activate its named entries even with identical mode
+                # bits. Reject unsupported inherited metadata before writing
+                # staged content or expanding the temporary's permissions.
+                if hasattr(os, "listxattr") and os.listxattr(stream.fileno()):
+                    raise ValueError(
+                        "temporary inherited unsupported extended attributes/ACLs; commit refused"
+                    )
                 size = 0
                 for chunk in self._modified():
                     stream.write(chunk)
@@ -581,38 +592,49 @@ class TextFile:
             raise failure
 
 
+def _file_entry(method):
+    """Include direct Python argument binding in the invalidation boundary."""
+
+    @functools.wraps(method)
+    def guarded(*args, **kwargs):
+        try:
+            return method(*args, **kwargs)
+        except BaseException as exc:
+            try:
+                abort_file_operations()
+            except BaseException as cleanup:
+                exc.add_note(f"file cleanup also failed: {cleanup}")
+            raise
+
+    return guarded
+
+
+@_file_entry
 def open_text(path: str, *, writable: bool = False) -> ClassInstance:
     """Open an existing file for this invocation; edits require explicit commit."""
     scope = current_resources()
-    try:
-        if not isinstance(path, str) or not path or "\0" in path:
-            raise ValueError("path must be nonempty text without NUL")
-        if type(writable) is not bool:
-            raise ValueError("writable must be bool")
-        if len(scope.files) >= MAX_OPEN_FILES:
-            raise ValueError("too many open file editors")
-        file = TextFile(path, writable, scope)
-        return ClassInstance(
-            file,
-            eager_attrs={"path", "size_bytes"},
-            allowed_methods={
-                "read_lines",
-                "read_bytes",
-                "replace",
-                "replace_range",
-                "insert",
-                "preview",
-                "commit",
-                "discard",
-                "close",
-            },
-        )
-    except BaseException as exc:
-        try:
-            scope.abort()
-        except BaseException as cleanup:
-            exc.add_note(f"file cleanup also failed: {cleanup}")
-        raise
+    if not isinstance(path, str) or not path or "\0" in path:
+        raise ValueError("path must be nonempty text without NUL")
+    if type(writable) is not bool:
+        raise ValueError("writable must be bool")
+    if len(scope.files) >= MAX_OPEN_FILES:
+        raise ValueError("too many open file editors")
+    file = TextFile(path, writable, scope)
+    return ClassInstance(
+        file,
+        eager_attrs={"path", "size_bytes"},
+        allowed_methods={
+            "read_lines",
+            "read_bytes",
+            "replace",
+            "replace_range",
+            "insert",
+            "preview",
+            "commit",
+            "discard",
+            "close",
+        },
+    )
 
 
 def register_tools(registry):
@@ -627,10 +649,10 @@ def register_tools(registry):
             result="TextFile wrapped in ClassInstance. It is an invocation-local editor, not a serializable result. Methods return flat TextSlice, EditPreview or CommitResult wrappers.",
             effects="Reads host files; only explicit commit publishes changes. No autosave, undo, cross-call handles or multi-file atomic transaction.",
             version="1",
-            details="All edit positions refer to the opened original version. Reads show original content, not staged content. Any failed file operation invalidates all still-open editors in this PTC invocation, including failures caught by Python. Reopen to start fresh. Already committed files are never rolled back.",
+            details="All edit positions refer to the opened original version. Reads show original content, not staged content. Any failed file operation invalidates all still-open editors in this PTC invocation, including argument-binding and registry boundary failures caught by Python. Reopen to start fresh. Already committed files are never rolled back.",
             inputs=(
-                "path: str — existing regular file, at most 1 GiB; relative to host cwd. Final-component symlinks are rejected.",
-                "writable: bool = False — enable staged edits. Editing rejects hard links, special permission bits and extended attributes/ACLs rather than silently losing metadata.",
+                "path: str — existing regular file, at most 1 GiB; relative to host cwd. Intermediate symlinks and '..' follow filesystem lookup order; final-component symlinks are rejected.",
+                "writable: bool = False — enable staged edits. Editing rejects hard links, special permission bits and extended attributes/ACLs. A temporary inheriting directory ACLs is rejected before staged content is written or permissions expand.",
             ),
             return_attributes=(
                 "path: str — absolute path at open.",
@@ -669,4 +691,5 @@ def register_tools(registry):
             ),
         ),
         open_text,
+        on_error=abort_file_operations,
     )

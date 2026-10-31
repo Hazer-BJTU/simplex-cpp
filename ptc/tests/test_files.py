@@ -574,3 +574,159 @@ def test_utf8_edit_boundaries_and_clipped_preview_context(tmp_path, scope):
     preview = file.preview(1).value
     assert preview.truncated
     assert "[line truncated]" in preview.text
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_symlink_then_parent_component_uses_kernel_resolution(tmp_path, monkeypatch, relative):
+    visible, physical = tmp_path / "visible", tmp_path / "physical"
+    visible.mkdir()
+    (physical / "sub").mkdir(parents=True)
+    (visible / "alias").symlink_to(physical / "sub", target_is_directory=True)
+    lexical = visible / "file.txt"
+    actual = physical / "file.txt"
+    lexical.write_text("lexical")
+    actual.write_text("physical")
+    spelling = str(visible / "alias" / ".." / "file.txt")
+    if relative:
+        monkeypatch.chdir(tmp_path)
+        spelling = "visible/alias/../file.txt"
+    with open(spelling) as stream:
+        assert stream.read() == "physical"
+    session = Session(tmp_path / "state", ToolRegistry.load(["simplex_ptc.tools.files"]))
+    result = run(
+        session,
+        f"""f = open_text({spelling!r}, writable=True)
+assert f.read_lines().text == "physical"
+f.insert(0, "EDIT ")
+f.commit().to_dict()
+""",
+    )
+    assert result["status"] == "completed", result
+    assert actual.read_text() == "EDIT physical"
+    assert lexical.read_text() == "lexical"
+    assert "/alias/../" in result["result"]["path"]
+
+
+def test_default_directory_acl_is_rejected_before_content_or_permissions_expand(
+    tmp_path, scope, monkeypatch
+):
+    import errno
+    import struct
+    import sys
+
+    if sys.platform != "linux" or not hasattr(os, "setxattr"):
+        pytest.skip("Linux POSIX ACL xattr regression")
+    directory = tmp_path / "destination"
+    directory.mkdir()
+    # Linux UAPI posix_acl_xattr: version 2, then little-endian tag/perm/id.
+    # Default ACL adds a named user who must not gain access after publication.
+    undefined = 0xFFFFFFFF
+    entries = [
+        (1, 7, undefined),
+        (2, 7, 12345),
+        (4, 0, undefined),
+        (16, 7, undefined),
+        (32, 0, undefined),
+    ]
+    acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+    try:
+        os.setxattr(directory, "system.posix_acl_default", acl)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP) and not os.environ.get("GITHUB_ACTIONS"):
+            pytest.skip("local filesystem does not support POSIX ACLs")
+        raise
+    original = create(tmp_path, b"old")
+    os.chmod(original, 0o640)
+    assert os.listxattr(original) == []
+    target = directory / "file.txt"
+    original.rename(target)  # retain the ACL-free inode under the default ACL
+    editor = open_file(target, True)
+    editor.replace("old", "new")
+    inherited = []
+    listxattr = os.listxattr
+
+    def record_attrs(fd):
+        names = listxattr(fd)
+        if "system.posix_acl_access" in names:
+            info = os.fstat(fd)
+            assert info.st_size == 0
+            assert info.st_mode & 0o777 == 0o600
+            inherited.append(True)
+        return names
+
+    monkeypatch.setattr(os, "listxattr", record_attrs)
+    monkeypatch.setattr(
+        os, "fchmod", lambda *args: pytest.fail("expanded inherited ACL permissions")
+    )
+    monkeypatch.setattr(
+        editor, "_modified", lambda: pytest.fail("wrote staged content with inherited ACL")
+    )
+    with pytest.raises(ValueError, match="temporary inherited"):
+        editor.commit()
+    assert inherited == [True]
+    assert target.read_bytes() == b"old"
+    assert target.stat().st_mode & 0o777 == 0o640
+    assert listxattr(target) == []
+    assert not list(directory.glob(".simplex-edit-*"))
+    assert not scope.files and scope.staged_bytes == 0
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "open_text()",
+        'open_text("unused", True)',
+        'open_text("unused", unknown=True)',
+        'open_text({"not-json"})',
+        'open_text(float("nan"))',
+    ],
+)
+def test_caught_entry_and_boundary_errors_invalidate_all_editors(tmp_path, expression):
+    from simplex_ptc import ToolDescriptor
+    from simplex_ptc.resources import current_resources
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_text("old")
+    second.write_text("other")
+    registry = ToolRegistry.load(["simplex_ptc.tools.files"])
+    registry.add(
+        ToolDescriptor(
+            "budget", "Inspect test scope.", "budget() -> list[int]", "list[int]", "none", "1"
+        ),
+        lambda: [len(current_resources().files), current_resources().staged_bytes],
+    )
+    session = Session(tmp_path / "state", registry)
+    result = run(
+        session,
+        f"""f = open_text({str(first)!r}, writable=True)
+g = open_text({str(second)!r}, writable=True)
+f.replace("old", "new")
+g.insert(0, "pending")
+try:
+    {expression}
+except (TypeError, ValueError):
+    caught = True
+state = budget()
+try:
+    f.commit()
+except RuntimeError:
+    blocked = True
+[caught, state, blocked]
+""",
+    )
+    assert result["status"] == "completed", result
+    assert result["result"] == [True, [0, 0], True]
+    assert first.read_text() == "old" and second.read_text() == "other"
+
+
+@pytest.mark.parametrize("arguments", [(), ("unused", True)])
+def test_direct_entry_binding_error_invalidates_scope(tmp_path, scope, arguments):
+    path = create(tmp_path, b"old")
+    editor = open_file(path, True)
+    editor.replace("old", "new")
+    with pytest.raises(TypeError):
+        files.open_text(*arguments)
+    assert not scope.files and scope.staged_bytes == 0
+    with pytest.raises(RuntimeError):
+        editor.commit()
+    assert path.read_bytes() == b"old"

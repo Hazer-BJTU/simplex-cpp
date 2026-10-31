@@ -231,3 +231,30 @@ def test_directory_entries_support_members_methods_and_print_example(tmp_path):
     ]
     assert [entry["name"] for entry in result["result"]] == ["manual", "run_command"]
     assert result["result"][1]["return_methods"]
+
+
+def test_registry_error_hook_covers_boundaries_and_keeps_original_failure():
+    calls = []
+    registry = ToolRegistry()
+    descriptor = ToolDescriptor("guarded", "Guarded.", "guarded(value) -> int", "int", "none", "1")
+    registry.add(descriptor, lambda value: value, on_error=lambda: calls.append("discard"))
+    function = registry.bindings()["guarded"]
+    with pytest.raises(TypeError):
+        function()
+    with pytest.raises(TypeError):
+        function({1})
+    with pytest.raises(ValueError):
+        function(float("nan"))
+    assert calls == ["discard"] * 3
+    assert function(1) == 1
+    assert calls == ["discard"] * 3
+
+    def cleanup_failure():
+        raise OSError("cleanup failed")
+
+    registry.add(
+        replace(descriptor, name="bad_result"), lambda value: object(), on_error=cleanup_failure
+    )
+    with pytest.raises(TypeError) as error:
+        registry.bindings()["bad_result"](1)
+    assert any("cleanup failed" in note for note in error.value.__notes__)
