@@ -153,7 +153,18 @@ class Session:
                     raise PTCError(
                         "identity_conflict", "execution_id was used with different source"
                     )
+                # Visibility after rename is not proof that the directory
+                # durability fence succeeded. Retry the fence even if an earlier
+                # unlink succeeded but its sync failed and no marker is visible.
+                # Never re-run source while reconciling a published receipt.
+                self.storage.sync_directory()
+                self.storage.clear_pending()
                 return receipt["response"]
+            if self.storage.read("execution.pending") is not None:
+                # _pending already established this marker matches the receipt.
+                # Settle that publication before admitting a different execution.
+                self.storage.sync_directory()
+                self.storage.clear_pending()
             initial_request = (
                 request.epoch is None
                 and checkpoint["receipt"] is None

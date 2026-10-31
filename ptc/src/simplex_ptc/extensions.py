@@ -1,5 +1,6 @@
 """Explicit trusted-host extension registration; no production tools are bundled."""
 
+import builtins
 import hashlib
 import importlib
 import inspect
@@ -8,6 +9,11 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from .protocol import PTCError, encode
+
+# Conservatively reserve Python's entire builtin namespace, including names the
+# pinned Monty runtime does not yet implement. external_lookup only handles
+# unresolved names, so these cannot reliably refer to registered host functions.
+RESERVED_NAMES = frozenset(vars(builtins))
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,10 @@ class ToolRegistry:
             or inspect.iscoroutinefunction(handler)
         ):
             raise PTCError("extension_error", "invalid or duplicate tool declaration")
+        if descriptor.name in RESERVED_NAMES:
+            raise PTCError(
+                "extension_error", f"tool name {descriptor.name!r} is reserved for Python builtins"
+            )
         self._tools[descriptor.name] = descriptor, handler
 
     def manifest(self) -> list[dict]:

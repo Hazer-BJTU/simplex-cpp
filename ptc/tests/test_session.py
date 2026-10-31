@@ -496,3 +496,96 @@ def test_foreign_pending_marker_is_not_recovered_into_current_epoch(tmp_path):
     )
     with pytest.raises(PTCError, match="does not match checkpoint"):
         session.recover("foreign", "other")
+
+
+def test_replay_retries_durability_fence_without_repeating_effects(tmp_path, monkeypatch):
+    effects = []
+    registry = ToolRegistry()
+    registry.add(
+        ToolDescriptor("record", "Record", "record(x: int) -> int", "int", "write", "1"),
+        lambda value: effects.append(value) or value,
+    )
+    session = Session(tmp_path, registry)
+    execute(session, "one", "x = 1")
+    request = Request("two", "x = record(2)\nx", session.inspect()["epoch"])
+    original = session.storage.sync_directory
+    attempts = 0
+
+    def persistent_failure():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 2:
+            raise OSError("persistent directory sync failure")
+        original()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session.storage, "sync_directory", persistent_failure)
+        with pytest.raises(OSError):
+            session.execute(request)
+        assert effects == [2]
+        before = attempts
+        assert not session.inspect()["recovery_required"]
+        assert attempts == before  # inspection does not repair or acknowledge durability
+        for _ in range(3):
+            with pytest.raises(OSError):
+                session.execute(request)
+            before += 1
+            assert attempts == before
+            assert (tmp_path / "execution.pending").exists()
+            assert effects == [2]
+    result = session.execute(request)
+    assert result["committed"] and result["result"] == 2
+    assert result["revision"] == 2
+    assert not (tmp_path / "execution.pending").exists()
+    assert effects == [2]
+
+
+def test_replay_reconciles_failed_unlink_sync_without_visible_marker(tmp_path, monkeypatch):
+    session = Session(tmp_path)
+    first = execute(session, "one", "1")
+    request = Request("two", "2", first["epoch"])
+    original = session.storage.sync_directory
+    attempts = 0
+
+    def fail_after_unlink():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 3:
+            raise OSError("unlink directory sync failure")
+        original()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session.storage, "sync_directory", fail_after_unlink)
+        with pytest.raises(OSError):
+            session.execute(request)
+        assert not (tmp_path / "execution.pending").exists()
+        with pytest.raises(OSError):
+            session.execute(request)
+        assert attempts == 4
+    assert session.execute(request)["result"] == 2
+
+
+@pytest.mark.parametrize("name", ["len", "print", "open", "int", "ValueError"])
+def test_builtin_tool_names_are_rejected_without_advertising(name):
+    registry = ToolRegistry()
+    with pytest.raises(PTCError, match="reserved for Python builtins"):
+        registry.add(ToolDescriptor(name, "Test", f"{name}()", "int", "none", "1"), lambda: 42)
+    assert registry.manifest() == []
+    assert registry.bindings() == {}
+
+
+def test_distinct_host_name_and_builtins_work_after_restore(tmp_path):
+    effects = []
+    registry = ToolRegistry()
+    registry.add(
+        ToolDescriptor("tool_length", "Length", "tool_length(x) -> int", "int", "none", "1"),
+        lambda value: effects.append(value) or 42,
+    )
+    session = Session(tmp_path, registry)
+    source = "print('hello')\n[tool_length([1, 2]), len([1, 2])]"
+    for identity in ("first", "restored"):
+        result = execute(session, identity, source)
+        assert result["result"] == [42, 2]
+        assert result["output"] == "hello\n"
+    assert effects == [[1, 2], [1, 2]]
+    assert registry.manifest()[0]["name"] == "tool_length"

@@ -58,8 +58,13 @@ A successful result is converted and bounded before publishing the new state.
 Uncaught execution/conversion errors retain the previous Python state and save a
 failure receipt. External extension effects are never rolled back. Write/sync
 failures may occur after publication: inspect state rather than assuming rollback
-or repeating source. A matching committed receipt resolves a leftover pending
-marker. An unmatched marker blocks further code until explicitly acknowledged:
+or repeating source. A matching committed receipt identifies the published generation, but does not
+prove durability. Before replaying a receipt or admitting a new request with a
+matching leftover marker, execution synchronizes the checkpoint directory, then
+removes and durably settles the marker. Persistent synchronization errors remain
+storage failures; source is never re-executed during reconciliation. Cached
+replies repeat this fence even if the marker's unlink succeeded before a failed
+sync. Inspection remains observational. An unmatched marker blocks further code until explicitly acknowledged:
 
 ```sh
 uv run simplex-ptc session recover --state-directory /tmp/my-ptc-session \
@@ -121,7 +126,10 @@ def register_tools(registry):
     )
 ```
 
-The manifest and Monty bindings share one registry. Duplicate/invalid names fail.
+The manifest and Monty bindings share one registry. Duplicate/invalid names fail. Python builtin names (including `len`, `print`,
+and `open`) are reserved, even when Monty does not yet implement them: its
+external-name lookup cannot override builtins. Use distinct tool names such as
+`read_file`. User code must also avoid shadowing tool names with its own globals.
 Change a descriptor's version when implementation semantics change. Extensions
 are trusted host code; their descriptors do not confer permissions or sandbox
 their effects. Initial callbacks are synchronous and exchange plain JSON-compatible
