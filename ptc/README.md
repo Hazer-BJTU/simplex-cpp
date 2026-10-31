@@ -41,6 +41,43 @@ response, and changing its source is rejected. Older IDs are not remembered;
 callers must not retry old requests or recycle IDs. This is not an exactly-once
 execution service.
 
+## Interactive manual testing
+
+```sh
+cd ptc
+uv sync --locked
+uv run simplex-ptc repl
+# Or retain the test session across console restarts:
+uv run simplex-ptc repl --state-directory /tmp/my-ptc-session
+```
+
+The default session is temporary and is removed when the console exits. An
+explicit directory is retained. Single lines execute on Enter; `:paste` starts a
+multiline block and `:run` submits it. The block is executed as one snippet:
+
+```text
+ptc> manual()
+ptc> print(manual("manual").render())
+ptc> :paste
+... info = manual("manual")
+... print(info.signature)
+... info.to_dict()
+... :run
+```
+
+Use `:state` for session metadata, `:abort` to discard a block, `:help` for help,
+and `:quit` or Ctrl-D to exit. Ctrl-C clears pending input or interrupts active
+execution. Unsubmitted input is never executed on exit. The console labels
+printed output, final results, truncation, errors, and committed revisions.
+
+Each submission uses the normal persistent engine and a fresh Monty checkout:
+plain variables survive, but host methods do not survive into the next
+submission. Use a multiline block to obtain a ManualResult and call its methods,
+or save its `to_dict()` result. The console never evaluates code with host Python
+and never automatically retries, resets, or acknowledges interrupted executions.
+Use the existing session CLI for explicit recovery/reset when needed. Machine
+commands (`execute`, `capabilities`, `session`) retain their JSON output contract.
+
 ## State and failure semantics
 
 Each state directory is one logical session. Each invocation owns a fresh Monty
