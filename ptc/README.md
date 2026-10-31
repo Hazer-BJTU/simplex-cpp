@@ -2,9 +2,9 @@
 
 An independent, experimental Python/uv package built on pinned Pydantic Monty.
 It executes a Python subset, preserves idle interpreter state across invocations,
-and exposes an extension registry with the read-only `manual()` builtin. No
-process/file tools, worker integration, Hub networking, end-to-end tests, or
-release artifacts are included in this phase.
+and exposes an extension registry with the read-only `manual()` builtin and an
+opt-in shell `run_command`. No file tools, worker integration, Hub networking,
+end-to-end integration tests, or release artifacts are included in this phase.
 
 ## Install and run
 
@@ -187,6 +187,106 @@ in the compatibility fingerprint. Adding the manual changes that fingerprint:
 pre-manual experimental checkpoints are incompatible and are not silently reset
 or migrated; explicitly select a new state directory if needed.
 
+## Shell commands: kill or detach
+
+Enable the packaged process module explicitly (before the subcommand):
+
+```sh
+uv run simplex-ptc --module simplex_ptc.tools.process repl
+```
+
+The default registry still exposes only `manual()`. Enabling/removing modules
+changes the session compatibility fingerprint; use a separate state directory
+when testing a different capability set. Inspect the complete function and
+return-object documentation with `print(manual("run_command").render())`.
+
+```python
+result = run_command("printf hello; printf warning >&2")
+print(result.stdout)
+print(result.stderr)
+result.to_dict()
+
+run_command("sleep 10", timeout_seconds=0.1, timeout_action="kill")
+
+run_command(
+    "python3 job.py </dev/null >job.log 2>&1",
+    timeout_seconds=0,
+    timeout_action="detach",
+)
+run_command("tail -n 40 -- job.log")
+```
+
+Use a single `:paste` block for obtaining an object and calling its methods in
+the REPL. The signature is:
+
+```python
+run_command(
+    command: str,
+    *,
+    working_directory: str | None = None,
+    timeout_seconds: float = 60.0,
+    timeout_action: str = "kill",
+) -> CommandResult
+```
+
+The host executes `/bin/bash -c`, falling back to `/usr/bin/bash`, then `/bin/sh`.
+Shell syntax depends on the selected shell. Environment variables are inherited;
+use shell syntax to customize them. stdin is `/dev/null`; no TTY is allocated.
+Relative working directories use the host's current directory. This is arbitrary
+host code with host permissions, not a filesystem/process sandbox or an approval
+mechanism. Monty restrictions do not constrain shell effects.
+
+- **kill:** the finite wait expires, the still-running process group receives
+  SIGKILL, and the direct child is reaped. The result reports `status="killed"`
+  and `timed_out=True`. This is an execution timeout, unlike the native worker
+  tool's initial-wait timeout. The default is 60 seconds; accepted range (0, 300].
+- **detach:** if waiting expires, return `status="detached"` and `timed_out=False`
+  without terminating the command. Zero means immediate return; accepted range
+  [0, 300]. A command finishing during the wait returns `status="exited"` instead.
+  The result is a snapshot, not a live query. No eventual exit status is collected
+  for the caller.
+
+Process creation and bounded pipe cleanup can add latency beyond the requested
+wait. An ordinary nonzero exit is returned as data, not raised. Launch/IO failures
+raise exceptions. Kill-mode handled interruptions attempt termination/reaping;
+detach-mode interruptions or later Python failures do not kill the command.
+Side effects are not rolled back if the Python checkpoint fails.
+
+**Detach closes this tool's stdout/stderr capture pipes on return.** If a program
+continues writing to those pipes, it can receive SIGPIPE, BrokenPipeError/EPIPE,
+lose output, fail operations or terminate prematurely. There is no promise that
+an arbitrary unmodified program survives detach. Redirect stdin/stdout/stderr
+explicitly, or use a session manager such as tmux/screen to own the background
+job. Manage its logs, output, lifetime and later inspection yourself through
+shell commands. The returned PID is the shell/direct-child PID at launch; it can
+be reused and is not a durable identity or a safe later kill target by itself.
+
+There is **no task registry, status/log directory, supervisor, polling/control
+API, process restoration, or automatic record retention**. There is also no
+`spawn_process`. The only background housekeeping is a daemon wait thread to
+reap the direct child while the Python host is alive; it neither signals the
+child nor keeps Python alive. A fresh POSIX session avoids inheriting the host's
+terminal session, but container/service cgroups, system shutdown and application
+behavior can still end the command. SIGKILL of the Python host cannot execute
+kill-mode cleanup; descendants that escape the process group are not contained.
+
+Output capture retains at most 64 KiB **combined** across stdout and stderr while
+continuing to drain excess data. Streams remain separate, with no invented
+cross-stream ordering. `CommandResult` exposes flat `status`, `pid`, `exit_code`,
+`termination_signal`, `timed_out`, `duration_seconds`, `stdout`, `stderr`,
+`output_complete`, per-stream `*_omitted_bytes`, and `hints`. It provides only
+`to_dict()` and `render()`, using the same ClassInstance lifetime rules as the
+manual. A fresh final result automatically converts to plain data.
+
+`output_complete` means EOF was observed on both captured pipes, independently
+of truncation. Omission counts cover observed discarded bytes only; they cannot
+count output after detach. Invalid UTF-8 and cut multibyte sequences are replaced
+and reported. If an exited shell leaves descendants holding its pipe writers,
+EOF draining lasts at most 0.1 seconds before capture is closed and reported as
+incomplete; those descendants may then encounter the same pipe failures.
+Redirect potentially large or long-lived output to files yourself. Final JSON
+responses remain subject to the independent 48 KiB envelope budget.
+
 ## Extensions
 
 Only `manual()` is built in by default. Install trusted modules into the same
@@ -219,8 +319,8 @@ Change a descriptor's version when implementation semantics change. Extensions
 are trusted host code; their descriptors do not confer permissions or sandbox
 their effects. Initial callbacks are synchronous and accept plain JSON-compatible arguments
 (string-keyed objects, arrays, strings, finite numbers, booleans and null; tuples
-become arrays). Results may also use the explicitly supported `ManualResult`
-ClassInstance wrapper. Arbitrary host objects and wrappers remain rejected.
+become arrays). Results may also use the explicitly supported `ManualResult` or `CommandResult`
+ClassInstance wrappers. Arbitrary host objects and wrappers remain rejected.
 Nesting is limited to 128 levels. They must settle their own resources before returning, must not
 write directly to protocol fd 1, and must not retain live resources in returned
 values. Async callbacks and execution-owned resource services can be added when

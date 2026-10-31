@@ -1,4 +1,4 @@
-"""Independent experimental PTC interpreter; read-only manual and no worker coupling."""
+"""Independent experimental PTC interpreter; manual and optional shell tools; no worker coupling."""
 
 from .extensions import ToolDescriptor, ToolRegistry
 from .manual import ManualResult
