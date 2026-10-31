@@ -254,6 +254,10 @@ wait. An ordinary nonzero exit is returned as data, not raised. Launch/IO failur
 raise exceptions. Kill-mode handled interruptions attempt termination/reaping;
 detach-mode interruptions or later Python failures do not kill the command.
 Side effects are not rolled back if the Python checkpoint fails.
+Handled SIGINT/SIGTERM are briefly deferred during main-thread process acquisition
+until the returned child handle is inside the cleanup scope. The original handler
+then runs, so a launch interruption cannot bypass kill-mode cleanup. This does
+not block signals in the child or change inherited ignored/default dispositions.
 
 **Detach closes this tool's stdout/stderr capture pipes on return.** If a program
 continues writing to those pipes, it can receive SIGPIPE, BrokenPipeError/EPIPE,

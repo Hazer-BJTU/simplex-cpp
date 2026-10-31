@@ -329,3 +329,142 @@ def test_capture_setup_failure_closes_pipes_and_kills_owned_child(monkeypatch):
         command("exec sleep 10")
     assert seen[0].returncode == -signal.SIGKILL
     assert seen[0].stdout.closed and seen[0].stderr.closed
+
+
+@pytest.mark.parametrize("through_session", [False, True])
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_interrupted_constructor_owns_and_kills_child(
+    tmp_path, monkeypatch, through_session, signum
+):
+    """Deliver a real signal after exec succeeds but before Popen returns."""
+    marker = tmp_path / "effect-after-failure"
+    source = f"sleep 0.3; printf leaked >{shlex.quote(str(marker))}"
+    children = []
+    original = subprocess.Popen._execute_child
+
+    def interrupted_launch(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        children.append(self)
+        signal.raise_signal(signum)
+
+    def interrupt(_signum, _frame):
+        raise KeyboardInterrupt("test launch interruption")
+
+    old_handler = signal.signal(signum, interrupt)
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", interrupted_launch)
+    try:
+        if through_session:
+            session = Session(tmp_path / "state", ToolRegistry.load(["simplex_ptc.tools.process"]))
+            response = session.execute(
+                Request("one", f"run_command({source!r}, timeout_seconds=10)")
+            )
+            assert response["status"] == "failed", response
+            assert not response["committed"]
+            assert not (tmp_path / "state" / "execution.pending").exists()
+            assert session.storage.read("checkpoint")["receipt"]["response"] == response
+        else:
+            with pytest.raises(KeyboardInterrupt, match="test launch interruption"):
+                command(source, timeout_seconds=10)
+        assert signal.getsignal(signum) is interrupt
+        assert len(children) == 1
+        child = children[0]
+        assert child.returncode == -signal.SIGKILL
+        assert child.stdout.closed and child.stderr.closed
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+        time.sleep(0.4)
+        assert not marker.exists()
+    finally:
+        signal.signal(signum, old_handler)
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=3)
+
+
+def test_constructor_signal_preserves_detach_policy(monkeypatch):
+    children = []
+    original = subprocess.Popen._execute_child
+
+    def interrupted_launch(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        children.append(self)
+        signal.raise_signal(signal.SIGINT)
+
+    old_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", interrupted_launch)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            command("exec sleep 10", timeout_action="detach")
+        assert children[0].poll() is None
+        assert children[0].stdout.closed and children[0].stderr.closed
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+        for child in children:
+            reap_test_child(child.pid)
+
+
+def test_launch_keeps_child_signal_mask_and_ignore_disposition():
+    old_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        result = command(
+            python_command(
+                "import signal; "
+                "print(signal.getsignal(signal.SIGINT) == signal.SIG_IGN); "
+                "blocked = signal.pthread_sigmask(signal.SIG_BLOCK, []); "
+                "print(signal.SIGINT in blocked, signal.SIGTERM in blocked)"
+            )
+        )
+        assert result.stdout == "True\nFalse False\n"
+        assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+        # The default termination disposition remains functional in the child.
+        assert command("kill -TERM $$").termination_signal == signal.SIGTERM
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+
+
+def test_launch_restores_handlers_when_popen_fails(tmp_path):
+    original = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    with pytest.raises(FileNotFoundError):
+        command("true", working_directory=str(tmp_path / "missing"))
+    assert {signum: signal.getsignal(signum) for signum in original} == original
+
+
+def test_command_from_non_main_thread_does_not_change_signal_handlers():
+    from concurrent.futures import ThreadPoolExecutor
+
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(command, "printf thread").result(timeout=5)
+    assert result.stdout == "thread"
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+
+
+def test_nonraising_launch_handler_runs_after_acquisition(monkeypatch):
+    children = []
+    observed = []
+    original = subprocess.Popen._execute_child
+
+    def interrupted_launch(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        children.append(self)
+        signal.raise_signal(signal.SIGTERM)
+        assert not observed
+
+    def handler(signum, _frame):
+        observed.append(signum)
+
+    old_handler = signal.signal(signal.SIGTERM, handler)
+    monkeypatch.setattr(subprocess.Popen, "_execute_child", interrupted_launch)
+    try:
+        result = command("printf completed")
+        assert result.stdout == "completed"
+        assert observed == [signal.SIGTERM]
+        assert signal.getsignal(signal.SIGTERM) is handler
+    finally:
+        signal.signal(signal.SIGTERM, old_handler)
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=3)

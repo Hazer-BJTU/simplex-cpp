@@ -12,6 +12,7 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -140,6 +141,42 @@ def _shell() -> str:
     raise FileNotFoundError("run_command requires /bin/bash, /usr/bin/bash or /bin/sh")
 
 
+@contextmanager
+def _defer_launch_signals():
+    """Delay handled termination signals until Popen has returned an owned handle.
+
+    Python handlers can raise after fork/exec but before Popen returns. Record
+    SIGINT/SIGTERM during that acquisition window, restore the original handlers,
+    then invoke them inside the caller's cleanup scope. No OS signals are blocked:
+    children must not inherit a blocked signal mask. SIG_IGN and SIG_DFL are left
+    unchanged, preserving inherited ignore behavior and unhandled termination.
+    Python dispatches signal handlers only on the main thread, so other calling
+    threads neither need nor are permitted to replace these handlers.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    handlers = {}
+    pending = {}
+
+    def defer(signum, frame):
+        # Coalesce repeated instances, like ordinary pending POSIX signals.
+        pending.setdefault(signum, frame)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            handler = signal.getsignal(signum)
+            if callable(handler):
+                handlers[signum] = handler
+                signal.signal(signum, defer)
+        yield
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+        for signum, frame in pending.items():
+            handlers[signum](signum, frame)
+
+
 def run_command(
     command: str,
     *,
@@ -174,18 +211,20 @@ def run_command(
         raise ValueError("timeout_seconds must be in (0, 300], or [0, 300] for detach")
 
     started = time.monotonic()
-    process = subprocess.Popen(
-        [_shell(), "-c", command],
-        cwd=working_directory,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        close_fds=True,
-    )
+    process = None
     capture = None
     primary_failure = False
     try:
+        with _defer_launch_signals():
+            process = subprocess.Popen(
+                [_shell(), "-c", command],
+                cwd=working_directory,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                close_fds=True,
+            )
         capture = _Capture(process)
         deadline = started + timeout_seconds
         status = "exited"
@@ -255,7 +294,7 @@ def run_command(
         # Kill mode owns the child until settlement; detach mode deliberately
         # does not bind its lifetime to either this call or the Python process.
         try:
-            if timeout_action == "kill" and process.returncode is None:
+            if process is not None and timeout_action == "kill" and process.returncode is None:
                 _kill_and_reap(process)
         except BaseException:
             if not primary_failure:
@@ -263,10 +302,11 @@ def run_command(
         finally:
             if capture is not None:
                 capture.close()
-            process.stdout.close()
-            process.stderr.close()
-            if process.returncode is None:
-                _reap_later(process)
+            if process is not None:
+                process.stdout.close()
+                process.stderr.close()
+                if process.returncode is None:
+                    _reap_later(process)
 
 
 def register_tools(registry) -> None:
