@@ -478,7 +478,7 @@ def test_all_editors_close_even_when_one_cleanup_reports_error(tmp_path, monkeyp
     from simplex_ptc.resources import current_resources
 
     path = create(tmp_path)
-    original = files.TextFile.close
+    original = files.TextFile._release
     seen = []
 
     def fail_after_close(self):
@@ -490,7 +490,7 @@ def test_all_editors_close_even_when_one_cleanup_reports_error(tmp_path, monkeyp
         with execution_resources():
             first = open_file(path)
             second = open_file(path)
-            monkeypatch.setattr(files.TextFile, "close", fail_after_close)
+            monkeypatch.setattr(files.TextFile, "_release", fail_after_close)
     assert set(seen) == {first, second}
     assert first._fd is None and second._fd is None
     with pytest.raises(RuntimeError, match="active PTC execution"):
@@ -499,7 +499,7 @@ def test_all_editors_close_even_when_one_cleanup_reports_error(tmp_path, monkeyp
 
 def test_context_cleanup_preserves_original_error(tmp_path, monkeypatch):
     path = create(tmp_path)
-    original = files.TextFile.close
+    original = files.TextFile._release
 
     def fail_after_close(self):
         original(self)
@@ -508,7 +508,7 @@ def test_context_cleanup_preserves_original_error(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="primary") as error:
         with execution_resources():
             open_file(path)
-            monkeypatch.setattr(files.TextFile, "close", fail_after_close)
+            monkeypatch.setattr(files.TextFile, "_release", fail_after_close)
             raise ValueError("primary")
     assert any("cleanup error" in note for note in error.value.__notes__)
 
@@ -679,9 +679,13 @@ def test_default_directory_acl_is_rejected_before_content_or_permissions_expand(
         'open_text("unused", unknown=True)',
         'open_text({"not-json"})',
         'open_text(float("nan"))',
+        "f.close(True)",
+        "f.close(unknown=True)",
+        "f.discard(True)",
+        "f.discard(unknown=True)",
     ],
 )
-def test_caught_entry_and_boundary_errors_invalidate_all_editors(tmp_path, expression):
+def test_caught_argument_errors_invalidate_all_editors(tmp_path, expression):
     from simplex_ptc import ToolDescriptor
     from simplex_ptc.resources import current_resources
 
@@ -702,11 +706,13 @@ def test_caught_entry_and_boundary_errors_invalidate_all_editors(tmp_path, expre
 g = open_text({str(second)!r}, writable=True)
 f.replace("old", "new")
 g.insert(0, "pending")
+caught = False
 try:
     {expression}
 except (TypeError, ValueError):
     caught = True
 state = budget()
+blocked = False
 try:
     f.commit()
 except RuntimeError:
@@ -730,3 +736,96 @@ def test_direct_entry_binding_error_invalidates_scope(tmp_path, scope, arguments
     with pytest.raises(RuntimeError):
         editor.commit()
     assert path.read_bytes() == b"old"
+
+
+@pytest.mark.parametrize("method", ["close", "discard"])
+def test_direct_close_binding_error_invalidates_all_editors(tmp_path, scope, method):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_text("old")
+    second.write_text("other")
+    f, g = open_file(first, True), open_file(second, True)
+    f.insert(0, "first staged")
+    g.insert(0, "second staged")
+    with pytest.raises(TypeError):
+        getattr(f, method)(unknown=True)
+    assert not scope.files and scope.staged_bytes == 0
+    assert f._fd is None and f._parent_fd is None
+    assert g._fd is None and g._parent_fd is None
+    with pytest.raises(RuntimeError):
+        g.commit()
+    assert first.read_text() == "old" and second.read_text() == "other"
+
+
+@pytest.mark.parametrize("method", ["close", "discard"])
+def test_caught_close_io_error_invalidates_other_editors(tmp_path, monkeypatch, method):
+    import errno
+
+    from simplex_ptc import ToolDescriptor
+    from simplex_ptc.resources import current_resources
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_text("old")
+    second.write_text("other")
+    info = first.stat()
+    identity = info.st_dev, info.st_ino
+    close = os.close
+    failures = []
+
+    def fail_after_close(fd):
+        info = os.fstat(fd)
+        close(fd)
+        if (info.st_dev, info.st_ino) == identity:
+            failures.append(fd)
+            raise OSError(errno.EIO, "injected close I/O failure")
+
+    monkeypatch.setattr(os, "close", fail_after_close)
+    registry = ToolRegistry.load(["simplex_ptc.tools.files"])
+    registry.add(
+        ToolDescriptor(
+            "budget", "Inspect test scope.", "budget() -> list[int]", "list[int]", "none", "1"
+        ),
+        lambda: [len(current_resources().files), current_resources().staged_bytes],
+    )
+    session = Session(tmp_path / "state", registry)
+    result = run(
+        session,
+        f"""f = open_text({str(first)!r}, writable=True)
+g = open_text({str(second)!r}, writable=True)
+f.insert(0, "first staged")
+g.insert(0, "second staged")
+caught = False
+try:
+    f.{method}()
+except OSError as error:
+    caught = "injected close I/O failure" in str(error)
+state = budget()
+blocked = False
+try:
+    g.commit()
+except RuntimeError:
+    blocked = True
+[caught, state, blocked]
+""",
+    )
+    assert result["status"] == "completed", result
+    assert result["result"] == [True, [0, 0], True]
+    assert len(failures) == 1
+    assert first.read_text() == "old" and second.read_text() == "other"
+
+
+def test_repeated_close_and_discard_leave_other_editors_usable(tmp_path, scope):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_text("old")
+    second.write_text("other")
+    f, g = open_file(first, True), open_file(second, True)
+    f.insert(0, "discarded")
+    g.insert(0, "kept ")
+    first.write_text("externally changed")
+    for method in (f.close, f.discard, f.close, f.discard):
+        method()
+        assert scope.files == {g}
+        assert scope.staged_bytes == len("kept ")
+    g.commit()
+    assert first.read_text() == "externally changed"
+    assert second.read_text() == "kept other"
+    assert not scope.files and scope.staged_bytes == 0

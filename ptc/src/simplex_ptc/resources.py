@@ -31,7 +31,7 @@ class ExecutionResources:
         failure = None
         for file in tuple(self.files):
             try:
-                file.close()
+                file._release()
             except BaseException as exc:
                 if failure is None:
                     failure = exc

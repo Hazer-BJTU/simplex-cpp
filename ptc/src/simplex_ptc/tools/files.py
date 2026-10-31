@@ -107,23 +107,34 @@ def _signature(info):
     )
 
 
-def _operation(method):
-    """Validate original identity around reads/edits and poison work on any error."""
+def _file_method(method):
+    """Invalidate all editors on method binding or execution errors."""
 
     @functools.wraps(method)
     def guarded(self, *args, **kwargs):
         try:
-            self._check()
-            result = method(self, *args, **kwargs)
-            if self._fd is not None:
-                self._check()
-            return result
+            return method(self, *args, **kwargs)
         except BaseException as exc:
             try:
                 self._scope.abort()
             except BaseException as cleanup:
                 exc.add_note(f"file cleanup also failed: {cleanup}")
             raise
+
+    return guarded
+
+
+def _operation(method):
+    """Validate original identity around reads/edits and poison work on any error."""
+
+    @_file_method
+    @functools.wraps(method)
+    def guarded(self, *args, **kwargs):
+        self._check()
+        result = method(self, *args, **kwargs)
+        if self._fd is not None:
+            self._check()
+        return result
 
     return guarded
 
@@ -278,7 +289,7 @@ class TextFile:
             self._check()
             scope.files.add(self)
         except BaseException:
-            self.close()
+            self._release()
             raise
 
     def _check(self):
@@ -508,7 +519,7 @@ class TextFile:
         count = len(self._edits)
         if not count:
             result = CommitResult(self.path, False, 0, self.size_bytes, self.size_bytes)
-            self.close()
+            self._release()
             return _wrap(result)
         temporary = f".simplex-edit-{uuid.uuid4().hex}"
         phase = "preparing"
@@ -562,19 +573,25 @@ class TextFile:
                     pass
         result = CommitResult(self.path, True, count, self.size_bytes, size)
         try:
-            self.close()
+            self._release()
         except OSError as exc:
             raise RuntimeError(
                 "file was committed but editor cleanup failed; inspect before retrying"
             ) from exc
         return _wrap(result)
 
+    @_file_method
     def discard(self) -> None:
         """Discard every staged edit in this object and close it; never save."""
-        self.close()
+        self._release()
 
+    @_file_method
     def close(self) -> None:
         """Idempotently release descriptors and budget; no commit and no rollback."""
+        self._release()
+
+    def _release(self) -> None:
+        """Release resources without reentering public method error handling."""
         self._edits.clear()
         self._scope.staged_bytes -= self._staged
         self._staged = 0
