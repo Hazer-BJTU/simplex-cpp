@@ -101,7 +101,10 @@ def bound_response(response: dict) -> dict:
     Budget the final serialized envelope, including JSON escaping and metadata.
     This function runs before committing a successful interpreter state.
     """
+    from .results import plain_result
+
     try:
+        response["result"] = plain_result(response.get("result"))
         raw = encode(response)
         if len(raw) <= MAX_RESPONSE_BYTES:
             return response
