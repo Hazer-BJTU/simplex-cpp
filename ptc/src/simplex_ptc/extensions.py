@@ -48,12 +48,24 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, tuple[ToolDescriptor, Callable]] = {}
+        self._error_handlers: dict[str, Callable | None] = {}
         from .manual import register_manual
 
         register_manual(self)
 
-    def add(self, descriptor: ToolDescriptor, handler: Callable) -> None:
-        """Register a synchronous plain-data callable; reject ambiguous names."""
+    def add(
+        self,
+        descriptor: ToolDescriptor,
+        handler: Callable,
+        *,
+        on_error: Callable[[], None] | None = None,
+    ) -> None:
+        """Register a callable and optional invocation-failure cleanup.
+
+        on_error covers boundary conversion, Python argument binding, handler
+        execution and result validation. It must be synchronous and must not
+        publish effects; its failure is attached without hiding the original.
+        """
         if (
             not isinstance(descriptor, ToolDescriptor)
             or not all(
@@ -79,6 +91,10 @@ class ToolRegistry:
             or descriptor.name in self._tools
             or not callable(handler)
             or inspect.iscoroutinefunction(handler)
+            or (
+                on_error is not None
+                and (not callable(on_error) or inspect.iscoroutinefunction(on_error))
+            )
         ):
             raise PTCError("extension_error", "invalid or duplicate tool declaration")
         if descriptor.name in RESERVED_NAMES:
@@ -86,6 +102,7 @@ class ToolRegistry:
                 "extension_error", f"tool name {descriptor.name!r} is reserved for Python builtins"
             )
         self._tools[descriptor.name] = descriptor, handler
+        self._error_handlers[descriptor.name] = on_error
 
     def manifest(self) -> list[dict]:
         """Return sorted descriptors without importing arbitrary working-directory code."""
@@ -98,18 +115,29 @@ class ToolRegistry:
     def bindings(self) -> dict[str, Callable]:
         """Bind plain arguments and explicitly supported host result wrappers."""
 
-        def wrap(handler):
+        def wrap(handler, on_error):
             def invoke(*args, **kwargs):
-                encode([args, kwargs])
-                result = handler(*args, **kwargs)
-                from .results import validate_host_result
+                try:
+                    encode([args, kwargs])
+                    result = handler(*args, **kwargs)
+                    from .results import validate_host_result
 
-                validate_host_result(result)
-                return result
+                    validate_host_result(result)
+                    return result
+                except BaseException as exc:
+                    if on_error is not None:
+                        try:
+                            on_error()
+                        except BaseException as cleanup:
+                            exc.add_note(f"tool failure cleanup also failed: {cleanup}")
+                    raise
 
             return invoke
 
-        return {name: wrap(handler) for name, (_, handler) in self._tools.items()}
+        return {
+            name: wrap(handler, self._error_handlers[name])
+            for name, (_, handler) in self._tools.items()
+        }
 
     @classmethod
     def load(cls, modules: list[str]) -> "ToolRegistry":
