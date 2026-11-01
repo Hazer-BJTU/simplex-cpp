@@ -7,7 +7,13 @@ is needed when PTC is not configured.
 
 ## Install and enable
 
-From a source checkout matching the worker version, install the standalone
+Download the separate `simplex-ptc-vX.Y.Z-source.tar.gz` asset from the matching
+[GitHub release](https://github.com/Hazer-BJTU/simplex-cpp/releases). Verify it
+against `SHA256SUMS`, extract it, and follow the included `INSTALL.md`. The
+archive contains source, tests, the lockfile and license; Python and dependencies
+are installed locally, not bundled. This is not a PyPI publication.
+
+Alternatively, from a matching source checkout, install the standalone
 interpreter with [uv](https://docs.astral.sh/uv/):
 
 ```sh

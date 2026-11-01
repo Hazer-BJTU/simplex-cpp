@@ -61,7 +61,7 @@ const required = new Set([
     'validate-tag',
     'build',
     'build-hub',
-    // Assembly cannot succeed until every musl reusable-workflow job passes.
+    // Assembly requires all musl jobs and extracted PTC source tests to pass.
     'assemble-worker-assets',
     'target-test (ubuntu:22.04)',
     'target-test (almalinux:9)',

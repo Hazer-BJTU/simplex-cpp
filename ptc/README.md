@@ -5,7 +5,9 @@ It executes a Python subset, preserves idle interpreter state across invocations
 and exposes an extension registry with the read-only `manual()` builtin and an
 opt-in shell `run_command` and UTF-8 `open_text` editor. The optional worker
 adapter is documented below; this package remains independently installable.
-Direct Hub networking and interpreter release artifacts are not included.
+Direct Hub networking is not included. GitHub releases provide a separate source
+archive; see [INSTALL.md](INSTALL.md) for complete standalone installation,
+verification, worker configuration, and upgrade instructions.
 
 ## Install and run
 
