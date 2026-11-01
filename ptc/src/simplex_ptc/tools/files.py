@@ -40,26 +40,86 @@ class TextSlice:
         """Detach all fragment data for persistence or final output."""
         return asdict(self)
 
-    def render(self) -> str:
-        """Return the selected text without inventing lines or modifying newlines."""
-        return self.text
+    def render(self, format: str = "plain") -> str:
+        """Format this captured slice without reopening the file.
+
+        Annotated rows normalize display separators to LF. Byte coordinates
+        include retained original terminators; plain preserves text exactly.
+        Byte reads have no original line index and reject the lines format.
+        """
+        _render_format(format)
+        if format == "plain":
+            return self.text
+        if format == "lines" and self.start_line is None:
+            raise ValueError("lines format requires read_lines(), not read_bytes()")
+        rows = []
+        offset = self.start_byte
+        number = self.start_line or 0
+        for match in re.finditer(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$", self.text):
+            part = match.group()
+            end = offset + len(part.encode("utf-8"))
+            label = str(number) if format == "lines" else f"[{offset}:{end})"
+            rows.append((label, part.rstrip("\r\n")))
+            offset = end
+            number += 1
+        width = max((len(label) for label, _ in rows), default=0)
+        return "\n".join(f"{label:>{width}} | {text}" for label, text in rows)
+
+
+def _render_format(format: str) -> None:
+    """Reject unknown display modes rather than silently changing presentation."""
+    if format not in ("plain", "lines", "bytes"):
+        raise ValueError("format must be plain, lines or bytes")
 
 
 @dataclass(frozen=True)
 class EditPreview:
-    """Bounded before/after display with aligned zero-based line numbers."""
+    """Bounded rows retained independently of display format.
 
-    text: str
+    Internal rows contain line number, changed flag, display text and retained
+    byte range. Before coordinates refer to the original; After coordinates
+    refer to the fully staged result and must never be used as edit offsets.
+    """
+
     edit_count: int
     truncated: bool
+    _before: tuple[tuple[int, bool, str, int, int], ...] = ()
+    _after: tuple[tuple[int, bool, str, int, int], ...] = ()
+
+    @property
+    def text(self) -> str:
+        """Keep the existing default numbered preview available as text."""
+        return self.render()
 
     def to_dict(self) -> dict:
-        """Return a plain preview snapshot, never an editable handle."""
-        return asdict(self)
+        """Detach the default display without exposing internal row storage."""
+        return dict(text=self.text, edit_count=self.edit_count, truncated=self.truncated)
 
-    def render(self) -> str:
-        """Display '-' old lines, '+' new lines and unmarked context."""
-        return self.text
+    def render(self, format: str = "lines") -> str:
+        """Render before/after sections; plain removes coordinates, not markers."""
+        _render_format(format)
+        if not self.edit_count:
+            return "No staged changes."
+
+        def label(row):
+            return str(row[0]) if format == "lines" else f"[{row[3]}:{row[4]})"
+
+        width = max((len(label(row)) for row in self._before + self._after), default=1)
+        lines = []
+        for title, rows, marker in (("Before", self._before, "-"), ("After", self._after, "+")):
+            lines.append(title)
+            last = None
+            for row in rows:
+                number, changed, text, _, _ = row
+                if last is not None and number != last + 1:
+                    lines.append("  …")
+                prefix = marker if changed else " "
+                coordinate = "" if format == "plain" else f"{label(row):>{width}} | "
+                lines.append(f"{prefix} {coordinate}{text}")
+                last = number
+        if self.truncated:
+            lines.append("[Preview truncated; staged edits are unchanged.]")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -84,7 +144,13 @@ class CommitResult:
 def _wrap(value):
     """Expose only flat result fields and explicit pure-data/display methods."""
     return ClassInstance(
-        value, eager_attrs=tuple(value.__dataclass_fields__), allowed_methods={"to_dict", "render"}
+        value,
+        eager_attrs=(
+            ("text", "edit_count", "truncated")
+            if isinstance(value, EditPreview)
+            else tuple(value.__dataclass_fields__)
+        ),
+        allowed_methods={"to_dict", "render"},
     )
 
 
@@ -189,14 +255,14 @@ def _preview_rows(chunks, ranges, context, budget=24 * 1024):
 
     def append(row, mark):
         nonlocal used, last, truncated
-        number, text, was_clipped = row
+        number, text, was_clipped, byte_start, byte_end = row
         if number <= last:
             return True
-        cost = len(text.encode()) + 40
+        cost = len(text.encode()) + 80
         if used + cost > budget:
             return False
         truncated |= was_clipped
-        rows.append((number, mark, text))
+        rows.append((number, mark, text, byte_start, byte_end))
         used += cost
         last = number
         return True
@@ -208,10 +274,10 @@ def _preview_rows(chunks, ranges, context, budget=24 * 1024):
         pos += len(piece)
         if not ends:
             continue
-        text, _ = _decode_prefix(bytes(prefix), clipped)
+        text, retained = _decode_prefix(bytes(prefix), clipped)
         text = text.rstrip("\r\n") + (" … [line truncated]" if clipped else "")
         hit = any((a < pos and b > start) if a != b else start <= a < pos for a, b in ranges)
-        row = (line, text, clipped)
+        row = (line, text, clipped, start, start + retained)
         if hit:
             for previous in ring:
                 if not append(previous, False):
@@ -236,7 +302,7 @@ def _preview_rows(chunks, ranges, context, budget=24 * 1024):
         for previous in ring:
             if not append(previous, False):
                 return rows, True
-        if not append((line, "[EOF]", False), True):
+        if not append((line, "[EOF]", False, pos, pos), True):
             return rows, True
     return rows, truncated
 
@@ -487,7 +553,7 @@ class TextFile:
         if context_lines > 20:
             raise ValueError("context_lines must be between 0 and 20")
         if not self._edits:
-            return _wrap(EditPreview("No staged changes.", 0, False))
+            return _wrap(EditPreview(0, False))
         before_ranges = [(a, b) for a, b, _ in self._edits]
         after_ranges = []
         delta = 0
@@ -496,20 +562,9 @@ class TextFile:
             delta += len(text) - (end - start)
         before, cut_before = _preview_rows(self._range(), before_ranges, context_lines)
         after, cut_after = _preview_rows(self._modified(), after_ranges, context_lines)
-        width = max((len(str(row[0])) for row in before + after), default=1)
-        lines = []
-        for title, rows, marker in (("Before", before, "-"), ("After", after, "+")):
-            lines.append(title)
-            last = None
-            for number, changed, text in rows:
-                if last is not None and number != last + 1:
-                    lines.append("  …")
-                lines.append(f"{marker if changed else ' '} {number:>{width}} | {text}")
-                last = number
-        truncated = cut_before or cut_after
-        if truncated:
-            lines.append("[Preview truncated; staged edits are unchanged.]")
-        return _wrap(EditPreview("\n".join(lines), len(self._edits), truncated))
+        return _wrap(
+            EditPreview(len(self._edits), cut_before or cut_after, tuple(before), tuple(after))
+        )
 
     @_operation
     def commit(self) -> ClassInstance:
@@ -665,7 +720,7 @@ def register_tools(registry):
             signature="open_text(path: str, *, writable: bool = False) -> TextFile",
             result="TextFile wrapped in ClassInstance. It is an invocation-local editor, not a serializable result. Methods return flat TextSlice, EditPreview or CommitResult wrappers.",
             effects="Reads host files; only explicit commit publishes changes. No autosave, undo, cross-call handles or multi-file atomic transaction.",
-            version="1",
+            version="2",
             details="All edit positions refer to the opened original version. Reads show original content, not staged content. Any failed file operation invalidates all still-open editors in this PTC invocation, including argument-binding and registry boundary failures caught by Python. Reopen to start fresh. Already committed files are never rolled back.",
             inputs=(
                 "path: str — existing regular file, at most 1 GiB; relative to host cwd. Intermediate symlinks and '..' follow filesystem lookup order; final-component symlinks are rejected.",
@@ -692,8 +747,8 @@ def register_tools(registry):
                 "OSError: filesystem/permission/IO failure; no implicit retry.",
             ),
             notes=(
-                "TextSlice fields: text, start_byte, end_byte (exclusive), start_line, end_line (exclusive; None for byte reads), truncated. render() -> str returns plain text; to_dict() -> dict detaches data.",
-                "EditPreview fields: text, edit_count, truncated; render() -> str and to_dict() -> dict. Previews may truncate, but never truncate the actual edits.",
+                "TextSlice fields: text, start_byte, end_byte (exclusive), start_line, end_line (exclusive; None for byte reads), truncated. render(format: str = 'plain') -> str supports plain/lines/bytes; lines requires read_lines. Annotated byte ranges include retained terminators; to_dict() -> dict detaches data.",
+                "EditPreview fields: text, edit_count, truncated; render(format: str = 'lines') -> str supports plain/lines/bytes; plain retains sections and change markers. Before uses original coordinates, After uses modified coordinates (never edit offsets). Byte ranges cover retained source bytes, not truncation annotations. to_dict() -> dict keeps the default display. Previews may truncate, but never truncate the actual edits.",
                 "CommitResult fields: path, changed, edit_count, original_size_bytes, size_bytes; render() -> str and to_dict() -> dict.",
                 "Result wrappers are flat and invocation-local. Save to_dict() for persistence. Returning a TextFile as a final result is an error; it never commits implicitly.",
                 "All still-open editors are closed/discarded on invocation exit. Use one REPL :paste block. No automatic save even when Python catches an edit error.",
