@@ -124,7 +124,8 @@ enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
-              const std::string& assist_provider = "deepseek", bool sqlite = false, bool with_ptc = false, bool deny_ptc = false) {
+              const std::string& assist_provider = "deepseek", bool sqlite = false, bool with_ptc = false, bool deny_ptc = false,
+              std::optional<std::vector<std::string>> selection = std::nullopt) {
     Scratch scratch;
 #ifdef __linux__
     storage_delay::release = false;
@@ -137,6 +138,10 @@ void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote
     config.directory = scratch.root;
     config.provider = "fixture";
     config.document = Json::object();
+    config.intrinsic_tools = selection;
+    const auto selected = [&](const std::string& name) {
+        return !selection || std::find(selection->begin(), selection->end(), name) != selection->end();
+    };
     if (with_modality_assist) {
         config.modality_assist_model = load::ModelConfiguration{
             assist_provider, {{"model", assist_provider == "qwen" ? "qwen3.8-flash" : "deepseek-flash"},
@@ -168,6 +173,10 @@ sections:
         config.ptc = load::PtcConfiguration{std::getenv("SIMPLEX_TEST_PTC"),
             {"--module", "simplex_ptc.tools.process", "--module", "simplex_ptc.tools.files"}};
         std::filesystem::create_directories(config.environment.workspace);
+    }
+    if (selection && selection->empty()) {
+        // A configured but unselected interpreter must never be probed/launched.
+        config.ptc = load::PtcConfiguration{"/nonexistent/unselected-simplex-ptc", {}};
     }
     const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
@@ -446,34 +455,38 @@ sections:
                     == turn.agent_loop_step.front().extras->at("simplex.execution"));
             }
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
-                [](const auto& tool) { return tool.name == "plan"; }) == with_hub_remote_call);
+                [](const auto& tool) { return tool.name == "plan"; }) == (with_hub_remote_call && selected("hub_remote_call")));
             for (const std::string name : {"subagent_fork", "subagent_send", "subagent_receive"}) {
                 BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
-                    [&](const auto& tool) { return tool.name == name; }) == with_hub_remote_call);
+                    [&](const auto& tool) { return tool.name == name; }) == (with_hub_remote_call && selected("hub_remote_call")));
             }
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
                 [](const auto& tool) { return tool.name == "modality_assist"; })
-                == with_modality_assist);
+                == (with_modality_assist && selected("modality_assist")));
             BOOST_TEST((state.system_prompt.render().markdown.find("Interpreting images")
-                != std::string::npos) == with_modality_assist);
+                != std::string::npos) == (with_modality_assist && selected("modality_assist")));
             for (const auto* name : {"memory_search", "memory_fetch"}) {
                 BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
-                    [&](const auto& tool) { return tool.name == name; }) == sqlite);
+                    [&](const auto& tool) { return tool.name == name; }) == (sqlite && selected("archive_memory")));
             }
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
-                [](const auto& tool) { return tool.name == "read_text"; }));
+                [](const auto& tool) { return tool.name == "read_text"; }) == selected("reading"));
             BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
-                [](const auto& tool) { return tool.name == "str_replace_edit"; }));
+                [](const auto& tool) { return tool.name == "str_replace_edit"; }) == selected("editing"));
             BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
                 [](const auto& section) {
                     return section.name.starts_with("skill.") &&
                            section.text.find("Use `read_text`") != std::string::npos;
-                }));
+                }) == selected("reading"));
             BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
                 [](const auto& section) {
                     return section.name.starts_with("skill.") &&
                            section.text.find("Use `str_replace_edit`") != std::string::npos;
-                }));
+                }) == selected("editing"));
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "run_command"; }) == selected("process"));
+            BOOST_TEST(std::any_of(state.tools.begin(), state.tools.end(),
+                [](const auto& tool) { return tool.name == "ptc_execute"; }) == with_ptc);
             BOOST_TEST(state.system_prompt.heading_level == 3);
             BOOST_REQUIRE(state.system_prompt.contains("persona"));
             BOOST_TEST(state.system_prompt.find("persona")->text == "Initial instructions.");
@@ -497,7 +510,8 @@ sections:
             }
             BOOST_CHECK(std::filesystem::current_path() == original_cwd);
             BOOST_TEST(std::any_of(state.system_prompt.begin(), state.system_prompt.end(),
-                [](const auto& section) { return section.name.starts_with("skill."); }));
+                [](const auto& section) { return section.name.starts_with("skill."); })
+                == !state.tools.empty());
             BOOST_TEST(!state.meta.created_at.empty());
             BOOST_TEST(!state.meta.updated_at.empty());
         } else if (mode == Mode::ModelFailure) {
@@ -1159,4 +1173,20 @@ BOOST_AUTO_TEST_CASE(real_ptc_worker_integration) {
 BOOST_AUTO_TEST_CASE(real_ptc_denied_program_has_no_effects) {
     if (!std::getenv("SIMPLEX_TEST_PTC")) return;
     scenario(Mode::Normal, false, false, "deepseek", false, true, true);
+}
+
+BOOST_AUTO_TEST_CASE(explicit_intrinsic_selection_excludes_configured_dependencies) {
+    scenario(Mode::Normal, true, true, "deepseek", true, false, false,
+        std::vector<std::string>{});
+}
+
+BOOST_AUTO_TEST_CASE(explicit_intrinsic_selection_skips_missing_dependencies) {
+    scenario(Mode::Normal, false, false, "deepseek", false, false, false,
+        std::vector<std::string>{"reading", "archive_memory", "modality_assist", "hub_remote_call", "ptc"});
+}
+
+BOOST_AUTO_TEST_CASE(real_ptc_without_native_file_or_process_tools) {
+    if (!std::getenv("SIMPLEX_TEST_PTC")) return;
+    scenario(Mode::Normal, false, false, "deepseek", false, true, false,
+        std::vector<std::string>{"ptc"});
 }

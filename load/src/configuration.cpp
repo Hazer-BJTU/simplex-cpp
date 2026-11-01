@@ -2,6 +2,7 @@
 #include "fileio/child_path.hpp"
 #include "load/configuration.hpp"
 #include "yamlconfig/yaml_json.hpp"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <charconv>
@@ -209,6 +210,14 @@ ModelConfiguration parse_model(const Json& document, const char* role) {
 }
 } // namespace
 
+const std::vector<std::string>& intrinsic_toolset_names() {
+    static const std::vector<std::string> names{
+        "process", "reading", "archive_memory", "editing",
+        "modality_assist", "hub_remote_call", "ptc"
+    };
+    return names;
+}
+
 endpoint::ResolvedEndpoint websocket_endpoint(const std::string& url) {
     if (!(url.starts_with("ws://") || url.starts_with("wss://"))
         || url.find_first_of(" \t\r\n#") != std::string::npos)
@@ -248,6 +257,26 @@ Configuration parse_configuration(
     Configuration result;
     result.document = document;
     result.directory = directory;
+    const auto& tools = object(document, "tools");
+    if (tools.contains("intrinsic")) {
+        const auto& selection = tools.at("intrinsic");
+        if (!selection.is_array()) {
+            throw std::invalid_argument("tools.intrinsic must be an array of toolset names");
+        }
+        result.intrinsic_tools.emplace();
+        const auto& known = intrinsic_toolset_names();
+        for (const auto& entry : selection) {
+            if (!entry.is_string()
+                || std::find(known.begin(), known.end(), entry.get<std::string>()) == known.end()) {
+                throw std::invalid_argument("tools.intrinsic contains an unknown toolset name");
+            }
+            auto name = entry.get<std::string>();
+            auto& names = *result.intrinsic_tools;
+            if (std::find(names.begin(), names.end(), name) == names.end()) {
+                names.push_back(std::move(name));
+            }
+        }
+    }
     auto driver = parse_model(document, "driver_model");
     result.provider = std::move(driver.provider);
     result.model = std::move(driver.model);

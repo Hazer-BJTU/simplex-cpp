@@ -17,6 +17,9 @@ uv sync --directory ptc --locked
 Add this to the worker YAML, using paths available **on the worker host**:
 
 ```yaml
+tools:
+  intrinsic: [ptc, archive_memory, modality_assist, hub_remote_call]
+
 persistence:
   enabled: true
   directory: /absolute/path/to/session

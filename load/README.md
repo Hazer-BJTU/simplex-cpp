@@ -255,11 +255,14 @@ does not act as a plugin allowlist: all compatible provider descriptors are
 loaded regardless of which model roles use them. Core constructs the selected
 models after parsing host configuration.
 
-Core loads intrinsic components with their existing configuration mechanism.
-The modality-assist toolset additionally requires `modality_assist_model`; it is
-omitted when that model is absent. Plugin-only loading does not initialize
-intrinsics. This public startup contract has no intrinsic enable/disable list,
-configuration override, or schema-location override.
+Core selects intrinsic toolsets through `tools.intrinsic`: an explicit ordered
+allowlist, with duplicates removed and unknown names rejected. An empty list
+disables intrinsic tools; an omitted list preserves legacy automatic loading.
+Selected conditional tools are skipped with a diagnostic when prerequisites are
+absent. Configuration validation remains independent of selection. See
+[toolset selection](../docs/getting-started/configuration.md#intrinsic-toolset-selection).
+Plugin-only loading does not initialize intrinsics. Hooks and dynamic tools are
+independent of this list.
 
 Each enabled dynamic entry requires `name`, matching the module's exported
 identity. Toolsets may supply `schema_directory`; hooks may supply `config_file`.

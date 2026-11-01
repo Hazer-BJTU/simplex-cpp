@@ -14,10 +14,7 @@ plugins:
     # A nonempty list replaces the default; directories are scanned in order.
     directories: []
 
-  # Core loads intrinsic components automatically; modality_assist additionally
-  # requires the optional modality_assist_model configured below.
-  # Plugin discovery alone does not initialize intrinsics or session registries.
-  # Their enablement and configuration are not exposed by this contract.
+  # Dynamic components are selected independently of tools.intrinsic.
   extensions:
     tools:
       # Empty or omitted: <executable_dir>/plugins/tools.
@@ -39,6 +36,19 @@ plugins:
       # - name: noop_hook
       #   config_file: ./schemas/loop/extensions/noop_hook/config.yaml
       # Omit config_file to use the existing extension lookup rules.
+
+# Explicit intrinsic toolset selection; [] disables all built-in tools.
+# Omit the list only for legacy automatic loading. Conditional entries are
+# skipped with a diagnostic when their model/endpoint/backend is unavailable.
+# Add ptc here when configuring the optional interpreter below.
+tools:
+  intrinsic:
+    - process
+    - reading
+    - editing
+    - archive_memory
+    - modality_assist
+    - hub_remote_call
 
 # Named endpoint/model configurations. Only entries selected by a model role
 # are instantiated. Credential expansion is limited to their API keys and
@@ -217,6 +227,7 @@ persistence:
 
 # Optional external Python PTC interpreter (source-installed separately).
 # Requires persistence.enabled: true and an explicit persistence.directory.
+# Also add ptc to tools.intrinsic.
 # ptc:
 #   executable: /absolute/path/to/ptc/.venv/bin/simplex-ptc
 #   arguments: [--module, simplex_ptc.tools.process, --module, simplex_ptc.tools.files]

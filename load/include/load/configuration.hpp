@@ -39,6 +39,13 @@ struct Configuration {
     std::shared_ptr<fileio::SessionLock> allocation_lease;
     nlohmann::json document;
     std::optional<PtcConfiguration> ptc;
+    /**
+     * Ordered intrinsic toolset selection. An absent list preserves legacy
+     * automatic loading; an empty list disables all intrinsic tools. Conditional
+     * toolsets still require their runtime dependencies. Dynamic tools and hooks
+     * are independent. Parsed lists contain known, unique names only.
+     */
+    std::optional<std::vector<std::string>> intrinsic_tools;
     std::filesystem::path directory;
     /** Driver factory and its validated, credential-expanded configuration. */
     std::string provider;
@@ -96,6 +103,9 @@ struct Configuration {
      */
     bool legacy_readable = false;
 };
+
+/** Stable built-in toolset identifiers, also used for legacy registration order. */
+const std::vector<std::string>& intrinsic_toolset_names();
 
 /** Parse and validate startup fields before loading native code or opening IO.
  * Unknown keys remain tolerated. Only providers selected by driver_model and

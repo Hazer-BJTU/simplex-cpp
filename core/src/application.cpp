@@ -579,8 +579,6 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 throw std::runtime_error("modality_assist_model provider could not construct a model");
             }
         }
-        registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
-            store, &eventbus::default_async_bus()));
         // File tools share one bounded worker. Snapshot cancellation on this
         // strand, then let the blocking job own only that run's token.
         auto file_work = std::make_shared<tools::intrinsic::FileWork>(
@@ -593,52 +591,76 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 stopped.request_stop();
                 return stopped.get_token();
             });
-        registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>(file_work));
-        if (config.persistence && state_store->backend() == persistence::Backend::Sqlite) {
-            registry.add(std::make_shared<tools::intrinsic::ArchiveMemoryToolSet>(
-                persistence::make_sqlite_archive_reader(session_id, config.state_directory),
-                storage_executor.get_executor()));
-        }
-        registry.add(std::make_shared<tools::intrinsic::EditingToolSet>(file_work));
-        if (modality_assist_model) {
-            registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
-                modality_assist_model));
-        }
-        if (config.hub_remote_call) {
-            registry.add(std::make_shared<tools::intrinsic::HubRemoteCallToolSet>(
-                *config.hub_remote_call, config.hub_remote_call_timeout,
-                [weak = weak_from_this()] {
-                    auto self = weak.lock();
-                    if (!self) throw std::runtime_error("worker no longer available");
-                    std::lock_guard lock(self->control_mutex);
-                    if (!self->scope) throw std::runtime_error("no active run");
-                    return tools::intrinsic::HubRemoteCallIdentity{
-                        self->worker_id, self->session_id, self->run_id};
-                }));
-        }
-
-        if (config.ptc) {
-            if (!config.persistence || config.storage.empty()) {
-                throw std::invalid_argument("PTC requires a persistent worker directory");
+        // Explicit selection is evaluated before any conditional toolset is
+        // constructed. Legacy configurations retain the historical selection.
+        const auto& selected = config.intrinsic_tools
+            ? *config.intrinsic_tools : load::intrinsic_toolset_names();
+        for (const auto& name : selected) {
+            const auto available = [&](bool ready, const char* requirement) {
+                if (!ready && config.intrinsic_tools) {
+                    logging::Logger::warning(
+                        "Skipping intrinsic toolset {}: requires {}", name, requirement);
+                }
+                return ready;
+            };
+            if (name == "process") {
+                registry.add(std::make_shared<tools::intrinsic::ProcessToolSet>(
+                    store, &eventbus::default_async_bus()));
+            } else if (name == "reading") {
+                registry.add(std::make_shared<tools::intrinsic::ReadingToolSet>(file_work));
             }
-            if (!config.restore && std::filesystem::exists(config.storage / "ptc")) {
-                throw std::invalid_argument("existing PTC state requires restore or an explicit reset");
+            if (name == "archive_memory"
+                && available(config.persistence && state_store->backend() == persistence::Backend::Sqlite, "SQLite persistence")) {
+                registry.add(std::make_shared<tools::intrinsic::ArchiveMemoryToolSet>(
+                    persistence::make_sqlite_archive_reader(session_id, config.state_directory),
+                    storage_executor.get_executor()));
             }
-            tools::intrinsic::PtcOptions options{
-                config.ptc->executable, config.ptc->arguments,
-                config.storage / "ptc", config.environment.workspace};
-            ptc = std::make_shared<tools::intrinsic::PtcRuntime>(strand, std::move(options),
-                [weak = weak_from_this()] {
-                    if (auto self = weak.lock()) {
+            if (name == "editing") {
+                registry.add(std::make_shared<tools::intrinsic::EditingToolSet>(file_work));
+            }
+            if (name == "modality_assist"
+                && available(bool(modality_assist_model), "modality_assist_model")) {
+                registry.add(std::make_shared<tools::intrinsic::ModalityAssistToolSet>(
+                    modality_assist_model));
+            }
+            if (name == "hub_remote_call"
+                && available(config.hub_remote_call.has_value(), "hub_remote_call configuration")) {
+                registry.add(std::make_shared<tools::intrinsic::HubRemoteCallToolSet>(
+                    *config.hub_remote_call, config.hub_remote_call_timeout,
+                    [weak = weak_from_this()] {
+                        auto self = weak.lock();
+                        if (!self) throw std::runtime_error("worker no longer available");
                         std::lock_guard lock(self->control_mutex);
-                        return self->run_stop.get_token();
-                    }
-                    std::stop_source stopped;
-                    stopped.request_stop();
-                    return stopped.get_token();
-                });
-            registry.add(std::make_shared<tools::intrinsic::PtcToolSet>(
-                ptc, &eventbus::default_async_bus()));
+                        if (!self->scope) throw std::runtime_error("no active run");
+                        return tools::intrinsic::HubRemoteCallIdentity{
+                            self->worker_id, self->session_id, self->run_id};
+                    }));
+            }
+
+            if (name == "ptc"
+                && available(config.ptc.has_value(), "ptc configuration")) {
+                if (!config.persistence || config.storage.empty()) {
+                    throw std::invalid_argument("PTC requires a persistent worker directory");
+                }
+                if (!config.restore && std::filesystem::exists(config.storage / "ptc")) {
+                    throw std::invalid_argument("existing PTC state requires restore or an explicit reset");
+                }
+                tools::intrinsic::PtcOptions options{
+                    config.ptc->executable, config.ptc->arguments,
+                    config.storage / "ptc", config.environment.workspace};
+                ptc = std::make_shared<tools::intrinsic::PtcRuntime>(strand, std::move(options),
+                    [weak = weak_from_this()] {
+                        if (auto self = weak.lock()) {
+                            std::lock_guard lock(self->control_mutex);
+                            return self->run_stop.get_token();
+                        }
+                        std::stop_source stopped;
+                        stopped.request_stop();
+                        return stopped.get_token();
+                    });
+                registry.add(std::make_shared<tools::intrinsic::PtcToolSet>(
+                    ptc, &eventbus::default_async_bus()));
+            }
         }
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
