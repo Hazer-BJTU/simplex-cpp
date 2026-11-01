@@ -9,12 +9,12 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from .endpoint import Endpoint, private_directory
+from .endpoint import Endpoint, durable_directory
 from .extensions import ToolRegistry
 from .lifecycle import Policy
 from .protocol import PTCError, Request, encode
 from .runtime import compatibility
-from .transport import VERSION, execution_context, pack, receive
+from .transport import VERSION, caller_umask, execution_context, pack, receive
 
 
 class Client:
@@ -71,7 +71,7 @@ class Client:
             return self.connect()
         except (FileNotFoundError, ConnectionRefusedError):
             pass
-        private_directory(self.endpoint.directory)
+        durable_directory(self.endpoint.directory)
         process = subprocess.Popen(
             [sys.executable, "-m", "simplex_ptc.daemon", str(self.endpoint.directory)],
             stdin=subprocess.PIPE,
@@ -79,6 +79,7 @@ class Client:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
+            cwd="/",
         )
         try:
             process.stdin.write(encode({"modules": self.modules, "policy": asdict(self.policy)}))
@@ -148,6 +149,7 @@ class Client:
             else {
                 "cwd": os.getcwd(),
                 "environment": dict(os.environ),
+                "umask": caller_umask(),
             }
         )
         request = Request.parse(asdict(request))

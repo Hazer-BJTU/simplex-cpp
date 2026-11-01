@@ -165,10 +165,14 @@ Repeated active requests with identical source/context do not start another
 runner. Exact retries of the latest durable request retain the existing receipt
 semantics. Querying an unknown old ID never executes source. Do not reuse IDs.
 
-The current CLI's working directory and environment are transmitted for each
-execution and applied only in its runner. A later CLI call does not inherit the
-first caller's cwd/environment. Context has a separate 1 MiB limit and participates
-in request identity; changing it while retrying an ID is an identity conflict.
+The current CLI's working directory, environment and effective umask are transmitted
+for each execution and applied only in its runner. Daemon and runner bootstrap use
+`/`, so removing the first caller's temporary directory cannot break later calls
+from a valid directory. A later CLI call does not inherit the first caller's
+cwd/environment/umask. The mask is captured without changing the client process's
+global umask; the daemon retains its own private mask for internal files. Context
+has a separate 1 MiB limit and participates in request identity; changing it,
+including the umask, while retrying an ID is an identity conflict.
 Keep the original context when reconciling a request. Environment values are not
 included in daemon status or diagnostics. Plugins, runtime compatibility, and
 lifecycle policy must match the running daemon; mismatch fails instead of
@@ -222,6 +226,12 @@ root cannot bypass the durable lifetime lock: a locked but unreachable owner
 produces an error, never unsafe takeover. Do not remove lock files or replace
 session directories while a daemon is running. Mixed use with older pre-daemon
 package versions is unsupported.
+
+Persistent-directory setup synchronizes ancestor directory entries before
+execution can commit. Existing ancestors are also synchronized on a new startup
+attempt: a previous failed parent sync may have left a visible but not durable
+path. Failure of a required fence prevents successful startup/commit. Ephemeral
+runtime-directory setup does not require these persistence fences.
 
 Internal control uses versioned, length-prefixed JSON, bounded frames and at most
 32 concurrent connection handlers. Partial frames and blocked writes have a

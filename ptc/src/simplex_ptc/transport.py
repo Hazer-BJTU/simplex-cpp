@@ -4,10 +4,13 @@ import asyncio
 import json
 import socket
 import struct
+import subprocess
+import sys
+from pathlib import Path
 
 from .protocol import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PTCError, encode
 
-VERSION = 1
+VERSION = 2
 MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_FRAME_BYTES = MAX_REQUEST_BYTES + MAX_CONTEXT_BYTES + 64 * 1024
 MAX_REPLY_BYTES = MAX_RESPONSE_BYTES + 64 * 1024
@@ -68,10 +71,39 @@ async def write_frame(writer: asyncio.StreamWriter, value: dict) -> None:
         await writer.drain()
 
 
+def caller_umask() -> int:
+    """Snapshot the effective mask without temporarily changing this process's mask.
+
+    Linux exposes it read-only in procfs. Other POSIX hosts use a short isolated
+    child that inherits the mask; changing that child's mask cannot race file
+    creation in another client thread. Its bootstrap uses a stable cwd and does
+    not load site hooks or depend on PYTHONPATH.
+    """
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    except OSError:
+        pass
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", "import os; print(os.umask(0))"],
+        cwd="/",
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    return int(result.stdout.strip())
+
+
 def execution_context(value: object) -> dict:
-    """Validate trusted caller cwd/environment without exposing values in errors."""
-    if not isinstance(value, dict) or set(value) != {"cwd", "environment"}:
-        raise PTCError("invalid_context", "expected cwd and environment")
+    """Validate trusted caller cwd/environment/umask without exposing values in errors."""
+    if not isinstance(value, dict) or set(value) != {"cwd", "environment", "umask"}:
+        raise PTCError("invalid_context", "expected cwd, environment and umask")
+    mask = value["umask"]
+    if type(mask) is not int or not 0 <= mask <= 0o777:
+        raise PTCError("invalid_context", "umask must be an integer from 0 to 0777")
     cwd, environment = value["cwd"], value["environment"]
     if not isinstance(cwd, str) or not cwd.startswith("/") or "\0" in cwd:
         raise PTCError("invalid_context", "cwd must be an absolute path")
@@ -95,4 +127,4 @@ def execution_context(value: object) -> dict:
         raise PTCError("invalid_context", "context must be UTF-8") from exc
     if size > MAX_CONTEXT_BYTES:
         raise PTCError("invalid_context", "context exceeds byte limit")
-    return {"cwd": cwd, "environment": dict(sorted(environment.items()))}
+    return {"cwd": cwd, "environment": dict(sorted(environment.items())), "umask": mask}

@@ -11,14 +11,30 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .protocol import PTCError
+from .storage import Storage
 
 
 def private_directory(path: Path) -> Path:
-    """Create/check an operator-owned directory; never follow its final symlink."""
+    """Create/check an ephemeral private directory; this is not a durability fence."""
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise PTCError("unsafe_directory", "directory must be owned by this user and private")
+    return path
+
+
+def durable_directory(path: Path) -> Path:
+    """Make the private state directory reachable through durable parent entries.
+
+    Fence every ancestor, including existing ones: a prior failed startup may
+    have created a directory without completing its parent sync. Existence alone
+    cannot prove that fence succeeded. This runs at ownership/startup boundaries,
+    not for each execution on an already connected daemon. Runtime sockets need
+    no such guarantee and continue to use private_directory().
+    """
+    private_directory(path)
+    for parent in reversed(path.absolute().parents):
+        Storage._sync_path(parent)
     return path
 
 
@@ -53,7 +69,7 @@ class Endpoint:
     @contextmanager
     def locked(self):
         """Only this owner can bind/remove the endpoint; lock inodes are never removed."""
-        private_directory(self.directory)
+        durable_directory(self.directory)
         fd = os.open(self.directory / "daemon.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             info = os.fstat(fd)

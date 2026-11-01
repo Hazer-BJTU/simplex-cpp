@@ -20,7 +20,7 @@ from simplex_ptc.daemon import Daemon
 from simplex_ptc.endpoint import Endpoint
 from simplex_ptc.lifecycle import Policy, Resources
 from simplex_ptc.protocol import encode
-from simplex_ptc.transport import MAX_FRAME_BYTES, execution_context, pack, receive
+from simplex_ptc.transport import MAX_FRAME_BYTES, caller_umask, execution_context, pack, receive
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def clients(tmp_path):
 
 
 def context(cwd):
-    return {"cwd": str(cwd), "environment": dict(os.environ)}
+    return {"cwd": str(cwd), "environment": dict(os.environ), "umask": caller_umask()}
 
 
 def eventually(check, timeout=5):
@@ -141,7 +141,11 @@ def test_cwd_environment_and_identity_are_per_call(clients, tmp_path):
     result = client.execute(request, context=ctx)
     assert result["result"] == f"{one}\nfirst"
     assert client.execute(request, context=ctx) == result
-    reordered = {"environment": dict(reversed(list(ctx["environment"].items()))), "cwd": str(one)}
+    reordered = {
+        "environment": dict(reversed(list(ctx["environment"].items()))),
+        "cwd": str(one),
+        "umask": ctx["umask"],
+    }
     assert client.execute(request, context=reordered) == result
     ctx["environment"]["PTC_EXAMPLE"] = "second"
     with pytest.raises(PTCError) as error:
@@ -357,7 +361,7 @@ def test_policy_rejects_invalid_deadlines(value):
 def test_execution_context_rejects_invalid_environment(tmp_path):
     for environment in ({"bad=name": "value"}, {"x": "nul\0"}, {"x": 1}):
         with pytest.raises(PTCError):
-            execution_context({"cwd": str(tmp_path), "environment": environment})
+            execution_context({"cwd": str(tmp_path), "environment": environment, "umask": 0o022})
 
 
 def test_publication_failure_remains_pending_without_replay(tmp_path, monkeypatch):
@@ -580,3 +584,191 @@ def test_boundary_error_cli_keeps_exit_two(clients):
     assert process.returncode == 2
     assert json.loads(process.stdout)["error"]["code"] == "stale_epoch"
     assert client.inspect()["revision"] == result["revision"]
+
+
+def test_deleted_first_cwd_does_not_break_later_execution(clients, tmp_path, monkeypatch):
+    initial = tmp_path / "temporary-build"
+    current = tmp_path / "workspace"
+    initial.mkdir()
+    current.mkdir()
+    client = clients(modules=["simplex_ptc.tools.process"])
+    monkeypatch.chdir(initial)
+    first = client.execute(Request("one", "x = 41\nx"))
+    assert first["result"] == 41
+    generation = client.generation
+    monkeypatch.chdir(current)
+    initial.rmdir()
+    second = client.execute(Request("two", "x + 1", first["epoch"]))
+    assert second["result"] == 42
+    assert second["revision"] == 2
+    third = client.execute(
+        Request("cwd", 'run_command("pwd; touch local-file").stdout', first["epoch"])
+    )
+    assert third["result"] == f"{current}\n"
+    assert (current / "local-file").exists()
+    assert client.generation == generation
+    assert not client.inspect()["recovery_required"]
+
+
+def test_real_cli_masks_are_per_call_and_part_of_retry_identity(clients, tmp_path):
+    client = clients(modules=["simplex_ptc.tools.process"])
+
+    def invoke(mask, request):
+        # Change only the short-lived test client's mask, never pytest's mask.
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys; os.umask(int(sys.argv.pop(1), 8)); "
+                "from simplex_ptc.cli import main; raise SystemExit(main())",
+                mask,
+                "--module",
+                "simplex_ptc.tools.process",
+                "execute",
+                "--state-directory",
+                str(client.endpoint.directory),
+            ],
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+
+    shared = tmp_path / "shared"
+    private = tmp_path / "private"
+    request = {"execution_id": "one", "source": f'run_command("umask; touch {shared}").stdout'}
+    first = invoke("022", request)
+    assert first.returncode == 0, first.stderr
+    response = json.loads(first.stdout)
+    assert int(response["result"].strip(), 8) == 0o022
+    assert shared.stat().st_mode & 0o777 == 0o644
+    assert json.loads(invoke("022", request).stdout) == response
+    retry = invoke("077", request)
+    assert retry.returncode == 2
+    assert json.loads(retry.stdout)["error"]["code"] == "identity_conflict"
+    second = invoke(
+        "077",
+        {
+            "execution_id": "two",
+            "epoch": response["epoch"],
+            "source": f'run_command("umask; touch {private}").stdout',
+        },
+    )
+    assert second.returncode == 0, second.stderr
+    assert int(json.loads(second.stdout)["result"].strip(), 8) == 0o077
+    assert private.stat().st_mode & 0o777 == 0o600
+    for path in (
+        client.endpoint.socket,
+        client.endpoint.directory / "checkpoint",
+        client.endpoint.directory / "daemon.lock",
+    ):
+        assert path.stat().st_mode & 0o077 == 0
+    assert client.endpoint.directory.stat().st_mode & 0o777 == 0o700
+
+
+def test_umask_capture_fallback_never_modifies_client_mask(monkeypatch):
+    from pathlib import Path
+
+    expected = caller_umask()
+    original = Path.read_text
+
+    def unavailable(path, *args, **kwargs):
+        if str(path) == "/proc/self/status":
+            raise FileNotFoundError("no procfs")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", unavailable)
+        patch.setattr(os, "umask", lambda _: pytest.fail("modified client umask"))
+        assert caller_umask() == expected
+    assert caller_umask() == expected
+
+
+@pytest.mark.parametrize("mask", [-1, 0o1000, True, "022", None])
+def test_context_rejects_invalid_umask(tmp_path, mask):
+    value = context(tmp_path)
+    value["umask"] = mask
+    with pytest.raises(PTCError, match="umask"):
+        execution_context(value)
+
+
+def test_nested_state_ancestors_fenced_before_checkpoint(tmp_path, monkeypatch):
+    from simplex_ptc import Session
+    from simplex_ptc.storage import Storage
+
+    target = tmp_path / "new-parent" / "new-state"
+    events = []
+    sync, write = Storage._sync_path, Storage.write
+
+    def tracked_sync(path):
+        events.append(("sync", path))
+        sync(path)
+
+    def tracked_write(storage, name, value):
+        events.append(("write", name))
+        write(storage, name, value)
+
+    monkeypatch.setattr(Storage, "_sync_path", staticmethod(tracked_sync))
+    monkeypatch.setattr(Storage, "write", tracked_write)
+    result = Session(target).execute(Request("one", "41 + 1"))
+    assert result["committed"]
+    root_sync = events.index(("sync", tmp_path))
+    parent_sync = events.index(("sync", target.parent))
+    checkpoint_write = events.index(("write", "checkpoint"))
+    assert root_sync < parent_sync < checkpoint_write
+    assert ("sync", target) in events[checkpoint_write:]
+
+
+@pytest.mark.parametrize("failed_parent", ["root", "parent"])
+def test_parent_fence_failure_blocks_startup_and_is_retried(
+    clients, tmp_path, monkeypatch, failed_parent
+):
+    from simplex_ptc.storage import Storage
+
+    client = clients("new-parent/new-state")
+    failed_path = tmp_path if failed_parent == "root" else client.endpoint.directory.parent
+    sync = Storage._sync_path
+    attempts = []
+
+    def fail(path):
+        attempts.append(path)
+        if path == failed_path:
+            raise OSError("parent fsync failed")
+        sync(path)
+
+    # A failed mkdir fence can leave the entire path visible. Every subsequent
+    # attempt must repeat that fence rather than equating existence with safety.
+    with monkeypatch.context() as patch:
+        patch.setattr(Storage, "_sync_path", staticmethod(fail))
+        patch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("started before fencing"))
+        for _ in range(2):
+            with pytest.raises(OSError, match="parent fsync failed"):
+                client.ensure()
+            assert client.endpoint.directory.exists()
+            assert not (client.endpoint.directory / "checkpoint").exists()
+            assert not client.endpoint.socket.exists()
+    assert attempts.count(failed_path) == 2
+    assert client.execute(Request("one", "42"))["committed"]
+
+
+def test_daemon_ownership_requires_parent_fence_even_if_client_precreated_path(
+    tmp_path, monkeypatch
+):
+    from simplex_ptc.storage import Storage
+
+    endpoint = Endpoint(tmp_path / "parent" / "state")
+    endpoint.directory.mkdir(parents=True, mode=0o700)
+    sync = Storage._sync_path
+
+    def fail(path):
+        if path == endpoint.directory.parent:
+            raise OSError("parent fence failed")
+        sync(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Storage, "_sync_path", staticmethod(fail))
+        with pytest.raises(OSError, match="parent fence failed"):
+            with endpoint.locked():
+                pytest.fail("acquired ownership without durable directory")
+    with endpoint.locked():
+        pass

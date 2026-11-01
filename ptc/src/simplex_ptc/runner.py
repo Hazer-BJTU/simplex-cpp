@@ -56,6 +56,7 @@ class Runner:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                cwd="/",
             )
             child.close()
             parent.settimeout(10)
@@ -143,6 +144,7 @@ def main(fd: int) -> int:
     try:
         threading.Thread(target=monitor, daemon=True).start()
         with contextlib.redirect_stdout(sys.stderr):
+            os.umask(value["context"]["umask"])
             registry = ToolRegistry.load(value["modules"])
             if compatibility(registry) != value["compatibility"]:
                 raise PTCError("incompatible_state", "runner runtime or tools changed")
