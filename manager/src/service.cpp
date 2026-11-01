@@ -476,6 +476,20 @@ Json execute(const Json& input) {
                 throw;
             }
         }
+        // An orphaned PTC daemon can outlive a crashed worker. Respect its
+        // lifetime flock before deleting its checkpoint or live-resource root.
+        std::unique_ptr<fileio::SessionLock> ptc;
+        if (fs::is_directory(p.root / "ptc") && !fs::is_symlink(p.root / "ptc")) {
+            ordinary_path(p.root / "ptc" / "daemon.lock");
+            try {
+                ptc = std::make_unique<fileio::SessionLock>(p.root / "ptc" / "daemon.lock");
+            } catch (const std::system_error& error) {
+                if (error.code().value() == EWOULDBLOCK || error.code().value() == EAGAIN) {
+                    throw Error("busy", "PTC daemon still owns the session; stop it before removal");
+                }
+                throw;
+            }
+        }
         record["status"] = "removing";
         publish(p.record, record);
         fs::remove_all(p.root); // Does not follow interior symlinks.

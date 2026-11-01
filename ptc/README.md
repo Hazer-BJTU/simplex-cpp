@@ -3,9 +3,9 @@
 An independent, experimental Python/uv package built on pinned Pydantic Monty.
 It executes a Python subset, preserves idle interpreter state across invocations,
 and exposes an extension registry with the read-only `manual()` builtin and an
-opt-in shell `run_command` and UTF-8 `open_text` editor. No worker integration,
-Hub networking, end-to-end integration tests, or release artifacts are included
-in this phase.
+opt-in shell `run_command` and UTF-8 `open_text` editor. The optional worker
+adapter is documented below; this package remains independently installable.
+Direct Hub networking and interpreter release artifacts are not included.
 
 ## Install and run
 
@@ -671,9 +671,10 @@ uv run --locked ruff format --check .
 Tests exercise only this package, real Monty, local UDS/daemon/runner processes
 and temporary storage, with fixture callbacks. They cover concurrent startup,
 cancellation, disconnects, owner death, pending recovery and bounded lifecycle
-policies, and stop test daemons on teardown. There is no worker/Hub end-to-end
-integration. The independent PTC workflow runs only for `ptc/**` or its own workflow; native CI classifies those
-paths as independent. Changes to the shared CI classifier still conservatively
+policies, and stop test daemons on teardown. These package-local tests do not
+require a worker or Hub. A separate PTC worker workflow covers real integration.
+The independent Python workflow runs only for `ptc/**` or its own workflow;
+the ordinary native classifier keeps those paths independent. Changes to the shared CI classifier still conservatively
 run native validation. No Python dependency is added to the C++ build.
 
 ### File result display formats
@@ -724,3 +725,10 @@ display operation; a formatting error does not invalidate editors.
 The file tool descriptor is version 2. Existing checkpoints made with its
 previous interface have a different compatibility fingerprint; use a fresh
 state directory rather than silently restoring an incompatible tool interface.
+
+### Worker integration
+
+The optional intrinsic `ptc_execute` adapter is documented in
+[worker PTC configuration](../docs/plugins/ptc.md). The interpreter remains a
+separately installed program. Its isolated unit CI is retained; an additional
+path-filtered worker integration workflow tests the real CLI/daemon contract.

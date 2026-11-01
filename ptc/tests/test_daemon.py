@@ -959,3 +959,73 @@ def test_command_channel_acquisition_failure_does_not_leave_admission_busy(tmp_p
         await daemon.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_client_keeps_boundary_failure_receipt(tmp_path, monkeypatch):
+    client = Client(tmp_path / "state")
+    response = {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "unknown",
+        "boundary_failure": True,
+        "execution_id": "one",
+        "commands_created": ["generation:command"],
+        "error": {"code": "storage_or_interruption", "message": "inspect"},
+    }
+    monkeypatch.setattr(
+        client,
+        "call",
+        lambda *args, **kwargs: {
+            "status": "terminal",
+            "response": response,
+        },
+    )
+    with pytest.raises(PTCError) as raised:
+        client.wait(Request("one", "1"))
+    assert raised.value.response == response
+
+
+def test_cli_preserves_boundary_metadata(monkeypatch, capsys):
+    from simplex_ptc import cli
+
+    error = PTCError("storage_or_interruption", "inspect")
+    error.response = {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "unknown",
+        "execution_id": "one",
+        "commands_created": ["command"],
+        "error": {"code": error.code, "message": str(error)},
+    }
+
+    def fail(args):
+        raise error
+
+    monkeypatch.setattr(cli, "dispatch", fail)
+    monkeypatch.setattr(sys, "argv", ["simplex-ptc", "capabilities"])
+    assert cli.main() == 2
+    assert json.loads(capsys.readouterr().out) == error.response
+
+
+def test_cli_oversize_fallback_keeps_execution_and_effects(monkeypatch, capsys):
+    from simplex_ptc import cli
+
+    monkeypatch.setattr(
+        cli,
+        "dispatch",
+        lambda args: {
+            "protocol": 1,
+            "status": "completed",
+            "execution_id": "one",
+            "epoch": "epoch",
+            "commands_created": ["command"],
+            "result": "x" * 100000,
+        },
+    )
+    monkeypatch.setattr(sys, "argv", ["simplex-ptc", "capabilities"])
+    assert cli.main() == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["commit_status"] == "unknown"
+    assert response["execution_id"] == "one"
+    assert response["commands_created"] == ["command"]
+    assert response["error"]["code"] == "response_limit"

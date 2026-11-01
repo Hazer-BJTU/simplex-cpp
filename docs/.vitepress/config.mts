@@ -63,6 +63,7 @@ export default defineConfig({
                 ['Development workflow', '/plugins/development'],
                 ['Shared runtime and ABI', '/abi-context'],
                 ['Tool plugins', '/plugins/tools'],
+                ['Python tool composition', '/plugins/ptc'],
                 ['Loop hooks', '/plugins/loop-hooks'],
                 ['Model providers', '/plugins/model-providers'],
             ]),

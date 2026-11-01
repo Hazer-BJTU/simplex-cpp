@@ -1,0 +1,21 @@
+name: ptc
+title: Persistent Python tool composition
+description: Compose installed PTC functions and return selected results.
+keywords: [python, ptc, files, process]
+text: |
+  Use ptc_execute(source=...) to compose tools in Python. Discover actual functions:
+  for info in manual(): print(info.name, info.summary)
+  Query manual("name").render() before using an unfamiliar function.
+  Python state survives successful calls, worker restarts and compact. Handles do
+  not: store command.id and reacquire with get_command(id); reopen file editors.
+  Use to_dict() for persistent result data, render() for readable text.
+  File edits use original coordinates, require explicit commit, and an error
+  invalidates all still-open editors in this invocation. Already committed files
+  and command effects are never rolled back. keep commands may survive failure
+  or cancellation; commands_created identifies launches even on failed calls.
+  Output and final results are bounded. Return selected information and redirect
+  large command output to files. A preview is not a complete JSON result.
+  Never replay source after unknown commit/transport failure. Inspect the session
+  with operator assistance; no implicit reset or recovery is performed.
+  Each program requires the worker's usual confirmation policy. This is not a
+  filesystem sandbox. Native tools remain available for unsupported operations.

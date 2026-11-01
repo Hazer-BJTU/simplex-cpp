@@ -184,7 +184,9 @@ class Client:
                 response = value["response"]
                 if response.get("boundary_failure"):
                     error = response["error"]
-                    raise PTCError(error["code"], error["message"])
+                    failure = PTCError(error["code"], error["message"])
+                    failure.response = response
+                    raise failure
                 return response
             time.sleep(0.05)
 

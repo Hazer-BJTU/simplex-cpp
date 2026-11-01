@@ -141,6 +141,9 @@ class Daemon:
         except Exception as exc:
             response = error_response(exc)
             response["boundary_failure"] = True
+            response["execution_id"] = request.execution_id
+            if request.epoch is not None:
+                response["epoch"] = request.epoch
             response["commands_created"] = list(created)
         finally:
             if child is not None:

@@ -23,6 +23,7 @@
 #include "tools/intrinsic/editing/toolset.hpp"
 #include "tools/intrinsic/modality_assist/toolset.hpp"
 #include "tools/intrinsic/hub_remote_call/toolset.hpp"
+#include "tools/intrinsic/ptc/toolset.hpp"
 #include "tools/registry.hpp"
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
@@ -321,6 +322,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
     tools::ToolRegistry registry;
     loop::LoopHookRegistry hooks;
     std::shared_ptr<tools::intrinsic::ProcessSessionStore> store;
+    std::shared_ptr<tools::intrinsic::PtcRuntime> ptc;
     io::Client client;
     EventOutbox outgoing;
     Done outgoing_ready;
@@ -553,6 +555,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         // complete registry exists, so stale host skills are replaced together.
         co_await restore_state();
         construct_runtime();
+        if (ptc) co_await ptc->initialize();
         refresh_runtime_prompt();
         install_confirmation();
         install_observers();
@@ -612,6 +615,30 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                     return tools::intrinsic::HubRemoteCallIdentity{
                         self->worker_id, self->session_id, self->run_id};
                 }));
+        }
+
+        if (config.ptc) {
+            if (!config.persistence || config.storage.empty()) {
+                throw std::invalid_argument("PTC requires a persistent worker directory");
+            }
+            if (!config.restore && std::filesystem::exists(config.storage / "ptc")) {
+                throw std::invalid_argument("existing PTC state requires restore or an explicit reset");
+            }
+            tools::intrinsic::PtcOptions options{
+                config.ptc->executable, config.ptc->arguments,
+                config.storage / "ptc", config.environment.workspace};
+            ptc = std::make_shared<tools::intrinsic::PtcRuntime>(strand, std::move(options),
+                [weak = weak_from_this()] {
+                    if (auto self = weak.lock()) {
+                        std::lock_guard lock(self->control_mutex);
+                        return self->run_stop.get_token();
+                    }
+                    std::stop_source stopped;
+                    stopped.request_stop();
+                    return stopped.get_token();
+                });
+            registry.add(std::make_shared<tools::intrinsic::PtcToolSet>(
+                ptc, &eventbus::default_async_bus()));
         }
         for (auto& tool : extensions.tools) registry.add(std::move(tool));
         hooks.add(loop::intrinsic::ContextStatisticHook::from_config());
@@ -1656,7 +1683,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             std::filesystem::create_directories(directory);
             ownership = std::make_unique<fileio::SessionLock>(directory / "session.lock");
         }
-        co_await initialize();
+        std::exception_ptr startup_error;
+        try { co_await initialize(); }
+        catch (...) { startup_error = std::current_exception(); }
+        if (startup_error) {
+            if (ptc) {
+                try { co_await ptc->shutdown(); } catch (...) {}
+            }
+            try { co_await store->shutdown(); } catch (...) {}
+            std::rethrow_exception(startup_error);
+        }
         asio::co_spawn(strand, process_control(),
             [self = shared_from_this()](std::exception_ptr error) {
                 if (error && !self->stopping) self->fail(error);
@@ -1703,6 +1739,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             }
         } catch (...) {
             if (!failure) failure = std::current_exception();
+        }
+        if (ptc) {
+            try { co_await ptc->shutdown(); }
+            catch (...) { if (!failure) failure = std::current_exception(); }
         }
         try {
             co_await store->shutdown();

@@ -214,3 +214,9 @@ persistence:
     on_run_finished: true
     # Applies to orderly shutdown after state mutation has stopped.
     on_shutdown: true
+
+# Optional external Python PTC interpreter (source-installed separately).
+# Requires persistence.enabled: true and an explicit persistence.directory.
+# ptc:
+#   executable: /absolute/path/to/ptc/.venv/bin/simplex-ptc
+#   arguments: [--module, simplex_ptc.tools.process, --module, simplex_ptc.tools.files]

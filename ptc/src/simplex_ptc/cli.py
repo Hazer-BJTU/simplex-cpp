@@ -152,6 +152,7 @@ def main() -> int:
                 "commit_status": "unknown",
                 "error": {"code": exc.code, "message": str(exc)},
             }
+            response.update(getattr(exc, "response", {}))
             code = 2
         except (OSError, KeyboardInterrupt):
             response = {
@@ -182,6 +183,12 @@ def main() -> int:
                 {
                     "protocol": 1,
                     "status": "failed",
+                    "commit_status": "unknown",
+                    **{
+                        key: response[key]
+                        for key in ("execution_id", "epoch", "session_id", "commands_created")
+                        if key in response
+                    },
                     "error": {"code": "response_limit", "message": "response exceeds budget"},
                 }
             )
