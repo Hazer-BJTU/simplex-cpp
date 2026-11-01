@@ -186,3 +186,9 @@ for (const path of ['ptc/pyproject.toml', 'ptc/uv.lock', 'ptc/src/simplex_ptc/ru
         assert.deepEqual(classifyPaths([path, 'hub/src/hub.ts']), decisionsForCategory('integration'));
     });
 }
+
+test('PTC integration workflow does not enable unrelated native validation', () => {
+    assert.equal(categoryForPath('.github/workflows/ptc-worker.yml'), 'interpreter');
+    assert.deepEqual(classifyPaths(['ptc/src/simplex_ptc/cli.py']),
+        decisionsForCategory('independent'));
+});

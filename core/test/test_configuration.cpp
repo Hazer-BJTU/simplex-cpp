@@ -295,3 +295,18 @@ BOOST_AUTO_TEST_CASE(legacy_format_selects_json_and_conflicting_selection_fails)
     value["persistence"]["backend"] = "sqlite";
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(ptc_requires_explicit_persistent_session)
+{
+    auto value = configuration();
+    value["ptc"] = {{"executable", "./venv/bin/simplex-ptc"}, {"arguments", Json::array()}};
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    value["persistence"] = {{"directory", "./worker"}, {"enabled", false}};
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    value["persistence"]["enabled"] = true;
+    auto config = load::parse_configuration(value, "/tmp");
+    BOOST_REQUIRE(config.ptc);
+    BOOST_TEST(config.ptc->executable == "/tmp/venv/bin/simplex-ptc");
+    value["ptc"]["arguments"] = Json::array({123});
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+}

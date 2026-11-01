@@ -71,10 +71,12 @@ struct Model : llm::LLMModel {
     std::atomic<int> calls{0};
     std::chrono::milliseconds delay{40};
     bool hold_first = false;
+    bool ptc = false;
+    bool saw_ptc_result = false;
     std::string file_to_read;
     std::atomic<bool> fail_model{false};
 
-    asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState) override {
+    asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState input) override {
         ++calls;
         maximum.store(std::max(maximum.load(), ++active));
         struct Exit { std::atomic<int>& active; ~Exit() { --active; } } exit{active};
@@ -88,6 +90,16 @@ struct Model : llm::LLMModel {
         model_io::Content content;
         content.raw = "offline-answer";
         item.content.push_back(content);
+        if (ptc && calls.load() == 1) {
+            model_io::InvokeQuery query;
+            query.id = "ptc-first";
+            query.name = "ptc_execute";
+            query.arguments = {{"source", "print('ptc-worker-marker')\nx = 42\nx"}};
+            item.invokes = std::vector<model_io::InvokeQuery>{query};
+        }
+        if (ptc && calls.load() > 1) {
+            saw_ptc_result |= Json(input).dump().find("output (18 bytes):") != std::string::npos;
+        }
         if (!file_to_read.empty()) {
             model_io::InvokeQuery query;
             query.id = "file-read";
@@ -112,7 +124,7 @@ enum class Mode { Normal, Cancel, Overflow, StorageFailure, Blocked, Stop,
 
 /** Real local WebSocket peer drives the complete worker lifecycle. */
 void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote_call = false,
-              const std::string& assist_provider = "deepseek", bool sqlite = false) {
+              const std::string& assist_provider = "deepseek", bool sqlite = false, bool with_ptc = false, bool deny_ptc = false) {
     Scratch scratch;
 #ifdef __linux__
     storage_delay::release = false;
@@ -152,6 +164,11 @@ sections:
     config.environment.workspace = scratch.root / "workspace";
     config.environment.platform = "Test platform";
     config.environment.software = {"Test compiler"};
+    if (with_ptc) {
+        config.ptc = load::PtcConfiguration{std::getenv("SIMPLEX_TEST_PTC"),
+            {"--module", "simplex_ptc.tools.process", "--module", "simplex_ptc.tools.files"}};
+        std::filesystem::create_directories(config.environment.workspace);
+    }
     const auto original_cwd = std::filesystem::current_path();
     config.event_capacity = mode == Mode::Overflow ? 1 : 256;
     if (mode == Mode::StorageFailure) config.restore = false;
@@ -172,6 +189,7 @@ sections:
         return load::load_state(config.state_directory / "state.json");
     };
     auto model = std::make_shared<Model>(io.get_executor());
+    model->ptc = with_ptc;
     if (mode == Mode::ModelFailure) model->fail_model = true;
     if (mode == Mode::Cancel || mode == Mode::Stop) model->delay = std::chrono::seconds(10);
     if (mode == Mode::History) model->delay = std::chrono::milliseconds(500);
@@ -210,6 +228,8 @@ sections:
             co_await acceptor.async_accept(asio::use_awaitable));
         co_await socket.async_accept(asio::use_awaitable);
         auto send = [&](Json message) -> asio::awaitable<void> {
+            if (with_ptc && message.value("type", "") == "payload")
+                message["data"]["options"]["confirmation"]["mode"] = deny_ptc ? "deny" : "approve";
             auto wire = message.dump();
             co_await socket.async_write(asio::buffer(wire), asio::use_awaitable);
         };
@@ -412,7 +432,11 @@ sections:
             BOOST_TEST(completed == 2);
             BOOST_TEST(rejected == 1);
             BOOST_TEST(model->maximum.load() == 1);
-            BOOST_TEST(model->calls.load() == 2);
+            BOOST_TEST(model->calls.load() == (with_ptc ? 3 : 2));
+            if (with_ptc) {
+                BOOST_TEST(model->saw_ptc_result == !deny_ptc);
+                BOOST_TEST(std::filesystem::exists(config.storage / "ptc" / "checkpoint") == !deny_ptc);
+            }
             const auto state = snapshot();
             BOOST_TEST(state.turns.size() == 2u);
             for (const auto& turn : state.turns) {
@@ -1123,3 +1147,16 @@ BOOST_AUTO_TEST_CASE(sqlite_checkpoint_does_not_block_control_channel) {
 BOOST_AUTO_TEST_CASE(status_and_cancel_during_large_file_scan) { scenario(Mode::FileRead); }
 BOOST_AUTO_TEST_CASE(shutdown_joins_large_file_scan) { scenario(Mode::FileReadStop); }
 #endif
+
+BOOST_AUTO_TEST_CASE(real_ptc_worker_integration) {
+    if (!std::getenv("SIMPLEX_TEST_PTC")) {
+        BOOST_TEST_MESSAGE("real PTC integration not selected");
+        return;
+    }
+    scenario(Mode::Normal, false, false, "deepseek", false, true);
+}
+
+BOOST_AUTO_TEST_CASE(real_ptc_denied_program_has_no_effects) {
+    if (!std::getenv("SIMPLEX_TEST_PTC")) return;
+    scenario(Mode::Normal, false, false, "deepseek", false, true, true);
+}

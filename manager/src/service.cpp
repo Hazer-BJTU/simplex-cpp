@@ -283,6 +283,13 @@ Json fork_configuration(const Paths& parent, const Json& startup) {
         && document["worker"]["environment"].contains("workspace")) {
         rebase(document["worker"]["environment"]["workspace"]);
     }
+    // Explicit executable paths resolve relative to the parent's config,
+    // whereas a bare name must retain PATH lookup on the target host.
+    const Json::json_pointer executable("/ptc/executable");
+    if (document.contains(executable) && document[executable].is_string()
+        && fs::path(document[executable].get<std::string>()).has_parent_path()) {
+        rebase(document[executable]);
+    }
     for (const char* path : {"/plugins/providers", "/plugins/extensions/tools", "/plugins/extensions/loop_hooks"}) {
         const Json::json_pointer pointer(path);
         if (!document.contains(pointer)) continue;
@@ -472,6 +479,20 @@ Json execute(const Json& input) {
             } catch (const std::system_error& error) {
                 if (error.code().value() == EWOULDBLOCK || error.code().value() == EAGAIN) {
                     throw Error("busy", "worker still owns the session");
+                }
+                throw;
+            }
+        }
+        // An orphaned PTC daemon can outlive a crashed worker. Respect its
+        // lifetime flock before deleting its checkpoint or live-resource root.
+        std::unique_ptr<fileio::SessionLock> ptc;
+        if (fs::is_directory(p.root / "ptc") && !fs::is_symlink(p.root / "ptc")) {
+            ordinary_path(p.root / "ptc" / "daemon.lock");
+            try {
+                ptc = std::make_unique<fileio::SessionLock>(p.root / "ptc" / "daemon.lock");
+            } catch (const std::system_error& error) {
+                if (error.code().value() == EWOULDBLOCK || error.code().value() == EAGAIN) {
+                    throw Error("busy", "PTC daemon still owns the session; stop it before removal");
                 }
                 throw;
             }

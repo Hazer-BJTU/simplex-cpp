@@ -373,6 +373,33 @@ Configuration parse_configuration(
     // Deprecated compatibility window: accepted and reported once at startup,
     // never used for automatic exports. See load/configuration.hpp.
     result.legacy_readable = flag(storage, "readable", false);
+    if (document.contains("ptc")) {
+        const auto& ptc = object(document, "ptc");
+        if (!result.persistence || !storage.contains("directory")) {
+            throw std::invalid_argument("ptc requires persistence.enabled and an explicit persistence.directory");
+        }
+        PtcConfiguration settings;
+        settings.executable = text(ptc, "executable");
+        if (settings.executable.empty() || settings.executable.find('\0') != std::string::npos) {
+            throw std::invalid_argument("ptc.executable must be nonempty without NUL");
+        }
+        if (std::filesystem::path(settings.executable).has_parent_path()) {
+            settings.executable = std::filesystem::absolute(directory / settings.executable).lexically_normal().string();
+        }
+        if (ptc.contains("arguments")) {
+            if (!ptc["arguments"].is_array()) throw std::invalid_argument("ptc.arguments must be an array");
+            for (const auto& argument : ptc["arguments"]) {
+                if (!argument.is_string() || argument.get<std::string>().find('\0') != std::string::npos)
+                    throw std::invalid_argument("ptc.arguments must contain strings without NUL");
+                settings.arguments.push_back(argument.get<std::string>());
+            }
+        }
+        if (!result.restore && std::filesystem::exists(result.storage / "ptc")) {
+            throw std::invalid_argument("PTC state already exists with restore: never; explicitly reset or choose a fresh directory");
+        }
+        result.ptc = std::move(settings);
+    }
+
     return result;
 }
 

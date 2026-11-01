@@ -23,8 +23,9 @@ export function categoryForPath(path) {
         throw new Error('invalid repository-relative changed path');
     }
     const root = path.split('/')[0];
-    // PTC is a self-contained Python program with its own path-filtered CI.
-    if (root === 'ptc' || path === '.github/workflows/ptc.yml') {
+    // PTC has isolated Python tests and a separately filtered focused worker job.
+    if (root === 'ptc' || path === '.github/workflows/ptc.yml'
+        || path === '.github/workflows/ptc-worker.yml') {
         return 'interpreter';
     }
     if (nativeTrees.has(root) || root === 'docker'

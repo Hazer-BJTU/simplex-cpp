@@ -48,3 +48,4 @@ install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/simplex"
 add_custom_target(simplex DEPENDS simplex_worker simplex_manager)
 
 # core/example/shell_server.cpp is deprecated source only; no build/install target.
+target_link_libraries(core_lib PRIVATE tools_intrinsic_ptc)

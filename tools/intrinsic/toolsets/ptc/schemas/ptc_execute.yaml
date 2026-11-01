@@ -1,0 +1,12 @@
+name: ptc_execute
+description: Execute Python code in the persistent PTC session. Use manual() to discover available functions. Return a small final result; process and file effects are not rolled back on failure.
+type: serial_write
+security: require_confirm
+argument_schema:
+  type: object
+  additionalProperties: false
+  required: [source]
+  properties:
+    source:
+      type: string
+      description: Python source, at most 128 KiB UTF-8. The final expression is returned; print output is separate.

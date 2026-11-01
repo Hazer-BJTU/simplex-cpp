@@ -128,3 +128,15 @@ test('PTC tests have their own precise PR/main path filters and no native depend
     assert.match(text, /uv run --locked pytest/);
     assert.doesNotMatch(text, /workflow_run|workflow_dispatch|cmake|npm |docker |needs:/);
 });
+
+test('PTC real integration builds only focused targets and runs actual CLI', () => {
+    const ptc = workflows.find((workflow) => workflow.name === 'ptc-worker.yml').text;
+    assert.match(ptc, /'ptc\/\*\*'/);
+    for (const path of ['core', 'load', 'tools', 'process', 'process_io', 'utils']) {
+        assert.ok(ptc.includes("'" + path + "/**'"));
+    }
+    assert.match(ptc, /--target test_ptc_tools test_core_application test_core_configuration/);
+    assert.match(ptc, /SIMPLEX_TEST_PTC=/);
+    assert.match(ptc, /--no-tests=error/);
+    assert.doesNotMatch(ptc, /portable-release|staged-runtime/);
+});

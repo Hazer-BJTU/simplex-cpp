@@ -27,11 +27,18 @@ struct ModelConfiguration {
     nlohmann::json model;
 };
 
+/** Optional external PTC interpreter. No Python dependency when absent. */
+struct PtcConfiguration {
+    std::string executable;
+    std::vector<std::string> arguments;
+};
+
 /** Parsed startup settings. Runtime configuration, never a session snapshot. */
 struct Configuration {
     /** Managed allocations retain a shared deletion fence through shutdown. */
     std::shared_ptr<fileio::SessionLock> allocation_lease;
     nlohmann::json document;
+    std::optional<PtcConfiguration> ptc;
     std::filesystem::path directory;
     /** Driver factory and its validated, credential-expanded configuration. */
     std::string provider;

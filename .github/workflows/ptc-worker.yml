@@ -1,0 +1,87 @@
+name: PTC worker integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ptc/**'
+      - 'core/**'
+      - 'load/**'
+      - 'tools/**'
+      - 'process/**'
+      - 'process_io/**'
+      - 'utils/**'
+      - 'dataclass/**'
+      - 'loop/**'
+      - 'persistence/**'
+      - 'manager/**'
+      - 'llm/**'
+      - 'extensions/**'
+      - 'intercom/**'
+      - 'io/**'
+      - 'endpoint/**'
+      - 'protocol/**'
+      - 'textedit/**'
+      - 'versioning/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/ptc-worker.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ptc/**'
+      - 'core/**'
+      - 'load/**'
+      - 'tools/**'
+      - 'process/**'
+      - 'process_io/**'
+      - 'utils/**'
+      - 'dataclass/**'
+      - 'loop/**'
+      - 'persistence/**'
+      - 'manager/**'
+      - 'llm/**'
+      - 'extensions/**'
+      - 'intercom/**'
+      - 'io/**'
+      - 'endpoint/**'
+      - 'protocol/**'
+      - 'textedit/**'
+      - 'versioning/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/ptc-worker.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ptc-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:4618daf101fb052fe78e0207bd84b0183298ff9792fe3f1f63702b43f1286b24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.11.3'
+          python-version: '3.12'
+          enable-cache: false
+      - name: Install standalone interpreter
+        run: uv sync --directory ptc --locked
+      - name: Configure focused native integration
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty
+      - name: Build only integration targets
+        run: cmake --build build --target test_ptc_tools test_core_application test_core_configuration test_manager test_managed_configuration -j2
+      - name: Real interpreter and worker tests
+        run: |
+          export SIMPLEX_TEST_PTC="$GITHUB_WORKSPACE/ptc/.venv/bin/simplex-ptc"
+          test -x "$SIMPLEX_TEST_PTC"
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120 -R '^(test_ptc_tools|test_core_application|test_core_configuration|test_manager|test_managed_configuration)$'

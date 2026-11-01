@@ -359,3 +359,15 @@ BOOST_FIXTURE_TEST_CASE(namespace_busy_refusal_does_not_publish_an_allocation, F
     }
     BOOST_TEST(call("inspect") == before);
 }
+
+BOOST_FIXTURE_TEST_CASE(live_ptc_daemon_fences_removal_after_worker_exit, Fixture) {
+    call("prepare");
+    fs::create_directory(root / "ptc");
+    {
+        fileio::SessionLock daemon(root / "ptc" / "daemon.lock");
+        BOOST_CHECK_EXCEPTION(call("remove"), manager::Error,
+            [](const auto& error) { return code(error, "busy"); });
+        BOOST_TEST(fs::exists(root / "config/config.yaml"));
+    }
+    BOOST_TEST(call("remove")["status"] == "removed");
+}

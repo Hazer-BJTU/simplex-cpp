@@ -169,10 +169,21 @@ tests demonstrate scheduling decisions, not measured production cost savings.
 
 ## Independent PTC interpreter
 
-`ptc/**` and `.github/workflows/ptc.yml` select no native builds or worker
-integration jobs. `ptc.yml` separately tests the self-contained uv package only
+`ptc/**` and `.github/workflows/ptc.yml` select no jobs in the ordinary native
+validation chain; the focused worker integration workflow below is separate. `ptc.yml` separately tests the self-contained uv package only
 on PR/main changes to those two path patterns. Its tests do not use the worker,
 Hub, or release artifacts. Unrelated changes do not run interpreter CI. Mixed
 changes retain the union of each component's checks; shared classifier changes
 still select full native validation. Do not require the path-filtered PTC check
 unconditionally in branch rules, since an unrelated PR has no such check.
+
+## PTC worker integration
+
+`ptc.yml` retains isolated Python unit tests. `ptc-worker.yml` independently
+builds only the PTC adapter and Application/configuration/manager test targets against
+the pinned build-base toolchain, installs the locked Python interpreter, and
+runs real CLI/daemon plus offline worker tests. Its PR/main path filter covers
+PTC, worker/runtime dependencies and CMake configuration. PTC-only changes do
+not select the ordinary full native/portable/cross-platform chain. This targeted
+job builds its own dependency closure; it does not depend on a portable producer
+that is intentionally skipped for Python-only changes.

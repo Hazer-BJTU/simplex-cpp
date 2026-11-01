@@ -1,0 +1,4 @@
+add_executable(test_ptc_tools test_tools.cpp)
+target_link_libraries(test_ptc_tools PRIVATE tools_intrinsic_ptc Boost::unit_test_framework)
+add_test(NAME test_ptc_tools COMMAND test_ptc_tools)
+set_tests_properties(test_ptc_tools PROPERTIES TIMEOUT 120)
