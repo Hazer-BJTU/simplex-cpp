@@ -723,52 +723,211 @@ def test_nested_state_ancestors_fenced_before_checkpoint(tmp_path, monkeypatch):
 def test_parent_fence_failure_blocks_startup_and_is_retried(
     clients, tmp_path, monkeypatch, failed_parent
 ):
+    from simplex_ptc.endpoint import _creation_intent
     from simplex_ptc.storage import Storage
 
     client = clients("new-parent/new-state")
     failed_path = tmp_path if failed_parent == "root" else client.endpoint.directory.parent
+    created = (
+        client.endpoint.directory.parent if failed_parent == "root" else client.endpoint.directory
+    )
     sync = Storage._sync_path
     attempts = []
 
     def fail(path):
-        attempts.append(path)
-        if path == failed_path:
+        if path == failed_path and created.exists():
+            attempts.append(path)
             raise OSError("parent fsync failed")
         sync(path)
 
-    # A failed mkdir fence can leave the entire path visible. Every subsequent
-    # attempt must repeat that fence rather than equating existence with safety.
+    # A failed mkdir fence leaves an intent beside the visible directory.
+    # Every subsequent attempt must repeat it, including a new Client instance.
     with monkeypatch.context() as patch:
         patch.setattr(Storage, "_sync_path", staticmethod(fail))
         patch.setattr(subprocess, "Popen", lambda *a, **kw: pytest.fail("started before fencing"))
         for _ in range(2):
             with pytest.raises(OSError, match="parent fsync failed"):
                 client.ensure()
-            assert client.endpoint.directory.exists()
+            assert created.exists() and _creation_intent(created).exists()
             assert not (client.endpoint.directory / "checkpoint").exists()
             assert not client.endpoint.socket.exists()
     assert attempts.count(failed_path) == 2
-    assert client.execute(Request("one", "42"))["committed"]
+    assert clients("new-parent/new-state").execute(Request("one", "42"))["committed"]
+    assert not list(tmp_path.rglob(".simplex-ptc-create-*.pending"))
 
 
-def test_daemon_ownership_requires_parent_fence_even_if_client_precreated_path(
+def test_daemon_ownership_resumes_directory_creation_after_client_fence_failure(
     tmp_path, monkeypatch
 ):
+    from simplex_ptc.endpoint import _creation_intent, durable_directory
     from simplex_ptc.storage import Storage
 
     endpoint = Endpoint(tmp_path / "parent" / "state")
-    endpoint.directory.mkdir(parents=True, mode=0o700)
     sync = Storage._sync_path
 
     def fail(path):
-        if path == endpoint.directory.parent:
+        if path == endpoint.directory.parent and endpoint.directory.exists():
             raise OSError("parent fence failed")
         sync(path)
 
     with monkeypatch.context() as patch:
         patch.setattr(Storage, "_sync_path", staticmethod(fail))
         with pytest.raises(OSError, match="parent fence failed"):
+            durable_directory(endpoint.directory)
+        assert endpoint.directory.exists()
+        assert _creation_intent(endpoint.directory).exists()
+        with pytest.raises(OSError, match="parent fence failed"):
             with endpoint.locked():
                 pytest.fail("acquired ownership without durable directory")
     with endpoint.locked():
         pass
+    assert not _creation_intent(endpoint.directory).exists()
+
+
+def test_existing_state_under_search_only_ancestor_is_usable(clients, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory read permissions")
+    ancestor = tmp_path / "search-only"
+    state = ancestor / "state"
+    state.mkdir(parents=True, mode=0o700)
+    ancestor.chmod(0o111)
+    try:
+        client = clients("search-only/state")
+        first = client.execute(Request("one", "x = 41\nx"))
+        assert first["result"] == 41
+        assert client.stop()["stopped"]
+        assert client.execute(Request("two", "x + 1", first["epoch"]))["result"] == 42
+    finally:
+        ancestor.chmod(0o700)
+
+
+@pytest.mark.parametrize("failed_sync", [1, 2, 3])
+def test_directory_creation_fence_failures_leave_recoverable_intent(
+    clients, tmp_path, monkeypatch, failed_sync
+):
+    from simplex_ptc.endpoint import _creation_intent, durable_directory
+    from simplex_ptc.storage import Storage
+
+    state = tmp_path / "state"
+    intent = _creation_intent(state)
+    sync = Storage._sync_path
+    calls = []
+
+    def fail(path):
+        assert path == tmp_path
+        calls.append(path)
+        if len(calls) == failed_sync:
+            raise OSError("injected directory creation fence failure")
+        sync(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Storage, "_sync_path", staticmethod(fail))
+        with pytest.raises(OSError, match="creation fence failure"):
+            durable_directory(state)
+    assert state.exists() == (failed_sync > 1)
+    assert intent.exists() == (failed_sync < 3)
+    if intent.exists():
+        assert intent.stat().st_mode & 0o777 == 0o600
+    assert not (state / "checkpoint").exists()
+    assert clients().execute(Request("one", "42"))["committed"]
+    assert not intent.exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "nonempty", "hardlink"])
+def test_directory_creation_refuses_unsafe_intent_without_changing_it(tmp_path, kind):
+    from simplex_ptc.endpoint import _creation_intent, durable_directory
+
+    state = tmp_path / "state"
+    intent = _creation_intent(state)
+    target = tmp_path / "unrelated"
+    target.write_text("keep" if kind != "hardlink" else "")
+    target.chmod(0o600)
+    if kind == "symlink":
+        intent.symlink_to(target)
+    elif kind == "fifo":
+        os.mkfifo(intent, 0o600)
+    elif kind == "nonempty":
+        intent.write_text("keep")
+        intent.chmod(0o600)
+    else:
+        os.link(target, intent)
+    before = intent.lstat()
+    with pytest.raises((PTCError, OSError)):
+        durable_directory(state)
+    assert not state.exists()
+    assert intent.lstat().st_ino == before.st_ino
+    assert target.read_text() == ("keep" if kind != "hardlink" else "")
+    if kind == "nonempty":
+        assert intent.read_text() == "keep"
+
+
+def test_relative_plugin_paths_survive_daemon_and_runner_bootstrap(clients, tmp_path):
+    client = clients(modules=["relative_ptc_plugin"])
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "relative_ptc_plugin.py").write_text("""
+import os
+from simplex_ptc import ToolDescriptor
+
+def register_tools(registry):
+    assert os.environ["PYTHONPATH"] == "./plugins"
+    registry.add(ToolDescriptor("example", "Example", "example()", "int", "none", "1"), lambda: 42)
+""")
+    env = dict(os.environ, PYTHONPATH="./plugins")
+    command = [sys.executable, "-m", "simplex_ptc", "--module", "relative_ptc_plugin"]
+
+    def invoke(request, cwd):
+        result = subprocess.run(
+            command + ["execute", "--state-directory", str(client.endpoint.directory)],
+            input=json.dumps(request),
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    first = invoke({"execution_id": "one", "source": "example()"}, tmp_path)
+    assert first["result"] == 42
+    # A later client resolves the same configured module from another directory,
+    # while the daemon/runner keep the original absolute import locations.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "plugins").symlink_to(plugins, target_is_directory=True)
+    second = invoke(
+        {"execution_id": "two", "source": "example() + 1", "epoch": first["epoch"]}, other
+    )
+    assert second["result"] == 43
+
+
+def test_module_bootstrap_anchors_empty_and_relative_search_paths(tmp_path):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "path_fixture.py").write_text("""
+import json
+import os
+import sys
+print(json.dumps([os.getcwd(), sys.argv[1:], os.environ["PYTHONPATH"], sys.path[:2]]))
+""")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, subprocess, sys; from simplex_ptc.bootstrap import module_command; "
+            "sys.path[:0] = ['', 'plugins']; "
+            "args = module_command('path_fixture', 'argument'); "
+            "subprocess.run(args, cwd='/', check=True)",
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, PYTHONPATH="./plugins"),
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    cwd, arguments, pythonpath, paths = json.loads(result.stdout)
+    assert cwd == "/" and arguments == ["argument"]
+    assert pythonpath == "./plugins"
+    assert paths == [str(tmp_path) + "/", str(plugins)]

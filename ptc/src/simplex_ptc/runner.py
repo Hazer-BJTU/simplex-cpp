@@ -14,6 +14,7 @@ import time
 
 import pydantic_monty as monty
 
+from .bootstrap import module_command
 from .extensions import ToolRegistry
 from .protocol import MAX_CHECKPOINT_BYTES, Output, PTCError, preview
 from .runtime import compatibility
@@ -50,7 +51,7 @@ class Runner:
         process = None
         try:
             process = subprocess.Popen(
-                [sys.executable, "-m", "simplex_ptc.runner", str(child.fileno())],
+                module_command("simplex_ptc.runner", str(child.fileno())),
                 pass_fds=(child.fileno(),),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

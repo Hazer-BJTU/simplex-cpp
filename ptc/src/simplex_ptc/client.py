@@ -2,13 +2,13 @@
 
 import os
 import subprocess
-import sys
 import threading
 import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+from .bootstrap import module_command
 from .endpoint import Endpoint, durable_directory
 from .extensions import ToolRegistry
 from .lifecycle import Policy
@@ -73,7 +73,7 @@ class Client:
             pass
         durable_directory(self.endpoint.directory)
         process = subprocess.Popen(
-            [sys.executable, "-m", "simplex_ptc.daemon", str(self.endpoint.directory)],
+            module_command("simplex_ptc.daemon", str(self.endpoint.directory)),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

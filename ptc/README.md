@@ -168,8 +168,10 @@ semantics. Querying an unknown old ID never executes source. Do not reuse IDs.
 The current CLI's working directory, environment and effective umask are transmitted
 for each execution and applied only in its runner. Daemon and runner bootstrap use
 `/`, so removing the first caller's temporary directory cannot break later calls
-from a valid directory. A later CLI call does not inherit the first caller's
-cwd/environment/umask. The mask is captured without changing the client process's
+from a valid directory. Internal startup preserves the owner's resolved module
+search paths, including relative extension locations, while leaving environment
+values such as `PYTHONPATH` unchanged. A later CLI call does not inherit the first
+caller's cwd/environment/umask. The mask is captured without changing the client process's
 global umask; the daemon retains its own private mask for internal files. Context
 has a separate 1 MiB limit and participates in request identity; changing it,
 including the umask, while retrying an ID is an identity conflict.
@@ -227,10 +229,14 @@ produces an error, never unsafe takeover. Do not remove lock files or replace
 session directories while a daemon is running. Mixed use with older pre-daemon
 package versions is unsupported.
 
-Persistent-directory setup synchronizes ancestor directory entries before
-execution can commit. Existing ancestors are also synchronized on a new startup
-attempt: a previous failed parent sync may have left a visible but not durable
-path. Failure of a required fence prevents successful startup/commit. Ephemeral
+Persistent-directory setup synchronizes newly created directory entries before
+execution can commit. Each new component has a private empty
+`.simplex-ptc-create-UID-HASH.pending` intent in its parent before creation; the
+intent is removed after the parent sync succeeds. An interrupted or failed setup
+can leave an intent that the next startup resumes, even if the directory already
+exists. Existing ancestors without pending creation work need only path traversal
+permission; startup does not require opening or synchronizing every ancestor up
+to `/`. Failure of a required fence prevents successful startup/commit. Ephemeral
 runtime-directory setup does not require these persistence fences.
 
 Internal control uses versioned, length-prefixed JSON, bounded frames and at most

@@ -17,25 +17,71 @@ from .storage import Storage
 def private_directory(path: Path) -> Path:
     """Create/check an ephemeral private directory; this is not a durability fence."""
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return _check_private_directory(path)
+
+
+def _check_private_directory(path: Path) -> Path:
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise PTCError("unsafe_directory", "directory must be owned by this user and private")
     return path
 
 
-def durable_directory(path: Path) -> Path:
-    """Make the private state directory reachable through durable parent entries.
+def _creation_intent(path: Path) -> Path:
+    """Locate a fixed-size creation intent without listing the containing directory."""
+    identity = hashlib.sha256(os.fsencode(path)).hexdigest()[:32]
+    return path.parent / f".simplex-ptc-create-{os.getuid()}-{identity}.pending"
 
-    Fence every ancestor, including existing ones: a prior failed startup may
-    have created a directory without completing its parent sync. Existence alone
-    cannot prove that fence succeeded. This runs at ownership/startup boundaries,
-    not for each execution on an already connected daemon. Runtime sockets need
-    no such guarantee and continue to use private_directory().
+
+def durable_directory(path: Path) -> Path:
+    """Fence only new directory entries and unfinished creation from earlier attempts.
+
+    Publish an empty private intent in each parent before creating its child.
+    Other starters check that intent after observing the child, so a visible
+    directory is not mistaken for completed creation. Remove the intent only
+    after the parent sync succeeds. Existing paths without intents need only
+    search permission on ancestors, not read access or filesystem sync support.
     """
-    private_directory(path)
-    for parent in reversed(path.absolute().parents):
-        Storage._sync_path(parent)
-    return path
+    path = path.absolute()
+    for directory in reversed((path, *path.parents)):
+        if directory == directory.parent:
+            continue
+        exists = directory.exists()
+        intent = _creation_intent(directory)
+        try:
+            intent.lstat()
+        except FileNotFoundError:
+            if exists:
+                continue
+        fd = os.open(intent, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink > 1
+                or info.st_size != 0
+            ):
+                raise PTCError("unsafe_creation_intent", "directory creation intent is not private")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        # Persist intent before mkdir, including retry after an earlier failure.
+        Storage._sync_path(directory.parent)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        Storage._sync_path(directory.parent)
+        try:
+            current = intent.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+                intent.unlink(missing_ok=True)
+        # The child entry was already fenced; failure here cannot hide required
+        # creation work even when the intent unlink became visible.
+        Storage._sync_path(directory.parent)
+    return _check_private_directory(path)
 
 
 class Endpoint:
