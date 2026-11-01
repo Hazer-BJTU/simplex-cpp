@@ -226,10 +226,11 @@ def test_directory_entries_support_members_methods_and_print_example(tmp_path):
     )
     assert result["status"] == "completed", result
     assert result["output"].splitlines() == [
+        "get_command: Reacquire a command from this daemon without launching it again.",
         "manual: List available functions or describe exact function names.",
-        "run_command: Execute a shell command; kill or detach when waiting expires.",
+        "run_command: Start a daemon-owned shell command; keep it running when initial waiting expires.",
     ]
-    assert [entry["name"] for entry in result["result"]] == ["manual", "run_command"]
+    assert [entry["name"] for entry in result["result"]] == ["get_command", "manual", "run_command"]
     assert result["result"][1]["return_methods"]
 
 

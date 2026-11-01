@@ -5,7 +5,7 @@ from pydantic_monty import ClassInstance
 from .manual import ManualResult
 from .protocol import encode
 from .tools.files import CommitResult, EditPreview, TextFile, TextSlice
-from .tools.process import CommandResult
+from .tools.process import Command, CommandResult
 
 
 def plain_result(value: object, depth: int = 0) -> object:
@@ -34,7 +34,7 @@ def validate_host_result(value: object, depth: int = 0) -> None:
     """
     if depth > 128:
         raise ValueError("result exceeds nesting limit")
-    if type(value) is ClassInstance and type(value.value) is TextFile:
+    if type(value) is ClassInstance and type(value.value) in (TextFile, Command):
         # This handle is only callable in the active resource scope; it cannot
         # be serialized as a final result or revived by a session dump.
         return

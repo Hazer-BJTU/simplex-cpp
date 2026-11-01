@@ -4,11 +4,14 @@ import asyncio
 import contextlib
 import os
 import signal
+import socket
+import struct
 import sys
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+from .commands import Commands
 from .endpoint import Endpoint, check_peer
 from .extensions import ToolRegistry
 from .lifecycle import Policy, Resources
@@ -16,7 +19,15 @@ from .protocol import PTCError, Request, encode
 from .runner import Runner
 from .runtime import compatibility
 from .session import Session, digest
-from .transport import VERSION, execution_context, read_frame, unpack, write_frame
+from .transport import (
+    MAX_COMMAND_REPLY_BYTES,
+    MAX_FRAME_BYTES,
+    VERSION,
+    execution_context,
+    read_frame,
+    unpack,
+    write_frame,
+)
 
 
 def error_response(exc: Exception) -> dict:
@@ -52,6 +63,7 @@ class Daemon:
         self.generation = str(uuid.uuid4())
         self.directory_identity = None
         self.resources = Resources(self.generation, policy)
+        self.commands = Commands(self.resources)
         self.state = "ready"
         self.active = None
         self.runner = None
@@ -73,6 +85,7 @@ class Daemon:
             and {
                 "execution_id": self.active["request"].execution_id,
                 "epoch": self.active["request"].epoch,
+                "commands_created": list(self.active["created"]),
             },
         }
 
@@ -86,7 +99,12 @@ class Daemon:
         if self.active and self.active["request"].execution_id == identity:
             if self.active["request"].epoch != epoch:
                 raise PTCError("stale_epoch", "active execution epoch does not match")
-            return {"status": "running", "execution_id": identity, "generation": self.generation}
+            return {
+                "status": "running",
+                "execution_id": identity,
+                "generation": self.generation,
+                "commands_created": list(self.active["created"]),
+            }
         if self.last and self.last[0] == identity and self.last[1] == epoch:
             return {"status": "terminal", "response": self.last[2]}
         if self.active:
@@ -107,13 +125,31 @@ class Daemon:
 
     async def execute(self, request: Request, context: dict, runner: Runner) -> None:
         """Settle execution even if its submitting socket has already disconnected."""
+        parent = child = bridge = None
+        created = self.active["created"]
         try:
+            parent, child = socket.socketpair()
+            runner.command_socket = child
+            bridge = asyncio.create_task(self.command_bridge(parent, context, created))
             response = await asyncio.to_thread(
-                self.session.execute, request, evaluator=runner, context=context
+                self.session.execute,
+                request,
+                evaluator=runner,
+                context=context,
+                effects=lambda: {"commands_created": list(created)},
             )
         except Exception as exc:
             response = error_response(exc)
             response["boundary_failure"] = True
+            response["commands_created"] = list(created)
+        finally:
+            if child is not None:
+                child.close()
+            if bridge is not None:
+                bridge.cancel()
+                await asyncio.gather(bridge, return_exceptions=True)
+            if parent is not None:
+                parent.close()
         self.last = (request.execution_id, request.epoch, response)
         self.active = None
         self.runner = None
@@ -123,6 +159,53 @@ class Daemon:
             self.refresh()
         except Exception:
             self.info = None
+
+    async def command_bridge(self, channel, context, created):
+        """Private runner capability, never exposed as a public UDS operation.
+
+        Each invocation has one channel and one outstanding operation. Cancelling
+        the bridge stops only its wait/write; acquired keep commands remain owned
+        by the registry and kill-mode launch waits settle their children.
+        """
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(sock=channel)
+            while True:
+                size = struct.unpack("!I", await reader.readexactly(4))[0]
+                if size > MAX_FRAME_BYTES:
+                    raise PTCError("transport_limit", "command frame exceeds limit")
+                value = unpack(await reader.readexactly(size))
+                try:
+                    if "simplex_ptc.tools.process" not in self.modules:
+                        raise PTCError("unavailable", "process module is not enabled")
+                    if self.state != "ready":
+                        raise PTCError("stopping", "daemon is stopping")
+                    if self.runner is None or self.runner.cancelled.is_set():
+                        raise PTCError(
+                            "cancelled", "execution is cancelled; no new command operation admitted"
+                        )
+                    result = await self.commands.dispatch(value, context, created)
+                    reply = {"result": result}
+                except Exception as exc:
+                    reply = {
+                        "error": {
+                            "code": exc.code if isinstance(exc, PTCError) else "command_error",
+                            "message": str(exc)[:2048],
+                        }
+                    }
+                await write_frame(writer, reply, MAX_COMMAND_REPLY_BYTES)
+        except (asyncio.IncompleteReadError, OSError, PTCError):
+            pass
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    async with asyncio.timeout(0.25):
+                        await writer.wait_closed()
+                except (Exception, asyncio.CancelledError):
+                    writer.transport.abort()
+            else:
+                channel.close()
 
     def admit(self, value: dict) -> dict:
         """Validate identity/context before reserving the sole execution slot."""
@@ -139,7 +222,7 @@ class Daemon:
             raise PTCError("busy", "session is already executing")
         self.refresh()
         runner = Runner(self.modules, context, self.policy.cleanup_seconds)
-        self.active = {"request": request, "digest": key}
+        self.active = {"request": request, "digest": key, "created": []}
         self.runner = runner
         self.resources.touch()
         self.task = asyncio.create_task(self.execute(request, context, runner))

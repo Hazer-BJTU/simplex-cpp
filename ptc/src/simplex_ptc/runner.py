@@ -30,7 +30,8 @@ class Runner:
     The parent sends input once, then only cancellation bytes. The child sends
     one result frame. EOF on the parent channel interrupts the child; a watchdog
     bounds cooperative cleanup after owner loss. No candidate is ever committed
-    by the runner itself.
+    by the runner itself. A separate invocation-owned socket carries synchronous
+    command requests to the daemon; it is never inherited by shell children.
     """
 
     def __init__(self, modules: list[str], context: dict, cleanup_seconds: float = 10):
@@ -38,6 +39,7 @@ class Runner:
         self.context = context
         self.cleanup_seconds = cleanup_seconds
         self.cancelled = threading.Event()
+        self.command_socket = None
 
     def cancel(self) -> None:
         """Request cooperative interruption; do not signal a PID from cached metadata."""
@@ -50,9 +52,10 @@ class Runner:
         parent, child = socket.socketpair()
         process = None
         try:
+            command_fd = self.command_socket.fileno() if self.command_socket is not None else -1
             process = subprocess.Popen(
-                module_command("simplex_ptc.runner", str(child.fileno())),
-                pass_fds=(child.fileno(),),
+                module_command("simplex_ptc.runner", str(child.fileno()), str(command_fd)),
+                pass_fds=(child.fileno(),) + ((command_fd,) if command_fd >= 0 else ()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -60,6 +63,8 @@ class Runner:
                 cwd="/",
             )
             child.close()
+            if self.command_socket is not None:
+                self.command_socket.close()
             parent.settimeout(10)
             parent.sendall(
                 pack(
@@ -117,10 +122,15 @@ class Runner:
                 process.wait()
 
 
-def main(fd: int) -> int:
+def main(fd: int, command_fd: int = -1) -> int:
     """Evaluate trusted daemon input; a monitor keeps owner loss observable during callbacks."""
     channel = socket.socket(fileno=fd)
     channel.set_inheritable(False)
+    commands = socket.socket(fileno=command_fd) if command_fd >= 0 else None
+    if commands is not None:
+        commands.set_inheritable(False)
+    from .tools.process import command_channel
+
     completed = threading.Event()
     output = Output()
 
@@ -144,7 +154,7 @@ def main(fd: int) -> int:
 
     try:
         threading.Thread(target=monitor, daemon=True).start()
-        with contextlib.redirect_stdout(sys.stderr):
+        with contextlib.redirect_stdout(sys.stderr), command_channel(commands):
             os.umask(value["context"]["umask"])
             registry = ToolRegistry.load(value["modules"])
             if compatibility(registry) != value["compatibility"]:
@@ -174,8 +184,10 @@ def main(fd: int) -> int:
         channel.sendall(pack(result, MAX_RUNNER_BYTES))
     finally:
         channel.close()
+        if commands is not None:
+            commands.close()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(int(sys.argv[1])))
+    raise SystemExit(main(int(sys.argv[1]), int(sys.argv[2]) if len(sys.argv) > 2 else -1))

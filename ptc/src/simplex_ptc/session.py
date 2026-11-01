@@ -178,7 +178,9 @@ class Session:
                 else None,
             }
 
-    def execute(self, request: Request, *, evaluator=None, context: dict | None = None) -> dict:
+    def execute(
+        self, request: Request, *, evaluator=None, context: dict | None = None, effects=None
+    ) -> dict:
         """Commit success or a failure receipt without rolling back external effects."""
         request = Request.parse(
             {"execution_id": request.execution_id, "source": request.source, "epoch": request.epoch}
@@ -277,6 +279,9 @@ class Session:
                 # Outside the failure handler: interruption from here onward
                 # leaves a pending outcome instead of committing a failed heap.
                 checkpoint = candidate
+            if effects is not None:
+                response.update(effects())
+                response = bound_response(response)
             checkpoint["receipt"] = {
                 "execution_id": request.execution_id,
                 "request_digest": request_digest,
