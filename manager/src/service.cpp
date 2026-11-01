@@ -283,6 +283,13 @@ Json fork_configuration(const Paths& parent, const Json& startup) {
         && document["worker"]["environment"].contains("workspace")) {
         rebase(document["worker"]["environment"]["workspace"]);
     }
+    // Explicit executable paths resolve relative to the parent's config,
+    // whereas a bare name must retain PATH lookup on the target host.
+    const Json::json_pointer executable("/ptc/executable");
+    if (document.contains(executable) && document[executable].is_string()
+        && fs::path(document[executable].get<std::string>()).has_parent_path()) {
+        rebase(document[executable]);
+    }
     for (const char* path : {"/plugins/providers", "/plugins/extensions/tools", "/plugins/extensions/loop_hooks"}) {
         const Json::json_pointer pointer(path);
         if (!document.contains(pointer)) continue;

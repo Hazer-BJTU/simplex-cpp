@@ -79,9 +79,9 @@ jobs:
       - name: Configure focused native integration
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSIMPLEX_THIRDPARTY_DIR=/opt/simplex-thirdparty
       - name: Build only integration targets
-        run: cmake --build build --target test_ptc_tools test_core_application test_core_configuration test_manager -j2
+        run: cmake --build build --target test_ptc_tools test_core_application test_core_configuration test_manager test_managed_configuration -j2
       - name: Real interpreter and worker tests
         run: |
           export SIMPLEX_TEST_PTC="$GITHUB_WORKSPACE/ptc/.venv/bin/simplex-ptc"
           test -x "$SIMPLEX_TEST_PTC"
-          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120 -R '^(test_ptc_tools|test_core_application|test_core_configuration|test_manager)$'
+          ctest --test-dir build --output-on-failure --no-tests=error --timeout 120 -R '^(test_ptc_tools|test_core_application|test_core_configuration|test_manager|test_managed_configuration)$'
