@@ -829,3 +829,88 @@ def test_repeated_close_and_discard_leave_other_editors_usable(tmp_path, scope):
     assert first.read_text() == "externally changed"
     assert second.read_text() == "kept other"
     assert not scope.files and scope.staged_bytes == 0
+
+
+def test_slice_render_formats_preserve_coordinates_and_plain_text(tmp_path, scope):
+    file = open_file(create(tmp_path, "skip\n中\r\n\r🙂\ntail".encode()))
+    part = file.read_lines(1, 4).value
+    assert part.render() == "中\r\n\r🙂\ntail"
+    assert part.render("lines") == "1 | 中\n2 | \n3 | 🙂\n4 | tail"
+    assert part.render("bytes") == (" [5:10) | 中\n[10:11) | \n[11:16) | 🙂\n[16:20) | tail")
+    byte_part = file.read_bytes(5, 15).value
+    assert byte_part.render("bytes") == part.render("bytes")
+    with pytest.raises(ValueError, match="read_lines"):
+        byte_part.render("lines")
+    with pytest.raises(ValueError, match="format"):
+        part.render("unknown")
+    assert file.read_lines(99).value.render("lines") == ""
+
+
+def test_slice_render_alignment_and_truncated_utf8(tmp_path, scope, monkeypatch):
+    monkeypatch.setattr(files, "MAX_OUTPUT_BYTES", 5)
+    file = open_file(create(tmp_path, "a\n中🙂".encode()))
+    part = file.read_lines().value
+    assert part.truncated
+    assert part.render("bytes") == "[0:2) | a\n[2:5) | 中"
+    monkeypatch.setattr(files, "MAX_OUTPUT_BYTES", 4)
+    part = file.read_lines().value
+    assert part.render("bytes") == "[0:2) | a"
+    assert part.end_byte == 2
+    other = files.TextSlice("a\nb", 20, 23, 9, 11, False)
+    assert other.render("lines") == " 9 | a\n10 | b"
+
+
+def test_preview_render_formats_use_original_and_modified_offsets(tmp_path, scope):
+    file = open_file(create(tmp_path, b"a\r\nb\nc"), writable=True)
+    file.replace("b", "中\nx")
+    preview = file.preview(1).value
+    assert preview.render("bytes") == (
+        "Before\n   [0:3) | a\n-  [3:5) | b\n   [5:6) | c\n"
+        "After\n   [0:3) | a\n+  [3:7) | 中\n+  [7:9) | x\n  [9:10) | c"
+    )
+    assert preview.render("plain") == ("Before\n  a\n- b\n  c\nAfter\n  a\n+ 中\n+ x\n  c")
+    assert preview.text == preview.render("lines")
+    assert preview.to_dict()["text"] == preview.text
+    # Formatting is independent of file lifetime and never publishes edits.
+    file.discard()
+    assert preview.render("plain").startswith("Before")
+    assert (tmp_path / "file.txt").read_bytes() == b"a\r\nb\nc"
+
+
+def test_preview_byte_ranges_exclude_truncation_annotation(tmp_path, scope):
+    file = open_file(create(tmp_path, ("中" * 2000).encode()), writable=True)
+    file.insert(0, "x")
+    preview = file.preview(0).value
+    assert preview.truncated
+    assert "[0:4095)" in preview.render("bytes")
+    assert "[0:4096)" in preview.render("bytes")
+    assert "[line truncated]" in preview.render("bytes")
+    with pytest.raises(ValueError, match="format"):
+        preview.render("unknown")
+
+
+def test_preview_empty_and_eof_render(tmp_path, scope):
+    file = open_file(create(tmp_path, b""), writable=True)
+    assert file.preview().value.render("bytes") == "No staged changes."
+    file.insert(0, "中")
+    assert file.preview(0).value.render("bytes") == ("Before\n- [0:0) | [EOF]\nAfter\n+ [0:3) | 中")
+
+
+def test_render_formats_available_inside_monty(tmp_path):
+    path = create(tmp_path, b"old\n")
+    registry = ToolRegistry()
+    files.register_tools(registry)
+    session = Session(tmp_path / "state", registry=registry)
+    result = run(
+        session,
+        f"""
+f = open_text({str(path)!r}, writable=True)
+original = f.read_lines().render(format="bytes")
+f.replace("old", "new")
+preview = f.preview().render(format="plain")
+f.discard()
+[original, preview]
+""",
+    )
+    assert result["status"] == "completed", result
+    assert result["result"] == ["[0:4) | old", "Before\n- old\nAfter\n+ new"]

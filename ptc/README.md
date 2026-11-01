@@ -675,3 +675,52 @@ policies, and stop test daemons on teardown. There is no worker/Hub end-to-end
 integration. The independent PTC workflow runs only for `ptc/**` or its own workflow; native CI classifies those
 paths as independent. Changes to the shared CI classifier still conservatively
 run native validation. No Python dependency is added to the C++ build.
+
+### File result display formats
+
+Reading and presentation are separate: formatting uses the bounded captured
+result and never rereads the file. All indexes are zero-based.
+
+```python
+file = open_text("example.py", writable=True)
+part = file.read_lines(10, 5)
+print(part.render())  # Exact original text, including line endings
+print(part.render(format="lines"))  # Aligned original line numbers
+print(part.render(format="bytes"))  # Aligned [start:end) byte ranges
+file.replace("timeout = 30", "timeout = 60")
+print(file.preview().render())  # Default: numbered before/after sections
+print(file.preview().render(format="bytes"))
+file.discard()  # No write
+```
+
+- `TextSlice.render(format="plain")` accepts `plain`, `lines`, or `bytes`.
+  Annotated formats use LF display separators, remove original line terminators
+  from display text, and align coordinates across the slice. Byte ranges include
+  the retained original terminators and count UTF-8 bytes, not characters.
+  A truncated slice labels only returned bytes. `read_bytes()` supports plain
+  and bytes; lines is rejected because byte reads do not scan the preceding
+  file to discover its line number.
+- `EditPreview.render(format="lines")` accepts the same formats. Plain removes
+  coordinates but retains Before/After sections, change markers and gap notices.
+  Before coordinates describe the original file; After coordinates describe
+  the complete staged result. **After coordinates are never valid input edit
+  offsets.** Clipped rows label only their retained source prefix, excluding
+  the synthetic truncation notice; EOF anchors use an empty byte range.
+- `EditPreview.text` and `to_dict()["text"]` keep the default numbered display.
+  Internal preview rows are bounded and are not exposed in the serialized result.
+  Result formatting remains available after the file handle is closed, within
+  the same invocation. Invalid formats raise `ValueError`.
+
+Every edit and exact-match search targets the opened original version.
+For example, after staging `replace("old", "new")`, a subsequent
+`replace("new", "final")` still searches the original file, not the staged
+replacement. Stage the intended final replacement directly instead.
+
+A failed file operation invalidates **all still-open editors in that invocation**,
+even if Python catches the exception. Reopen files to start a new edit batch.
+Already committed files remain committed. Rendering a detached result is a pure
+display operation; a formatting error does not invalidate editors.
+
+The file tool descriptor is version 2. Existing checkpoints made with its
+previous interface have a different compatibility fingerprint; use a fresh
+state directory rather than silently restoring an incompatible tool interface.
