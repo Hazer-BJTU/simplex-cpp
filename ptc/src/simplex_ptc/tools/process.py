@@ -1,37 +1,44 @@
-"""Shell execution with bounded capture and kill/detach timeout policies.
+"""Invocation-local command wrappers; live processes and capture belong to the daemon."""
 
-There is no task store, supervisor or persistent process identifier service.
-Detached children are reaped by a daemon waiter while this host remains alive;
-that waiter never captures output, sends signals or keeps Python alive.
-"""
-
-import math
-import os
-import selectors
-import signal
-import subprocess
-import threading
-import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
-from pathlib import Path
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 from pydantic_monty import ClassInstance
 
-CAPTURE_BYTES = 64 * 1024
-MAX_TIMEOUT_SECONDS = 300.0
-DRAIN_SECONDS = 0.1
-REAP_SECONDS = 5.0
+from ..protocol import PTCError
+from ..transport import MAX_COMMAND_REPLY_BYTES, pack, receive
+
+_channel = ContextVar("command_channel", default=None)
+
+
+@contextmanager
+def command_channel(channel):
+    """Bind the private runner channel only for this invocation, never to a dump."""
+    token = _channel.set(channel)
+    try:
+        yield
+    finally:
+        _channel.reset(token)
+
+
+def _call(operation, **arguments):
+    """Make one synchronous request over this invocation's private capability channel."""
+    channel = _channel.get()
+    if channel is None:
+        raise RuntimeError("command tools require a daemon execution; use Client or the CLI")
+    channel.sendall(pack(dict(arguments, operation=operation)))
+    value = receive(channel, MAX_COMMAND_REPLY_BYTES)
+    if "error" in value:
+        raise PTCError(value["error"]["code"], value["error"]["message"])
+    return value["result"]
 
 
 @dataclass(frozen=True)
 class CommandResult:
-    """An immutable snapshot; neither its PID nor methods control a live task.
+    """Flat immutable command observation, with separate capture/read/input outcomes."""
 
-    Omission counts cover bytes actually read and discarded, not unknowable
-    output written after capture closes. Host methods are invocation-local.
-    """
-
+    id: str
     status: str
     pid: int
     exit_code: int | None
@@ -41,21 +48,30 @@ class CommandResult:
     stdout: str
     stderr: str
     output_complete: bool
+    output_truncated: bool
+    stdout_end: str
+    stderr_end: str
     stdout_omitted_bytes: int
     stderr_omitted_bytes: int
+    stdout_cursor: int
+    stderr_cursor: int
+    read_limited: bool
+    input_bytes_written: int
+    input_complete: bool
+    released: bool
     hints: tuple[str, ...]
 
     def to_dict(self) -> dict:
-        """Return detached JSON-compatible data; no process handle is retained."""
+        """Detach observation data for persistence; this does not retain a process."""
+        from dataclasses import asdict
+
         value = asdict(self)
         value["hints"] = list(self.hints)
         return value
 
     def render(self) -> str:
-        """Keep status and stdout/stderr visibly separate without repeating source."""
-        lines = [
-            f"status: {self.status}; pid: {self.pid}; exit_code: {self.exit_code}; signal: {self.termination_signal}"
-        ]
+        """Display status and separate streams without repeating command source."""
+        lines = [f"id: {self.id}; status: {self.status}; exit_code: {self.exit_code}"]
         lines.extend(self.hints)
         if self.stdout:
             lines.extend(["[stdout]", self.stdout])
@@ -64,117 +80,68 @@ class CommandResult:
         return "\n".join(lines)
 
 
-class _Capture:
-    """Nonblocking pipe draining with one aggregate retention budget."""
-
-    def __init__(self, process: subprocess.Popen):
-        self.selector = selectors.DefaultSelector()
-        self.data = {"stdout": bytearray(), "stderr": bytearray()}
-        self.omitted = {"stdout": 0, "stderr": 0}
-        self.remaining = CAPTURE_BYTES
-        try:
-            for name in self.data:
-                pipe = getattr(process, name)
-                os.set_blocking(pipe.fileno(), False)
-                self.selector.register(pipe, selectors.EVENT_READ, name)
-        except BaseException:
-            self.selector.close()
-            raise
-
-    @property
-    def complete(self) -> bool:
-        """True only after EOF was observed on both pipes, not merely child exit."""
-        return not self.selector.get_map()
-
-    def read_ready(self, timeout: float) -> None:
-        """Read at most one chunk per ready stream so no producer starves deadlines."""
-        for key, _ in self.selector.select(timeout):
-            try:
-                chunk = os.read(key.fd, 8192)
-            except BlockingIOError:
-                continue
-            if not chunk:
-                self.selector.unregister(key.fileobj)
-                continue
-            kept = min(self.remaining, len(chunk))
-            self.data[key.data].extend(chunk[:kept])
-            self.omitted[key.data] += len(chunk) - kept
-            self.remaining -= kept
-
-    def drain(self) -> None:
-        """Bound EOF waiting when descendants still hold inherited writers."""
-        deadline = time.monotonic() + DRAIN_SECONDS
-        while not self.complete:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            self.read_ready(min(0.02, remaining))
-
-    def close(self) -> None:
-        """Close polling resources; caller owns the pipe handles."""
-        self.selector.close()
+def _result(value):
+    """Rebuild only the known flat observation type, never arbitrary host objects."""
+    value["hints"] = tuple(value["hints"])
+    return ClassInstance(
+        CommandResult(**value),
+        eager_attrs=tuple(CommandResult.__dataclass_fields__),
+        allowed_methods={"to_dict", "render"},
+    )
 
 
-def _reap_later(process: subprocess.Popen) -> None:
-    """Only reap the direct child; do not supervise, terminate or retain output."""
-    threading.Thread(target=process.wait, name="ptc-child-reaper", daemon=True).start()
+@dataclass(frozen=True)
+class Command:
+    """Invocation-local wrapper around a generation-scoped daemon ID.
 
-
-def _kill_and_reap(process: subprocess.Popen) -> bool:
-    """Kill the new process group while its unreaped leader still owns the PID."""
-    signalled = False
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-            signalled = True
-        except ProcessLookupError:
-            pass
-    process.wait(timeout=REAP_SECONDS)
-    return signalled
-
-
-def _shell() -> str:
-    """Match native shell preference; do not resolve the shell via user PATH."""
-    for name in ("/bin/bash", "/usr/bin/bash", "/bin/sh"):
-        if os.access(name, os.X_OK) and Path(name).is_file():
-            return name
-    raise FileNotFoundError("run_command requires /bin/bash, /usr/bin/bash or /bin/sh")
-
-
-@contextmanager
-def _defer_launch_signals():
-    """Delay handled termination signals until Popen has returned an owned handle.
-
-    Python handlers can raise after fork/exec but before Popen returns. Record
-    SIGINT/SIGTERM during that acquisition window, restore the original handlers,
-    then invoke them inside the caller's cleanup scope. No OS signals are blocked:
-    children must not inherit a blocked signal mask. SIG_IGN and SIG_DFL are left
-    unchanged, preserving inherited ignore behavior and unhandled termination.
-    Python dispatches signal handlers only on the main thread, so other calling
-    threads neither need nor are permitted to replace these handlers.
+    Persist only id; get_command(id) creates a fresh wrapper in the next call.
+    Multiple wrappers share the daemon's consuming stdout/stderr byte cursors.
     """
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-    handlers = {}
-    pending = {}
 
-    def defer(signum, frame):
-        # Coalesce repeated instances, like ordinary pending POSIX signals.
-        pending.setdefault(signum, frame)
+    id: str
 
-    try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            handler = signal.getsignal(signum)
-            if callable(handler):
-                handlers[signum] = handler
-                signal.signal(signum, defer)
-        yield
-    finally:
-        for signum, handler in handlers.items():
-            signal.signal(signum, handler)
-        for signum, frame in pending.items():
-            handlers[signum](signum, frame)
+    def status(self) -> ClassInstance:
+        """Observe current exit/capture state without consuming output."""
+        return _result(_call("status", id=self.id))
+
+    def read(self, *, full: bool = False, max_bytes: int | None = None) -> ClassInstance:
+        """Read bounded text; full observes the retained prefix without moving cursors."""
+        return _result(_call("read", id=self.id, full=full, max_bytes=max_bytes))
+
+    def wait(self, *, timeout_seconds: float = 60.0) -> ClassInstance:
+        """Wait for exit and capture settlement; timeout never kills or reads output."""
+        return _result(_call("wait", id=self.id, timeout_seconds=timeout_seconds))
+
+    def send(
+        self, text: str = "", *, close_stdin: bool = False, timeout_seconds: float = 5.0
+    ) -> ClassInstance:
+        """Write bounded UTF-8 input; inspect input_complete/bytes before retrying."""
+        return _result(
+            _call(
+                "send",
+                id=self.id,
+                text=text,
+                close_stdin=close_stdin,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+
+    def stop(self) -> ClassInstance:
+        """Kill a still-running process group, settle capture, and retain its record."""
+        return _result(_call("stop", id=self.id))
+
+    def release(self) -> ClassInstance:
+        """Release only an exited command; a live command returns released=False."""
+        return _result(_call("release", id=self.id))
+
+
+def _handle(identity):
+    """Expose only id and explicit command methods on a fresh invocation-local proxy."""
+    return ClassInstance(
+        Command(identity),
+        eager_attrs=("id",),
+        allowed_methods={"status", "read", "wait", "send", "stop", "release"},
+    )
 
 
 def run_command(
@@ -182,188 +149,101 @@ def run_command(
     *,
     working_directory: str | None = None,
     timeout_seconds: float = 60.0,
-    timeout_action: str = "kill",
+    timeout_action: str = "keep",
 ) -> ClassInstance:
-    """Run shell source, then kill or release ownership when waiting expires.
+    """Start a new shell and initially wait; keep leaves it owned by the daemon."""
+    result = _call(
+        "launch",
+        command=command,
+        working_directory=working_directory,
+        timeout_seconds=timeout_seconds,
+        timeout_action=timeout_action,
+    )
+    return _handle(result["id"])
 
-    stdin is /dev/null, environment is inherited, and a new POSIX session is
-    created. A detach result closes capture pipes immediately: callers must
-    arrange redirection or a session manager if the command must survive that.
-    An interrupted detach-mode invocation also leaves the command independent.
-    """
-    if not isinstance(command, str) or not command or "\0" in command:
-        raise ValueError("command must be nonempty text without NUL")
-    if working_directory is not None and (
-        not isinstance(working_directory, str) or not working_directory or "\0" in working_directory
-    ):
-        raise ValueError("working_directory must be a nonempty path without NUL")
-    if timeout_action not in ("kill", "detach"):
-        raise ValueError("timeout_action must be kill or detach")
-    if type(timeout_seconds) not in (int, float):
-        raise ValueError("timeout_seconds must be a finite number")
-    try:
-        valid_timeout = (
-            math.isfinite(timeout_seconds) and 0 <= timeout_seconds <= MAX_TIMEOUT_SECONDS
-        )
-    except OverflowError:
-        valid_timeout = False
-    if not valid_timeout or (timeout_seconds == 0 and timeout_action == "kill"):
-        raise ValueError("timeout_seconds must be in (0, 300], or [0, 300] for detach")
 
-    started = time.monotonic()
-    process = None
-    capture = None
-    primary_failure = False
-    try:
-        with _defer_launch_signals():
-            process = subprocess.Popen(
-                [_shell(), "-c", command],
-                cwd=working_directory,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-                close_fds=True,
-            )
-        capture = _Capture(process)
-        deadline = started + timeout_seconds
-        status = "exited"
-        while process.poll() is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                if timeout_action == "kill":
-                    status = "killed" if _kill_and_reap(process) else "exited"
-                else:
-                    status = "detached"
-                break
-            # With both pipes at EOF, select still sleeps for this bounded slice.
-            capture.read_ready(min(0.02, remaining))
-        if status != "detached":
-            capture.drain()
-        else:
-            # Collect only immediately available bytes, never wait after detach.
-            capture.read_ready(0)
-        code = process.returncode
-        texts = {}
-        hints = []
-        for name, data in capture.data.items():
-            try:
-                texts[name] = data.decode("utf-8")
-            except UnicodeDecodeError:
-                texts[name] = data.decode("utf-8", errors="replace")
-                hints.append(f"{name}: invalid or cut UTF-8 bytes replaced.")
-        if any(capture.omitted.values()):
-            hints.append(
-                "Capture truncated; redirect large output to a file and read selected portions."
-            )
-        if status == "detached":
-            hints.append(
-                "Detached: capture pipes close on return. Further writes may raise SIGPIPE/BrokenPipeError, fail, or end the program. Redirect stdin/stdout/stderr or use tmux/screen yourself."
-            )
-            hints.append(
-                "PID is a startup identifier, not a tracked task. No final status or output is collected; containers/services can still terminate the process."
-            )
-        elif not capture.complete:
-            hints.append(
-                "Output capture closed before EOF; descendants holding pipes may encounter SIGPIPE or write errors. Redirect output for background work."
-            )
-        result = CommandResult(
-            status=status,
-            pid=process.pid,
-            exit_code=code if code is not None and code >= 0 else None,
-            termination_signal=-code if code is not None and code < 0 else None,
-            timed_out=status == "killed",
-            duration_seconds=time.monotonic() - started,
-            stdout=texts["stdout"],
-            stderr=texts["stderr"],
-            output_complete=capture.complete,
-            stdout_omitted_bytes=capture.omitted["stdout"],
-            stderr_omitted_bytes=capture.omitted["stderr"],
-            hints=tuple(hints),
-        )
-        return ClassInstance(
-            result,
-            eager_attrs=tuple(CommandResult.__dataclass_fields__),
-            allowed_methods={"to_dict", "render"},
-        )
-    except BaseException:
-        primary_failure = True
-        raise
-    finally:
-        # Always close our pipe ends, including when capture construction fails.
-        # Kill mode owns the child until settlement; detach mode deliberately
-        # does not bind its lifetime to either this call or the Python process.
-        try:
-            if process is not None and timeout_action == "kill" and process.returncode is None:
-                _kill_and_reap(process)
-        except BaseException:
-            if not primary_failure:
-                raise
-        finally:
-            if capture is not None:
-                capture.close()
-            if process is not None:
-                process.stdout.close()
-                process.stderr.close()
-                if process.returncode is None:
-                    _reap_later(process)
+def get_command(command_id: str) -> ClassInstance:
+    """Reacquire an existing command; never launch source or resurrect a PID."""
+    result = _call("get", id=command_id)
+    return _handle(result["id"])
 
 
 def register_tools(registry) -> None:
-    """Opt in using --module simplex_ptc.tools.process; no spawn/control API."""
+    """Expose launch and reacquisition separately; do not expose spawn_process."""
     from ..extensions import ToolDescriptor
 
-    registry.add(
-        ToolDescriptor(
-            name="run_command",
-            description="Execute a shell command; kill or detach when waiting expires.",
-            signature='run_command(command: str, *, working_directory: str | None = None, timeout_seconds: float = 60.0, timeout_action: str = "kill") -> CommandResult',
-            result="CommandResult wrapped in ClassInstance. Nonzero exits and kill timeouts are returned as data; detach is not a failure.",
-            effects="Executes arbitrary host shell code with inherited environment and host permissions. Effects are not rolled back by Python failures.",
-            version="1",
-            details="Uses /bin/bash, then /usr/bin/bash, then /bin/sh with -c. No TTY; stdin is closed (/dev/null). The shell supports pipes, expansion and redirection; syntax depends on the selected shell. Each launch starts a new POSIX session.",
-            inputs=(
-                "command: str — nonempty shell source without NUL; use shell syntax to configure environment, redirect files or manage sessions.",
-                "working_directory: str | None = None — child's directory; relative paths use the host working directory. Not a sandbox boundary.",
-                "timeout_seconds: float = 60.0 — finite wait deadline, at most 300 seconds. kill requires >0; detach permits 0 for immediate return. Process creation and bounded cleanup add latency.",
-                'timeout_action: str = "kill" — kill: SIGKILL the running process group on expiry, then reap the direct child. detach: close capture and return without terminating the command.',
+    methods = (
+        "status() -> CommandResult: latest state, no output consumption.",
+        "read(*, full: bool = False, max_bytes: int | None = None) -> CommandResult: incremental text advances shared raw-byte cursors; full reads observe the retained prefix without moving cursors. max_bytes is an optional aggregate 1..65536 byte budget; default 16384 for delta reads and all retained bytes for full reads.",
+        "wait(*, timeout_seconds: float = 60.0) -> CommandResult: wait for child exit AND capture settlement, at most 300 seconds; does not consume output or kill on timeout.",
+        'send(text: str = "", *, close_stdin: bool = False, timeout_seconds: float = 5.0) -> CommandResult: send up to 64 KiB UTF-8, optionally close stdin after all bytes are written. Check input_complete and input_bytes_written; partial writes are effects, not safe to replay blindly.',
+        "stop() -> CommandResult: SIGKILL a running process group and settle/reap; keep output/record for later read.",
+        "release() -> CommandResult: exited commands are closed and removed, even if capture was incomplete; running commands return released=False. Unread/later output is lost.",
+    )
+    notes = (
+        "Each launch is a fresh shell (/bin/bash, /usr/bin/bash, /bin/sh); no TTY or persistent cd/export environment. stdin remains a writable pipe until explicitly closed or the command exits.",
+        "64 KiB shared stdout/stderr PREFIX retention, not a rolling tail. Capture continues draining/discarding after capacity is exhausted. Reads do not refund capture capacity. Redirect large/full output to files.",
+        "read() consumes shared byte cursors across all wrappers; full=True does not consume. Invalid UTF-8 is replaced, incomplete growing suffixes wait for more bytes, EOF or truncation. Streams remain separate without invented inter-stream ordering.",
+        "output_complete means both captures ended (EOF, stopped or failed), not lossless output. output_truncated also covers forced/failed closure. read_limited indicates this read's byte budget, separately from capture loss and final PTC JSON preview limits.",
+        "A child can exit while descendants hold pipes. wait may expire with status=exited and output_complete=False. stop/release/shutdown use bounded drain then close pipes; descendants may get SIGPIPE/EPIPE.",
+        "Command is not a persistent ClassInstance and cannot be a final result: return command.id or a CommandResult/to_dict(). Reacquire by get_command(id) next invocation. IDs are session/daemon-generation scoped; no recovery after daemon restart.",
+        "keep commands survive PTC completion, errors and cancellation of waits. kill applies to initial timeout or interruption of the initial wait. No unmanaged detach mode. Explicit stop, daemon shutdown or retention expiry ends owned commands. Escaped descendants are not contained.",
+        "commands_created in execution results/queries identifies launches even when Python state fails to commit. Never replay source just to reacquire a handle. At most 16 unsettled commands, 64 retained records and 64 launches per invocation; release exited records to free capacity.",
+    )
+    attributes = (
+        "Command.id: str — persist this ID, not the wrapper or a PID.",
+        "CommandResult.id/status/pid/exit_code/termination_signal: identity and current running/exited/killed snapshot.",
+        "CommandResult.timed_out/duration_seconds: wait expiry and elapsed lifetime; keep expiry is not failure.",
+        "CommandResult.stdout/stderr: selected decoded text; empty on non-read operations.",
+        "CommandResult.output_complete/output_truncated, stdout_end/stderr_end (open/eof/stopped/failed), stdout_omitted_bytes/stderr_omitted_bytes: capture outcomes; omitted counts only cover observed discarded bytes.",
+        "CommandResult.stdout_cursor/stderr_cursor: shared consuming raw-byte offsets; read_limited: requested bytes remain or a growing UTF-8 suffix was deferred.",
+        "CommandResult.input_bytes_written/input_complete: this send's progress; released: record removal succeeded; hints: tuple[str, ...].",
+        "CommandResult.to_dict() -> dict and render() -> str: detached data/readable result. Result methods are invocation-local; fresh final results convert to plain data.",
+    )
+    for name, handler, signature, description, inputs, examples in (
+        (
+            "run_command",
+            run_command,
+            'run_command(command: str, *, working_directory: str | None = None, timeout_seconds: float = 60.0, timeout_action: str = "keep") -> Command',
+            "Start a daemon-owned shell command; keep it running when initial waiting expires.",
+            (
+                "command: nonempty shell source without NUL.",
+                "working_directory: optional path relative to this invocation's cwd; caller environment and umask apply.",
+                "timeout_seconds: finite initial wait in [0, 300]; kill requires >0. Process creation/cleanup adds latency.",
+                'timeout_action: "keep" (default) or "kill". Neither initial wait nor subsequent wait consumes output.',
             ),
-            return_attributes=(
-                'status: str — "exited", "killed", or "detached"; a snapshot, not a live status.',
-                "pid: int — shell/direct-child PID at launch; reusable by the OS and not safe as a durable control identity.",
-                "exit_code: int | None — ordinary exit status; nonzero is not an exception.",
-                "termination_signal: int | None — terminating signal, separate from exit_code.",
-                "timed_out: bool — true only when kill policy expired; detached is not failure.",
-                "duration_seconds: float — elapsed launch/wait/capture time.",
-                "stdout: str; stderr: str — separate UTF-8 previews, invalid/cut bytes replaced; no invented inter-stream order.",
-                "output_complete: bool — EOF observed on both streams; distinct from truncation. Never promises future detached output.",
-                "stdout_omitted_bytes: int; stderr_omitted_bytes: int — observed discarded bytes only; future output is unknown.",
-                "hints: tuple[str, ...] — truncation, decoding and pipe/lifecycle caveats.",
-            ),
-            return_methods=(
-                "to_dict() -> dict: detached plain data for persistence.",
-                "render() -> str: readable status and separated stdout/stderr.",
-            ),
-            raises=(
-                "ValueError: invalid command, directory or timeout arguments.",
-                "OSError: shell launch, pipe IO, signalling or cleanup failed; side effects may already exist.",
-                "TimeoutExpired: a killed direct child could not be reaped within the cleanup window.",
-            ),
-            notes=(
-                "64 KiB aggregate capture; readers continue draining/discarding after the limit. Redirect large output to a file yourself.",
-                "Detach closes capture pipes: later writes may receive SIGPIPE, BrokenPipeError/EPIPE, fail, or terminate the program. Redirect all stdio before relying on survival.",
-                "No task files, logs, supervisor, process registry, final status collection or restoration. Use shell commands or tmux/screen to inspect/control your own work.",
-                "Detach-mode commands are not killed on interruption of the call or later Python failure. Host exit does not intentionally kill them; container shutdown, cgroups, OS shutdown and program behavior still apply.",
-                "Kill mode cleans up on handled interruption. SIGKILL of the Python host cannot run cleanup. Descendants that escape the group are not contained.",
-                "Exited shells may leave descendants holding pipes: bounded draining then closes capture with output_complete=false. No indefinite EOF wait.",
-                "Result methods are host-backed and invocation-local. Persist to_dict(); final fresh results convert automatically to plain data.",
-            ),
-            examples=(
-                'result = run_command("printf hello; printf warning >&2")\nprint(result.stdout)\nresult.to_dict()',
-                'run_command("sleep 10", timeout_seconds=0.1, timeout_action="kill")',
-                'run_command("python3 job.py </dev/null >job.log 2>&1", timeout_seconds=0, timeout_action="detach")',
-                'run_command("tail -n 40 -- job.log")',
+            (
+                'c = run_command("python task.py", timeout_seconds=1)\ncommand_id = c.id\nprint(c.read().render())\ncommand_id',
             ),
         ),
-        run_command,
-    )
+        (
+            "get_command",
+            get_command,
+            "get_command(command_id: str) -> Command",
+            "Reacquire a command from this daemon without launching it again.",
+            (
+                "command_id: previously returned generation-scoped ID; released/foreign/old IDs fail.",
+            ),
+            ("c = get_command(command_id)\nprint(c.read().render())\nc.status().to_dict()",),
+        ),
+    ):
+        registry.add(
+            ToolDescriptor(
+                name=name,
+                description=description,
+                signature=signature,
+                result="Invocation-local Command ClassInstance; methods return flat CommandResult ClassInstances.",
+                effects="Commands execute arbitrary host code; input, consumed cursors and process effects are not rolled back by Python errors.",
+                version="2",
+                details="Processes and buffers belong to the daemon, independent of Monty checkout lifetime.",
+                inputs=inputs,
+                return_attributes=attributes,
+                return_methods=methods,
+                raises=(
+                    "ValueError/PTCError: invalid arguments, unavailable command, capacity or IO error. Partial effects may already exist.",
+                ),
+                notes=notes,
+                examples=examples,
+            ),
+            handler,
+        )

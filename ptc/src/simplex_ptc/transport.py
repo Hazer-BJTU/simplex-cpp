@@ -14,6 +14,8 @@ VERSION = 2
 MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_FRAME_BYTES = MAX_REQUEST_BYTES + MAX_CONTEXT_BYTES + 64 * 1024
 MAX_REPLY_BYTES = MAX_RESPONSE_BYTES + 64 * 1024
+# Private command results can encode a complete 64 KiB capture at six JSON bytes per byte.
+MAX_COMMAND_REPLY_BYTES = 512 * 1024
 IO_TIMEOUT = 10.0
 
 
@@ -64,9 +66,11 @@ async def read_frame(reader: asyncio.StreamReader) -> dict:
         return unpack(await reader.readexactly(size))
 
 
-async def write_frame(writer: asyncio.StreamWriter, value: dict) -> None:
+async def write_frame(
+    writer: asyncio.StreamWriter, value: dict, limit: int = MAX_REPLY_BYTES
+) -> None:
     """A slow reader cannot hold a server handler indefinitely."""
-    writer.write(pack(value, MAX_REPLY_BYTES))
+    writer.write(pack(value, limit))
     async with asyncio.timeout(IO_TIMEOUT):
         await writer.drain()
 

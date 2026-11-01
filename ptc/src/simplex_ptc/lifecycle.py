@@ -1,4 +1,4 @@
-"""Daemon-owned resource extension seam; current builtins register no live resources."""
+"""Daemon-owned resource lifecycle for managed commands and future host adapters."""
 
 import asyncio
 import math

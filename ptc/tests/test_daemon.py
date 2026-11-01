@@ -137,7 +137,7 @@ def test_cwd_environment_and_identity_are_per_call(clients, tmp_path):
     two.mkdir()
     ctx = context(one)
     ctx["environment"]["PTC_EXAMPLE"] = "first"
-    request = Request("one", 'run_command("pwd; printf %s $PTC_EXAMPLE").stdout')
+    request = Request("one", 'run_command("pwd; printf %s $PTC_EXAMPLE").read().stdout')
     result = client.execute(request, context=ctx)
     assert result["result"] == f"{one}\nfirst"
     assert client.execute(request, context=ctx) == result
@@ -194,7 +194,9 @@ def test_slow_callback_busy_query_cancel_and_stop_are_responsive(clients, tmp_pa
 def test_disconnected_submitter_does_not_replay_effect(clients, tmp_path):
     client = clients(modules=["simplex_ptc.tools.process"])
     target = tmp_path / "effect"
-    request = Request("effect", f'run_command("echo once >> {target}; sleep 0.2").exit_code')
+    request = Request(
+        "effect", f'run_command("echo once >> {target}; sleep 0.2").status().exit_code'
+    )
     sock = client.ensure()
     sock.sendall(
         pack(
@@ -227,22 +229,16 @@ def test_stop_active_execution_releases_owned_process(clients, tmp_path):
         os.kill(pid, 0)
 
 
-def test_detached_process_is_not_newly_owned_by_daemon(clients, tmp_path):
+def test_keep_process_is_owned_until_daemon_shutdown(clients, tmp_path):
     client = clients(modules=["simplex_ptc.tools.process"])
     pid_file = tmp_path / "pid"
-    source = f'run_command("echo $$ > {pid_file}; exec sleep 60 >/dev/null 2>&1", timeout_seconds=0.1, timeout_action="detach").to_dict()'
-    try:
-        result = client.execute(Request("detach", source))
-        assert result["result"]["status"] == "detached"
-        pid = int(pid_file.read_text())
-        client.stop()
+    source = f'run_command("echo $$ > {pid_file}; exec sleep 60", timeout_seconds=0.1).status().to_dict()'
+    result = client.execute(Request("keep", source))
+    assert result["result"]["status"] == "running"
+    pid = int(pid_file.read_text())
+    client.stop()
+    with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
-    finally:
-        if pid_file.exists():
-            try:
-                os.kill(int(pid_file.read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
 
 def test_idle_expiry_ignores_passive_polling(clients):
@@ -278,7 +274,7 @@ def test_incomplete_frame_and_oversize_do_not_block_other_clients(clients):
         oversized.close()
 
 
-def test_daemon_death_leaves_pending_and_runner_cleans_up(clients, tmp_path):
+def test_daemon_death_leaves_pending_and_does_not_restore_commands(clients, tmp_path):
     client = clients(modules=["simplex_ptc.tools.process"])
     pid_file = tmp_path / "pid"
     start(client, f'run_command("echo $$ > {pid_file}; exec sleep 60")', tmp_path)
@@ -293,14 +289,22 @@ def test_daemon_death_leaves_pending_and_runner_cleans_up(clients, tmp_path):
     sock.close()
     os.kill(daemon_pid, signal.SIGKILL)
 
-    def gone():
+    def owner_gone():
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        return False
+            with client.endpoint.locked():
+                return True
+        except PTCError as exc:
+            if exc.code != "daemon_busy":
+                raise
+            return False
 
-    eventually(gone)
+    eventually(owner_gone)
+
+    # SIGKILL cannot execute daemon resource cleanup. Never resurrect that PID.
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     info = client.inspect()
     assert info["recovery_required"]
     with pytest.raises(PTCError) as error:
@@ -405,7 +409,7 @@ def test_lifetime_lock_not_replaced_or_inherited_by_commands(clients, tmp_path):
     lock = client.endpoint.directory / "daemon.lock"
     client.inspect()
     inode = lock.stat().st_ino
-    output = client.execute(Request("fd", 'run_command("ls -l /proc/self/fd").stdout'))
+    output = client.execute(Request("fd", 'run_command("ls -l /proc/self/fd").read().stdout'))
     assert "daemon.lock" not in output["result"]
     assert ".sock" not in output["result"]
     client.stop()
@@ -602,7 +606,7 @@ def test_deleted_first_cwd_does_not_break_later_execution(clients, tmp_path, mon
     assert second["result"] == 42
     assert second["revision"] == 2
     third = client.execute(
-        Request("cwd", 'run_command("pwd; touch local-file").stdout', first["epoch"])
+        Request("cwd", 'run_command("pwd; touch local-file").read().stdout', first["epoch"])
     )
     assert third["result"] == f"{current}\n"
     assert (current / "local-file").exists()
@@ -636,7 +640,10 @@ def test_real_cli_masks_are_per_call_and_part_of_retry_identity(clients, tmp_pat
 
     shared = tmp_path / "shared"
     private = tmp_path / "private"
-    request = {"execution_id": "one", "source": f'run_command("umask; touch {shared}").stdout'}
+    request = {
+        "execution_id": "one",
+        "source": f'run_command("umask; touch {shared}").read().stdout',
+    }
     first = invoke("022", request)
     assert first.returncode == 0, first.stderr
     response = json.loads(first.stdout)
@@ -651,7 +658,7 @@ def test_real_cli_masks_are_per_call_and_part_of_retry_identity(clients, tmp_pat
         {
             "execution_id": "two",
             "epoch": response["epoch"],
-            "source": f'run_command("umask; touch {private}").stdout',
+            "source": f'run_command("umask; touch {private}").read().stdout',
         },
     )
     assert second.returncode == 0, second.stderr
@@ -931,3 +938,24 @@ print(json.dumps([os.getcwd(), sys.argv[1:], os.environ["PYTHONPATH"], sys.path[
     assert cwd == "/" and arguments == ["argument"]
     assert pythonpath == "./plugins"
     assert paths == [str(tmp_path) + "/", str(plugins)]
+
+
+def test_command_channel_acquisition_failure_does_not_leave_admission_busy(tmp_path, monkeypatch):
+    async def scenario():
+        daemon = Daemon(Endpoint(tmp_path / "state"), [], Policy())
+
+        def fail():
+            raise OSError("no descriptors")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(socket, "socketpair", fail)
+            daemon.admit({"request": asdict(Request("failed", "1")), "context": context(tmp_path)})
+            await daemon.task
+        assert daemon.active is None
+        assert daemon.last[2]["boundary_failure"]
+        daemon.admit({"request": asdict(Request("next", "2")), "context": context(tmp_path)})
+        await daemon.task
+        assert daemon.last[2]["result"] == 2
+        await daemon.shutdown()
+
+    asyncio.run(scenario())

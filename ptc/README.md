@@ -209,15 +209,12 @@ add time. A stuck runner is force-terminated with an unknown-effects outcome,
 not a rollback guarantee. A failed storage fence leaves recovery information.
 Stopping a daemon retains its checkpoint and does not delete user files.
 
-Current builtins register **no persistent resources**: file editors still close
-at each execution boundary; `run_command` remains a fresh shell with its existing
-kill/detach contract. In particular, detached commands are not made daemon-owned
-or automatically killed when the daemon stops. There is no persistent shell or
-managed process tool in this change. The internal `Resource`/`Resources` interface
-in `lifecycle.py` provides generation-scoped IDs, explicit use, liveness, and
-cooperative asynchronous cleanup for future adapters. Cleanup must respect
-cancellation/deadlines; it cannot block the control loop. Resources are never
-embedded in a checkpoint, and old-generation IDs fail with `resource_lost`.
+The process module registers daemon-owned commands; file editors still close at
+each execution boundary. Commands and their retained output survive ordinary PTC
+completion, errors and cancelled waits, within the resource-retention policy.
+There is no persistent shell, process restoration, or cross-session access.
+The internal `Resource`/`Resources` interface owns command-registry cleanup.
+Resources are never embedded in a checkpoint; old-generation IDs fail explicitly.
 
 Socket paths are derived in a private `simplex-ptc` directory below a validated
 `XDG_RUNTIME_DIR`, or a private `simplex-ptc-UID` directory in the system temporary
@@ -322,109 +319,160 @@ in the compatibility fingerprint. Adding the manual changes that fingerprint:
 pre-manual experimental checkpoints are incompatible and are not silently reset
 or migrated; explicitly select a new state directory if needed.
 
-## Shell commands: kill or detach
+## Managed shell commands
 
-Enable the packaged process module explicitly (before the subcommand):
+Enable the process module explicitly; the default registry still has only `manual()`:
 
 ```sh
-uv run simplex-ptc --module simplex_ptc.tools.process repl
+uv run simplex-ptc --module simplex_ptc.tools.process repl --state-directory /path/to/session
 ```
 
-The default registry still exposes only `manual()`. Enabling/removing modules
-changes the session compatibility fingerprint; use a separate state directory
-when testing a different capability set. Inspect the complete function and
-return-object documentation with `print(manual("run_command").render())`.
+The two entry points separate creation from lookup:
 
 ```python
-result = run_command("printf hello; printf warning >&2")
-print(result.stdout)
-print(result.stderr)
-result.to_dict()
-
-run_command("sleep 10", timeout_seconds=0.1, timeout_action="kill")
-
-run_command(
-    "python3 job.py </dev/null >job.log 2>&1",
-    timeout_seconds=0,
-    timeout_action="detach",
-)
-run_command("tail -n 40 -- job.log")
+run_command(command: str, *, working_directory: str | None = None,
+            timeout_seconds: float = 60.0, timeout_action: str = "keep") -> Command
+get_command(command_id: str) -> Command
 ```
 
-Use a single `:paste` block for obtaining an object and calling its methods in
-the REPL. The signature is:
+Use a multiline REPL block for each example. Start an interactive command and
+save its plain ID:
 
 ```python
-run_command(
-    command: str,
-    *,
-    working_directory: str | None = None,
-    timeout_seconds: float = 60.0,
-    timeout_action: str = "kill",
-) -> CommandResult
+command = run_command("cat", timeout_seconds=0)
+command_id = command.id
+command_id
 ```
 
-The host executes `/bin/bash -c`, falling back to `/usr/bin/bash`, then `/bin/sh`.
-Shell syntax depends on the selected shell. Environment variables are inherited;
-use shell syntax to customize them. stdin is `/dev/null`; no TTY is allocated.
-Relative working directories use the host's current directory. This is arbitrary
-host code with host permissions, not a filesystem/process sandbox or an approval
-mechanism. Monty restrictions do not constrain shell effects.
+In another PTC invocation, reacquire the wrapper without launching another process:
 
-- **kill:** the finite wait expires, the still-running process group receives
-  SIGKILL, and the direct child is reaped. The result reports `status="killed"`
-  and `timed_out=True`. This is an execution timeout, unlike the native worker
-  tool's initial-wait timeout. The default is 60 seconds; accepted range (0, 300].
-- **detach:** if waiting expires, return `status="detached"` and `timed_out=False`
-  without terminating the command. Zero means immediate return; accepted range
-  [0, 300]. A command finishing during the wait returns `status="exited"` instead.
-  The result is a snapshot, not a live query. No eventual exit status is collected
-  for the caller.
+```python
+command = get_command(command_id)
+print(command.send("hello\n", close_stdin=True).render())
+command.wait(timeout_seconds=2)
+print(command.read().render())
+command.release().to_dict()
+```
 
-Process creation and bounded pipe cleanup can add latency beyond the requested
-wait. An ordinary nonzero exit is returned as data, not raised. Launch/IO failures
-raise exceptions. Kill-mode handled interruptions attempt termination/reaping;
-detach-mode interruptions or later Python failures do not kill the command.
-Side effects are not rolled back if the Python checkpoint fails.
-Handled SIGINT/SIGTERM are briefly deferred during main-thread process acquisition
-until the returned child handle is inside the cleanup scope. The original handler
-then runs, so a launch interruption cannot bypass kill-mode cleanup. This does
-not block signals in the child or change inherited ignored/default dispositions.
+The daemon owns the child, stdin pipe, stdout/stderr capture and read cursors.
+The runner only receives a `Command` ClassInstance with an `id` attribute and
+methods below. The ID is bound to this session's daemon generation, not an OS
+PID. It remains usable across sandbox invocations, not across daemon restarts.
+The host wrapper itself is invocation-local: save `command.id`, then call
+`get_command` next time. A bare Command cannot be serialized as the final result;
+return its ID or an observation instead. Unknown, foreign, released and previous
+generation IDs fail; they never launch code or resurrect a PID.
 
-**Detach closes this tool's stdout/stderr capture pipes on return.** If a program
-continues writing to those pipes, it can receive SIGPIPE, BrokenPipeError/EPIPE,
-lose output, fail operations or terminate prematurely. There is no promise that
-an arbitrary unmodified program survives detach. Redirect stdin/stdout/stderr
-explicitly, or use a session manager such as tmux/screen to own the background
-job. Manage its logs, output, lifetime and later inspection yourself through
-shell commands. The returned PID is the shell/direct-child PID at launch; it can
-be reused and is not a durable identity or a safe later kill target by itself.
+| Method | Behavior |
+| --- | --- |
+| `status()` | Latest state; does not consume output. |
+| `read(full=False, max_bytes=None)` | Incremental text advances shared byte cursors; full reads inspect the retained prefix without advancing them. `max_bytes` optionally sets an aggregate 1–65536 byte read budget; by default delta reads use 16 KiB and full reads return the entire retained capture. |
+| `wait(timeout_seconds=60)` | Wait for exit **and** capture settlement, at most 300 seconds. Does not consume output or kill on expiry. |
+| `send(text="", close_stdin=False, timeout_seconds=5)` | Write up to 64 KiB UTF-8 to stdin. Close stdin only after all requested bytes are written. Inspect partial-write fields before deciding what remains to send. |
+| `stop()` | Kill a still-running process group, reap the direct child and settle capture; retain the record/output. |
+| `release()` | Remove an exited command after bounded pipe cleanup; return `released=False` for a running child. Unread and later output is lost. |
 
-For shell commands there is **no task registry, status/log directory, supervisor,
-polling/control API, process restoration, or automatic record retention**. There is also no
-`spawn_process`. The only background housekeeping is a daemon wait thread to
-reap the direct child while the invocation runner is alive; it neither signals the
-child nor keeps Python alive. A fresh POSIX session avoids inheriting the host's
-terminal session, but container/service cgroups, system shutdown and application
-behavior can still end the command. SIGKILL of the Python host cannot execute
-kill-mode cleanup; descendants that escape the process group are not contained.
+These methods return flat `CommandResult` objects with `to_dict()` and `render()`.
+Fresh final observations convert automatically to JSON-compatible data; their host
+methods still belong to one invocation. Nonzero command exits are observations,
+not Python exceptions. `manual("run_command")` and `manual("get_command")` include
+full signatures, result fields, lifecycle limitations and examples.
 
-Output capture retains at most 64 KiB **combined** across stdout and stderr while
-continuing to drain excess data. Streams remain separate, with no invented
-cross-stream ordering. `CommandResult` exposes flat `status`, `pid`, `exit_code`,
-`termination_signal`, `timed_out`, `duration_seconds`, `stdout`, `stderr`,
-`output_complete`, per-stream `*_omitted_bytes`, and `hints`. It provides only
-`to_dict()` and `render()`, using the same ClassInstance lifetime rules as the
-manual. A fresh final result automatically converts to plain data.
+### Launch and timeout policy
 
-`output_complete` means EOF was observed on both captured pipes, independently
-of truncation. Omission counts cover observed discarded bytes only; they cannot
-count output after detach. Invalid UTF-8 and cut multibyte sequences are replaced
-and reported. If an exited shell leaves descendants holding its pipe writers,
-EOF draining lasts at most 0.1 seconds before capture is closed and reported as
-incomplete; those descendants may then encounter the same pipe failures.
-Redirect potentially large or long-lived output to files yourself. Final JSON
-responses remain subject to the independent 48 KiB envelope budget.
+Each launch executes `/bin/bash -c` (fallback `/usr/bin/bash`, then `/bin/sh`) in a
+new POSIX session, with this invocation's environment, umask and working directory.
+An explicit relative `working_directory` is relative to the invocation cwd. Shell
+syntax, redirection and permissions are ordinary host behavior, not a sandbox.
+Commands do not share `cd`, exported variables or shell functions. No TTY or
+`spawn_process` function is provided. stdin is now a writable pipe, **not**
+`/dev/null`; use `send(close_stdin=True)` when a program needs EOF.
+
+- `keep` is the default. Initial waiting accepts 0–300 seconds; expiry returns a
+  handle and leaves the command running. Zero starts without waiting. This is
+  a wait deadline, not a command execution limit or a failed execution.
+- `kill` requires a positive wait up to 300 seconds. If waiting expires, terminate
+  a still-running process group, reap and bound capture cleanup. Interruption of
+  the initial kill-mode wait likewise cleans up that command. After initial
+  completion, later handle operations have their own semantics.
+- The old unmanaged `detach` policy is removed. Commands remain daemon-owned;
+  there is no promise to survive daemon shutdown or retention expiry.
+
+Both initial wait and `wait()` leave output unread. A command that exits quickly
+still retains its record until explicitly released or the daemon expires. At most
+16 commands may have unsettled process/capture state, and 64 records may be
+retained (at most 4 MiB total capture). At most 64 commands may be launched in one
+invocation so execution-effect metadata remains bounded. Capacity exhaustion
+fails explicitly; release exited records rather than silently evicting live work.
+
+### Capture, cursors and truncation
+
+Capture follows the native worker's **shared bounded prefix** policy: retain up
+to 64 KiB total across stdout and stderr, separately labelled. When full, keep
+draining and discard new bytes. Reads never refund capacity; this is not a ring
+buffer and does not keep the newest tail. No cross-stream ordering is invented.
+Redirect potentially large or lossless output to files and read selected portions.
+
+Each record owns shared stdout/stderr cursors, counted in raw bytes. `read()`
+advances them across all wrappers and across PTC invocations. `full=True` returns
+a bounded view from the start without consuming output; it cannot recover data
+already discarded by the capture budget. Invalid UTF-8 is replaced. A growing,
+incomplete suffix waits for more bytes, capture termination or truncation;
+a read budget alone does not split a code point into replacement characters.
+Increase `max_bytes` if it is too small for the next character.
+
+`CommandResult` includes:
+
+- `id`, `pid`, `status` (`running`, `exited`, `killed`), `exit_code`,
+  `termination_signal`, `duration_seconds` and `timed_out`. Status observations
+  retain initial-wait expiry; a `wait()` result reports that wait's expiry.
+- `stdout`, `stderr`, shared `stdout_cursor`/`stderr_cursor`, and `read_limited`.
+  Non-read operations return empty text. A read may be reduced further to fit
+  the private transport envelope before its cursors advance.
+- `output_complete` means both captures ended; `stdout_end`/`stderr_end` are
+  `open`, `eof`, `stopped` or `failed`. Completion is not a lossless-output promise.
+- `output_truncated` covers discarded bytes and forced/failed capture closure.
+  Per-stream `*_omitted_bytes` count only observed discarded bytes; output after
+  closure is unknowable.
+- `input_bytes_written`, `input_complete`, `released` and concise `hints`.
+
+`read_limited`, capture truncation and the final PTC JSON result budget are
+separate. Inspect previews/truncation flags; use bounded reads and small selected
+results. Output consumption and partial stdin writes are external effects and
+are not rolled back by a subsequent Python failure or lost reply. `full=True`
+can reread retained output without moving consuming cursors.
+
+A child may exit while descendants still hold output pipes. Capture continues
+until EOF, explicit release/stop or daemon cleanup. `wait()` can expire with an
+exited child but incomplete capture. Explicit cleanup allows 100 ms of additional
+drain before closing remaining streams and marking them truncated. Those
+closures may cause SIGPIPE/EPIPE in descendants. Signalling is confined to the
+owned group while its unreaped leader still identifies it; escaped descendants
+are not contained.
+
+### Failure and lifecycle
+
+Command creation is registered before initial waiting. Every execution response
+and active execution query carries `commands_created`, including Python failures
+that roll back the heap. Use these IDs to reacquire commands when a variable was
+not checkpointed. Boundary failures remain queryable through `session query`;
+only the active/latest execution outcome is retained, not an unbounded history.
+Exact request retries return the receipt without launching again.
+
+A failed program or cancellation of a keep-mode wait does not undo process/input
+side effects or stop the command. `stop()` explicitly terminates it. Normal daemon
+shutdown and unattended resource expiry stop all owned commands and settle
+capture. SIGKILL/host crash cannot run cleanup and may leave external processes;
+a replacement daemon never adopts them by PID or replays their source. Its old
+command IDs are invalid. Checkpoints can retain IDs only as historical plain data.
+
+The process registry is reachable only through a private invocation-owned runner
+channel, not a new public daemon operation or network listener. The process module
+must be enabled. Low-level direct `Session` evaluation cannot start managed
+commands: use `Client` or the CLI so there is a daemon resource owner. Enabling
+these revised descriptors changes the process-module compatibility fingerprint;
+older experimental process-enabled checkpoints require a new state directory,
+not silent migration or source replay.
 
 ## Chunked file reading and explicit editing
 
@@ -589,11 +637,12 @@ are trusted host code; their descriptors do not confer permissions or sandbox
 their effects. Initial callbacks are synchronous and accept plain JSON-compatible arguments
 (string-keyed objects, arrays, strings, finite numbers, booleans and null; tuples
 become arrays). Results may also use the explicitly supported `ManualResult`, `CommandResult`,
-`TextSlice`, `EditPreview`, or `CommitResult` ClassInstance wrappers. `TextFile`
-is an invocation-owned callable handle and is not a serializable final result. Arbitrary host objects and wrappers remain rejected.
-Nesting is limited to 128 levels. They must settle their own resources before returning, must not
-write directly to protocol fd 1, and must not retain live resources in returned
-values. The file module uses the invocation-local resource scope; it does not
+`TextSlice`, `EditPreview`, or `CommitResult` ClassInstance wrappers. `TextFile` and `Command`
+are invocation-owned callable handles and are not serializable final results. Arbitrary host objects and wrappers remain rejected.
+Nesting is limited to 128 levels. Invocation-local resources must settle before
+returning; explicitly managed commands instead remain owned by the daemon.
+Callbacks must not write directly to protocol fd 1 or hide unowned live resources
+in returned values. The file module uses the invocation-local resource scope; it does not
 persist host handles. `registry.add(descriptor, handler, on_error=cleanup)` can
 register synchronous failure cleanup covering boundary validation, argument
 binding, handler execution and result conversion. Cleanup must not publish
