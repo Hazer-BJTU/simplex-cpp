@@ -1,6 +1,7 @@
 """Managed command behavior: real pipes/processes and real cross-invocation Monty handles."""
 
 import asyncio
+import fcntl
 import os
 import shlex
 import sys
@@ -172,17 +173,15 @@ def test_descendant_held_pipes_distinguish_exit_from_capture(tmp_path):
     asyncio.run(scenario())
 
 
-def test_partial_stdin_does_not_close_or_implicitly_resend(tmp_path, monkeypatch):
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETPIPE_SZ"), reason="Linux pipe-capacity control")
+def test_partial_stdin_does_not_close_or_implicitly_resend(tmp_path):
     async def scenario():
         async with manager(tmp_path) as (store, call, _):
             identity = await launch(call, "sleep 60", timeout_seconds=0)
-            original = os.write
             fd = store.records[identity].process.stdin.fileno()
-            monkeypatch.setattr(
-                os,
-                "write",
-                lambda target, data: original(target, data[:4096] if target == fd else data),
-            )
+            capacity = fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, 4096)
+            for _ in range(0, capacity - 4096, 4096):
+                assert os.write(fd, b"p" * 4096) == 4096
             result = await call(
                 "send", id=identity, text="x" * 65536, close_stdin=True, timeout_seconds=0
             )
@@ -433,5 +432,89 @@ def test_read_ipc_budget_and_full_observation_preserve_cursor(tmp_path):
             first = await call("read", id=identity, full=False, max_bytes=65536)
             assert first["stdout"] == full["stdout"]
             assert first["stdout_cursor"] == len(first["stdout"])
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not hasattr(fcntl, "F_SETPIPE_SZ"), reason="Linux pipe-capacity control")
+@pytest.mark.parametrize("seconds", [0, 0.03])
+@pytest.mark.parametrize("text", ["中" * 20000, "🙂" * 15000, "a中🙂é" * 5000])
+def test_backpressured_utf8_send_can_resume_exactly_through_monty(client, tmp_path, seconds, text):
+    ready = tmp_path / "ready"
+    drain = tmp_path / "drain"
+    received = tmp_path / "received"
+    child = f"""import fcntl, sys, time
+from pathlib import Path
+capacity = fcntl.fcntl(0, fcntl.F_SETPIPE_SZ, 4096)
+marker = Path({str(ready)!r})
+marker.with_suffix(".tmp").write_text(str(capacity))
+marker.with_suffix(".tmp").replace(marker)
+while not Path({str(drain)!r}).exists():
+    time.sleep(0.005)
+Path({str(received)!r}).write_bytes(sys.stdin.buffer.read())
+"""
+    source = f"c = run_command({python_command(child)!r}, timeout_seconds=0)\ncommand_id = c.id\ncommand_id"
+    launched = execute(client, "launch", source)
+    assert launched["committed"]
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    # Some Linux architectures round capacity up to a page larger than 4096.
+    # Leave exactly one atomic-write-sized window rather than assume pipe size.
+    capacity = int(ready.read_text())
+    padding = b"x" * max(0, capacity - 4096)
+    for offset in range(0, len(padding), 65536):
+        prefix = padding[offset : offset + 65536].decode("ascii")
+        filled = execute(
+            client,
+            f"fill-{offset}",
+            f"get_command(command_id).send({prefix!r}, timeout_seconds=1).to_dict()",
+        )
+        assert filled["result"]["input_complete"]
+    partial = execute(
+        client,
+        "partial",
+        f"get_command(command_id).send({text!r}, close_stdin=True, timeout_seconds={seconds}).to_dict()",
+    )
+    assert partial["committed"], partial
+    result = partial["result"]
+    raw = text.encode("utf-8")
+    written = result["input_bytes_written"]
+    assert not result["input_complete"]
+    assert 0 < written < len(raw)
+    # Both halves must be legal text, and the byte count must describe the real
+    # input prefix rather than hiding already-written continuation bytes.
+    prefix = raw[:written].decode("utf-8")
+    suffix = raw[written:].decode("utf-8")
+    assert prefix + suffix == text
+    drain.touch()
+    resumed = execute(
+        client,
+        "resume",
+        f"get_command(command_id).send({suffix!r}, close_stdin=True, timeout_seconds=5).to_dict()",
+    )
+    assert resumed["committed"], resumed
+    assert resumed["result"]["input_complete"]
+    assert resumed["result"]["input_bytes_written"] == len(raw) - written
+    settled = execute(client, "settle", "get_command(command_id).wait(timeout_seconds=5).to_dict()")
+    assert settled["result"]["exit_code"] == 0
+    assert received.read_bytes() == padding + raw
+
+
+def test_atomic_write_contract_violation_reports_actual_effect_count(tmp_path, monkeypatch):
+    async def scenario():
+        async with manager(tmp_path) as (store, call, _):
+            identity = await launch(call, "sleep 60", timeout_seconds=0)
+            fd = store.records[identity].process.stdin.fileno()
+            write = os.write
+
+            def partial(target, data):
+                return write(target, data[:1] if target == fd else data)
+
+            monkeypatch.setattr(os, "write", partial)
+            with pytest.raises(OSError, match="after 1 bytes"):
+                await call("send", id=identity, text="中", close_stdin=True, timeout_seconds=0)
+            assert not store.records[identity].process.stdin.closed
 
     asyncio.run(scenario())

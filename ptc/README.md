@@ -442,6 +442,17 @@ results. Output consumption and partial stdin writes are external effects and
 are not rolled back by a subsequent Python failure or lost reply. `full=True`
 can reread retained output without moving consuming cursors.
 
+Successful `send()` results always count a complete UTF-8 prefix, even when
+backpressure causes `input_complete=False`. Writes use character-aligned chunks
+no larger than the pipe's `PC_PIPE_BUF`; the byte count is never rounded down
+after an effect. To resume, send only
+`text.encode("utf-8")[result.input_bytes_written:].decode("utf-8")`.
+Do not slice the original string by a byte count or resend the complete input.
+A zero timeout writes immediately available chunks until completion/backpressure
+without waiting for capacity. `close_stdin=True` closes input only after the
+entire supplied text was written. An exception or lost reply still requires
+inspection rather than assuming a known resumable prefix.
+
 A child may exit while descendants still hold output pipes. Capture continues
 until EOF, explicit release/stop or daemon cleanup. `wait()` can expire with an
 exited child but incomplete capture. Explicit cleanup allows 100 ms of additional

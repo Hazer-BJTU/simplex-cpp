@@ -191,7 +191,12 @@ class ManagedCommand:
         return result
 
     async def send(self, text, close_stdin, seconds):
-        """Bound nonblocking writes and report partial effects without implicit retries."""
+        """Write atomic UTF-8 chunks so an expired send can resume through the text API.
+
+        Nonblocking pipe writes up to PC_PIPE_BUF are all-or-nothing. End each
+        chunk on a character boundary and report the actual bytes written, never
+        a rounded-down count that hides an already transmitted continuation.
+        """
         if not isinstance(text, str) or type(close_stdin) is not bool:
             raise ValueError("text must be str; close_stdin must be bool")
         data = text.encode("utf-8")
@@ -199,24 +204,45 @@ class ManagedCommand:
             raise ValueError("stdin write exceeds 64 KiB")
         if self.process.stdin.closed:
             raise ValueError("stdin is closed")
+        pipe_buf = os.fpathconf(self.process.stdin.fileno(), "PC_PIPE_BUF")
+        if pipe_buf < 4:
+            raise OSError("stdin pipe cannot atomically accept a UTF-8 character")
         count = 0
         deadline = time.monotonic() + seconds
         while count < len(data):
+            if count and seconds > 0 and time.monotonic() >= deadline:
+                break
+            end = min(len(data), count + pipe_buf)
+            while end < len(data) and data[end] & 0xC0 == 0x80:
+                end -= 1
             try:
-                count += os.write(self.process.stdin.fileno(), data[count:])
+                expected = end - count
+                written = os.write(self.process.stdin.fileno(), data[count:end])
+                count += written
+                if written != expected:
+                    # Do not turn an unexpected OS/transport contract violation
+                    # into a supposedly resumable text result.
+                    raise OSError("unexpected short atomic pipe write")
             except BlockingIOError:
-                pass
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(min(0.005, max(0, deadline - time.monotonic())))
+                continue
             except (OSError, ValueError) as exc:
                 raise OSError(f"stdin write failed after {count} bytes") from exc
-            if count == len(data) or time.monotonic() >= deadline:
+            if count == len(data) or (seconds > 0 and time.monotonic() >= deadline):
                 break
-            await asyncio.sleep(0.005)
+            # Zero means no waiting for capacity, not just one small write.
+            # The 64 KiB input budget bounds this loop even without backpressure.
+            await asyncio.sleep(0)
         if close_stdin and count == len(data):
             self.process.stdin.close()
         result = self.snapshot()
         result.update(input_bytes_written=count, input_complete=count == len(data))
         if count < len(data):
-            result["hints"].append("stdin partially written; do not resend the entire input.")
+            result["hints"].append(
+                "stdin partially written at a UTF-8 boundary; send only the remaining suffix."
+            )
         return result
 
     async def _close(self):

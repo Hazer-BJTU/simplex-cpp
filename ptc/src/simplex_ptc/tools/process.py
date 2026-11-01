@@ -115,7 +115,7 @@ class Command:
     def send(
         self, text: str = "", *, close_stdin: bool = False, timeout_seconds: float = 5.0
     ) -> ClassInstance:
-        """Write bounded UTF-8 input; inspect input_complete/bytes before retrying."""
+        """Write bounded UTF-8 input; partial results end at a character boundary."""
         return _result(
             _call(
                 "send",
@@ -176,7 +176,7 @@ def register_tools(registry) -> None:
         "status() -> CommandResult: latest state, no output consumption.",
         "read(*, full: bool = False, max_bytes: int | None = None) -> CommandResult: incremental text advances shared raw-byte cursors; full reads observe the retained prefix without moving cursors. max_bytes is an optional aggregate 1..65536 byte budget; default 16384 for delta reads and all retained bytes for full reads.",
         "wait(*, timeout_seconds: float = 60.0) -> CommandResult: wait for child exit AND capture settlement, at most 300 seconds; does not consume output or kill on timeout.",
-        'send(text: str = "", *, close_stdin: bool = False, timeout_seconds: float = 5.0) -> CommandResult: send up to 64 KiB UTF-8, optionally close stdin after all bytes are written. Check input_complete and input_bytes_written; partial writes are effects, not safe to replay blindly.',
+        'send(text: str = "", *, close_stdin: bool = False, timeout_seconds: float = 5.0) -> CommandResult: send up to 64 KiB UTF-8, optionally close stdin after all bytes are written. Check input_complete and input_bytes_written: partial results end at UTF-8 boundaries, so decode and send only the unsent byte suffix. Zero timeout drains immediately available pipe capacity without waiting. Partial writes are effects, not safe to replay blindly.',
         "stop() -> CommandResult: SIGKILL a running process group and settle/reap; keep output/record for later read.",
         "release() -> CommandResult: exited commands are closed and removed, even if capture was incomplete; running commands return released=False. Unread/later output is lost.",
     )
@@ -197,7 +197,7 @@ def register_tools(registry) -> None:
         "CommandResult.stdout/stderr: selected decoded text; empty on non-read operations.",
         "CommandResult.output_complete/output_truncated, stdout_end/stderr_end (open/eof/stopped/failed), stdout_omitted_bytes/stderr_omitted_bytes: capture outcomes; omitted counts only cover observed discarded bytes.",
         "CommandResult.stdout_cursor/stderr_cursor: shared consuming raw-byte offsets; read_limited: requested bytes remain or a growing UTF-8 suffix was deferred.",
-        "CommandResult.input_bytes_written/input_complete: this send's progress; released: record removal succeeded; hints: tuple[str, ...].",
+        "CommandResult.input_bytes_written/input_complete: exact byte progress at a UTF-8 boundary for this send; released: record removal succeeded; hints: tuple[str, ...].",
         "CommandResult.to_dict() -> dict and render() -> str: detached data/readable result. Result methods are invocation-local; fresh final results convert to plain data.",
     )
     for name, handler, signature, description, inputs, examples in (
