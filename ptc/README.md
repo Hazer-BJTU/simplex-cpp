@@ -731,6 +731,6 @@ state directory rather than silently restoring an incompatible tool interface.
 ### Worker integration
 
 The optional intrinsic `ptc_execute` adapter is documented in
-[worker PTC configuration](../docs/plugins/ptc.md). The interpreter remains a
+[INSTALL.md](INSTALL.md#connect-a-worker). The interpreter remains a
 separately installed program. Its isolated unit CI is retained; an additional
 path-filtered worker integration workflow tests the real CLI/daemon contract.
