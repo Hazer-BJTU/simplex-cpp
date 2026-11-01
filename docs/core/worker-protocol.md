@@ -627,7 +627,7 @@ edits, even of equal-length text, invalidate an older fingerprint. A fresh histo
 query supplies current sources; changes to reasoning/diagnostic metadata alone
 do not invalidate answer text. Hashing reads original bytes without a response-
 sized copy; each read verifies the source and does not keep a separate answer cache.
-The Worker, Hub and intrinsic receive tool require all five source fields,
+The Worker and Hub exact-answer endpoints require all five source fields,
 including the fingerprint. Sources without it cannot be queried; older history
 may still supply a preview, but does not provide exact-answer navigation.
 
@@ -1742,13 +1742,15 @@ conversation, without tools or reasoning. Mutations use bounded durable receipts
 and never automatically retransmit unknown payloads. The optional C++
 `hub_remote_call` toolset exposes them as
 `subagent_fork`, `subagent_send` and `subagent_receive`, respectively. Fork/send
-use trusted serial-write scheduling; receive uses trusted read-only scheduling.
+use trusted serial-write scheduling. Receive preview/list uses trusted read-only
+scheduling; receive with output_path is a confirmation-required serial file write.
 The `subagent_send` tool accepts a nonempty text `request` for message operations
 and converts it to one text part in the route's `content` array, without extras.
 Its model-facing arguments do not expose content encoding or modality choices.
 No additional worker endpoint or configuration section is needed. These tools
 preserve dispatch/completion distinctions, have no automatic retries, and display
-bounded primary conversation with pagination and completeness metadata.
+bounded reply previews with completeness metadata. Receive can also export saved
+primary dialogue to a marked Markdown file, without exposing internal cursors.
 
 The [Hub subagent contract](../hub/subagents.md) defines the complete argument,
 result, authorization, duplicate, configuration, approval and lifetime semantics.

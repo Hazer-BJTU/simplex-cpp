@@ -649,3 +649,38 @@ for (const count of [2, 4]) {
         }
     });
 }
+
+test('subagent export reads a fixed complete snapshot through the managed target', async t => {
+    const ctx = await setup(t);
+    await start(ctx);
+    const parent = ctx.hub.registry.create('export-parent');
+    const child = ctx.session;
+    const record = { session: child, parent: { session_id: parent.id,
+        lifecycle_id: parent.lifecycleId, worker_id: 'parent-worker' }, removed: false };
+    ctx.hub.subagents.children.set(child.id, record);
+    try {
+        const answer = 'saved final answer 🌻\n'.repeat(20000);
+        const saved = { turns: [{ user_input: { content: [{ type: 'text', raw: 'task' }] },
+            agent_loop_step: [{ model_response: { content: [{ type: 'text', raw: answer }],
+                reasoning: 'private reasoning', invokes: ['private tools'] } }] }] };
+        writeFileSync(join(ctx.target, 'read-state.json'), JSON.stringify(saved));
+        let validated = 0;
+        const context = args => ({ caller: parent, request: { arguments: { subagent_id: child.id, ...args },
+            worker_id: 'parent-worker', run_id: 'parent-run' }, signal: new AbortController().signal,
+            validate: () => validated++ });
+        let reply = await ctx.hub.subagents.receive(context({ export: {} }));
+        writeFileSync(join(ctx.target, 'read-state.json'), JSON.stringify({ turns: [] }));
+        let text = '';
+        while (true) {
+            text += reply.export.text;
+            if (reply.export.done) break;
+            reply = await ctx.hub.subagents.receive(context({ export: {
+                token: reply.export.token, offset: reply.export.next } }));
+        }
+        assert.ok(text.includes(answer));
+        assert.ok(!text.includes('private reasoning'));
+        assert.ok(!text.includes('private tools'));
+        assert.ok(validated > 2);
+        assert.equal(operations(ctx).filter(item => item.operation === 'read_state').length, 1);
+    } finally { ctx.hub.subagents.children.delete(child.id); }
+});

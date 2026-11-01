@@ -1,5 +1,5 @@
 add_library(tools_intrinsic_hub_remote_call SHARED
-    src/tools.cpp src/plan.cpp src/subagents.cpp src/schemas.cpp)
+    src/receive.cpp src/tools.cpp src/plan.cpp src/subagents.cpp src/schemas.cpp)
 target_include_directories(tools_intrinsic_hub_remote_call PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(tools_intrinsic_hub_remote_call PUBLIC
@@ -14,4 +14,4 @@ target_compile_definitions(tools_intrinsic_hub_remote_call PRIVATE
     SIMPLEX_HUB_REMOTE_CALL_SCHEMA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/schemas")
 install(DIRECTORY schemas/ DESTINATION bin/schemas/hub_remote_call)
 
-target_link_libraries(tools_intrinsic_hub_remote_call PRIVATE subprocess_lib)
+target_link_libraries(tools_intrinsic_hub_remote_call PRIVATE subprocess_lib fileio_lib)
