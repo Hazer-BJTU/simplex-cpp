@@ -168,8 +168,8 @@ variables must be nonempty. Supported authentication schemes are `bearer`,
 - Omit `hub_remote_call` to leave remote tools unloaded.
 - Omit `security.confirmation` to deny confirmation-required calls in `ask`
   mode. A payload selecting `approve` can still authorize them locally.
-- Built-in tools and hooks load automatically. There is no public intrinsic
-  disable/configuration mapping.
+- Select built-in toolsets with `tools.intrinsic` (see below). Intrinsic hooks
+  and dynamic plugins are independent of this list.
 
 See [plugin configuration](../plugins/configuration.md) for explicit extension
 selection and schema overrides.
@@ -241,3 +241,30 @@ both stores is refused for every setting. Changing a backend setting is **not
 migration**, and selecting the opposite backend over existing history is rejected. See
 [state and persistence](../architecture/state-and-persistence.md#selection-inspection-and-backup)
 for inspection, backup, and child-session behavior.
+
+## Intrinsic toolset selection
+
+```yaml
+tools:
+  intrinsic: [process, reading, editing, archive_memory, modality_assist, hub_remote_call]
+```
+
+The list is an explicit allowlist: omitted toolsets are never registered, even
+when their configuration exists. Registration follows list order; duplicates
+are removed. Unknown names and malformed lists fail startup. An empty list
+disables all intrinsic tools. Omitting the list preserves legacy automatic
+loading, including PTC when configured.
+
+Selected conditional toolsets are skipped with a startup diagnostic unless their
+dependencies exist: `archive_memory` requires the selected SQLite backend,
+`modality_assist` requires an auxiliary model, `hub_remote_call` requires its
+endpoint, and `ptc` requires interpreter configuration. Invalid supplied
+configuration still fails validation, including PTC without enabled persistence
+and an explicit directory. Selection does not disable provider model roles or
+change how their configuration is validated.
+
+For PTC-based file/process operations, use
+`[ptc, archive_memory, modality_assist, hub_remote_call]` and configure the
+[interpreter](../plugins/ptc.md). Native tools are not removed implicitly.
+Only registered tools contribute their skills. Loop hooks and explicitly enabled
+dynamic toolsets are unaffected.

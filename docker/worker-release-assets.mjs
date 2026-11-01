@@ -14,6 +14,12 @@ export function workerArchives(tag) {
         `simplex-worker-${tag}-linux-x86_64-${runtime}.tar.gz`);
 }
 
+/** Source interpreter asset shares the release tag, not Python package metadata. */
+export function ptcArchive(tag) {
+    workerArchives(tag); // Apply the same tag validation to all asset names.
+    return `simplex-ptc-${tag}-source.tar.gz`;
+}
+
 async function regularFile(path) {
     if (!(await lstat(path)).isFile()) throw new Error(`Not a regular release file: ${path}`);
 }
@@ -25,7 +31,7 @@ async function verifyManifest(directory, manifest, expected) {
     const entries = lines.map(line => /^([a-f0-9]{64})  ([^\r\n]+)$/.exec(line));
     const names = entries.map(entry => entry?.[2]).sort();
     if (JSON.stringify(names) !== JSON.stringify([...expected].sort())) {
-        throw new Error(`${manifest} must identify exactly the expected worker archives`);
+        throw new Error(`${manifest} must identify exactly the expected release archives`);
     }
     for (const [, digest, name] of entries) {
         const file = join(directory, name);
@@ -37,32 +43,35 @@ async function verifyManifest(directory, manifest, expected) {
     return lines;
 }
 
-/** Require both variants and one shared manifest, with no probes/test payloads. */
+/** Require both runtime variants, PTC source and one shared manifest, with no probes/test payloads. */
 export async function validateWorkerAssets(directory, tag) {
-    const archives = workerArchives(tag);
+    const archives = [...workerArchives(tag), ptcArchive(tag)];
     const names = [...archives, 'SHA256SUMS'];
     if (JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify([...names].sort())) {
-        throw new Error('Expected exactly glibc and musl archives plus SHA256SUMS');
+        throw new Error('Expected exactly glibc, musl and PTC source archives plus SHA256SUMS');
     }
     await verifyManifest(directory, 'SHA256SUMS', archives);
     return names;
 }
 
-export async function assembleWorkerAssets(glibc, musl, output, tag) {
+export async function assembleWorkerAssets(glibc, musl, ptc, output, tag) {
     const [glibcName, muslName] = workerArchives(tag);
     const glibcLines = await verifyManifest(glibc, 'SHA256SUMS', [glibcName]);
     const muslLines = await verifyManifest(musl, `${muslName}.sha256`, [muslName]);
+    const ptcName = ptcArchive(tag);
+    const ptcLines = await verifyManifest(ptc, `${ptcName}.sha256`, [ptcName]);
     // Refuse an existing output directory: stale artifacts must never survive
     // assembly. Inputs stay untouched for target tests and release recovery.
     await mkdir(output);
     await copyFile(join(glibc, glibcName), join(output, glibcName));
     await copyFile(join(musl, muslName), join(output, muslName));
-    await writeFile(join(output, 'SHA256SUMS'), [...glibcLines, ...muslLines].join('\n') + '\n');
+    await copyFile(join(ptc, ptcName), join(output, ptcName));
+    await writeFile(join(output, 'SHA256SUMS'), [...glibcLines, ...muslLines, ...ptcLines].join('\n') + '\n');
     await validateWorkerAssets(output, tag);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     const args = process.argv.slice(2);
-    if (args.length !== 3) throw new Error('Usage: worker-release-assets.mjs GLIBC_DIR MUSL_DIR OUTPUT_DIR');
+    if (args.length !== 4) throw new Error('Usage: worker-release-assets.mjs GLIBC_DIR MUSL_DIR PTC_DIR OUTPUT_DIR');
     await assembleWorkerAssets(...args.map(path => resolve(path)), process.env.GITHUB_REF_NAME);
 }

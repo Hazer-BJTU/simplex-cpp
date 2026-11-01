@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
 import { parse } from 'yaml';
-import { assembleWorkerAssets, validateWorkerAssets, workerArchives } from '../../docker/worker-release-assets.mjs';
+import { assembleWorkerAssets, validateWorkerAssets, workerArchives, ptcArchive } from '../../docker/worker-release-assets.mjs';
 
 const directory = mkdtempSync(join(tmpdir(), 'simplex-gh-test-'));
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -77,7 +77,9 @@ test('GitHub release can resume after draft, upload, and publication', async t =
     writeFileSync(join(assets, archive), bytes);
     const muslArchive = 'simplex-worker-v0.1.0-linux-x86_64-musl.tar.gz';
     writeFileSync(join(assets, muslArchive), bytes);
-    writeFileSync(join(assets, 'SHA256SUMS'), [archive, muslArchive].map(name =>
+    const sourceArchive = ptcArchive('v0.1.0');
+    writeFileSync(join(assets, sourceArchive), bytes);
+    writeFileSync(join(assets, 'SHA256SUMS'), [archive, muslArchive, sourceArchive].map(name =>
         `${createHash('sha256').update(bytes).digest('hex')}  ${name}\n`).join(''));
     const stateFile = join(directory, 'state.json');
     const gh = join(bin, 'gh');
@@ -148,14 +150,14 @@ fs.writeFileSync(stateFile, JSON.stringify(state));
     assert.equal((await run(script, { ...env, MODE: 'prepare' })).code, 0);
     // Simulate an interrupted asset upload on the draft.
     const interrupted = JSON.parse(readFileSync(stateFile));
-    interrupted.assets = interrupted.assets.filter(asset => asset.name !== muslArchive);
+    interrupted.assets = interrupted.assets.filter(asset => asset.name !== sourceArchive);
     writeFileSync(stateFile, JSON.stringify(interrupted));
     assert.equal((await run(script, { ...env, MODE: 'prepare' })).code, 0);
     assert.equal((await run(script, { ...env, MODE: 'finalize' })).code, 0);
     assert.equal((await run(script, { ...env, MODE: 'finalize' })).code, 0);
     assert.equal(JSON.parse(readFileSync(stateFile)).draft, false);
-    assert.equal(JSON.parse(readFileSync(stateFile)).assets.length, 3);
-    writeFileSync(join(remote, muslArchive), 'corrupted');
+    assert.equal(JSON.parse(readFileSync(stateFile)).assets.length, 4);
+    writeFileSync(join(remote, sourceArchive), 'corrupted');
     const result = await run(script, { ...env, MODE: 'prepare' });
     assert.notEqual(result.code, 0);
     assert.match(result.output, /Existing release asset differs/);
@@ -165,7 +167,7 @@ test('release assembly waits for both validated variants before publication', ()
     const workflow = parse(readFileSync(new URL('../../.github/workflows/release-worker.yml', import.meta.url), 'utf8'));
     assert.equal(workflow.jobs.musl.uses, './.github/workflows/musl-portable.yml');
     assert.equal(workflow.jobs.musl.needs, 'validate-tag');
-    assert.deepEqual(workflow.jobs['assemble-worker-assets'].needs, ['target-test', 'musl']);
+    assert.deepEqual(workflow.jobs['assemble-worker-assets'].needs, ['target-test', 'musl', 'build-ptc']);
     assert.equal(workflow.jobs['assemble-worker-assets'].if, undefined);
     assert.equal(workflow.jobs.musl['continue-on-error'], undefined);
     assert.deepEqual(workflow.jobs['prepare-release'].needs, ['assemble-worker-assets', 'build-hub']);
@@ -176,12 +178,16 @@ test('assembly excludes test payloads and rejects corrupted, missing or stale re
     const glibc = join(root, 'glibc');
     const musl = join(root, 'musl');
     const output = join(root, 'output');
+    const ptc = join(root, 'ptc');
+    mkdirSync(ptc);
     mkdirSync(glibc);
     mkdirSync(musl);
     const tag = 'v0.1.0';
     const [glibcName, muslName] = workerArchives(tag);
+    const ptcName = ptcArchive(tag);
     for (const [input, name, manifest] of [
         [glibc, glibcName, 'SHA256SUMS'], [musl, muslName, muslName + '.sha256'],
+        [ptc, ptcName, ptcName + '.sha256'],
     ]) {
         writeFileSync(join(input, name), name);
         writeFileSync(join(input, manifest),
@@ -189,10 +195,10 @@ test('assembly excludes test payloads and rejects corrupted, missing or stale re
     }
     writeFileSync(join(musl, 'musl-test-support.tar.gz'), 'not distributable');
     writeFileSync(join(musl, 'musl-launch-probe'), 'not distributable');
-    await assembleWorkerAssets(glibc, musl, output, tag);
-    assert.deepEqual(readdirSync(output).sort(), ['SHA256SUMS', glibcName, muslName].sort());
+    await assembleWorkerAssets(glibc, musl, ptc, output, tag);
+    assert.deepEqual(readdirSync(output).sort(), ['SHA256SUMS', glibcName, muslName, ptcName].sort());
     await validateWorkerAssets(output, tag);
-    await assert.rejects(assembleWorkerAssets(glibc, musl, output, tag), /EEXIST/);
+    await assert.rejects(assembleWorkerAssets(glibc, musl, ptc, output, tag), /EEXIST/);
     await assert.rejects(validateWorkerAssets(output, 'v0.1.1'), /Expected exactly/);
     writeFileSync(join(output, 'probe'), 'unexpected');
     await assert.rejects(validateWorkerAssets(output, tag), /Expected exactly/);
@@ -202,7 +208,12 @@ test('assembly excludes test payloads and rejects corrupted, missing or stale re
     rmSync(join(output, muslName));
     await assert.rejects(validateWorkerAssets(output, tag), /Expected exactly/);
     writeFileSync(join(musl, muslName), 'corrupted');
-    await assert.rejects(assembleWorkerAssets(glibc, musl, join(root, 'bad'), tag), /Checksum mismatch/);
+    await assert.rejects(assembleWorkerAssets(glibc, musl, ptc, join(root, 'bad'), tag), /Checksum mismatch/);
+    writeFileSync(join(musl, muslName), muslName);
+    writeFileSync(join(ptc, ptcName), 'corrupted source');
+    await assert.rejects(assembleWorkerAssets(glibc, musl, ptc, join(root, 'bad-source'), tag), /Checksum mismatch/);
+    rmSync(join(ptc, ptcName));
+    await assert.rejects(assembleWorkerAssets(glibc, musl, ptc, join(root, 'missing-source'), tag), /ENOENT/);
 });
 
 test('recovery requires successful assembly as the musl validation fence', async t => {
@@ -234,4 +245,18 @@ test('recovery requires successful assembly as the musl validation fence', async
     assembly.conclusion = 'success';
     const result = await run(script, env);
     assert.equal(result.code, 0, result.output);
+});
+
+test('PTC source is tested after extraction before entering the release/recovery artifact', () => {
+    const workflow = parse(readFileSync(new URL('../../.github/workflows/release-worker.yml', import.meta.url), 'utf8'));
+    const job = workflow.jobs['build-ptc'];
+    assert.equal(job.needs, 'validate-tag');
+    const scripts = job.steps.map(step => step.run ?? '').join('\n');
+    assert.match(scripts, /package_source\.py/);
+    assert.match(scripts, /tar -xzf ptc-release/);
+    assert.match(scripts, /cd "ptc-extracted\/simplex-ptc-/);
+    assert.match(scripts, /uv sync --locked --no-dev/);
+    assert.match(scripts, /uv run --locked pytest/);
+    assert.ok(workflow.jobs['assemble-worker-assets'].steps.some(step =>
+        step.with?.name === 'ptc-source-release-assets'));
 });

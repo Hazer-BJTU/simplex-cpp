@@ -135,8 +135,8 @@ jobs:
 
   assemble-worker-assets:
     # A successful assembly is also the recovery gate for the entire musl
-    # reusable workflow (build, both target tests and offline Hub E2E).
-    needs: [target-test, musl]
+    # reusable workflow and the independently tested PTC source package.
+    needs: [target-test, musl, build-ptc]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,12 +153,50 @@ jobs:
         with:
           name: musl-portable
           path: musl-assets
-      - name: Verify and assemble only the two distributable archives
-        run: node docker/worker-release-assets.mjs glibc-assets musl-assets worker-release
+      - uses: actions/download-artifact@v4
+        with:
+          name: ptc-source-release-assets
+          path: ptc-assets
+      - name: Verify and assemble worker binaries and PTC source
+        run: node docker/worker-release-assets.mjs glibc-assets musl-assets ptc-assets worker-release
       - uses: actions/upload-artifact@v4
         with:
           name: worker-release-assets
           path: worker-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-ptc:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.11.3'
+          python-version: '3.12'
+          enable-cache: false
+      - name: Package tracked Python source and installation instructions
+        run: python ptc/scripts/package_source.py ptc-release "${GITHUB_REF_NAME}"
+      - name: Verify installation and tests from the extracted source
+        run: |
+          (cd ptc-release && sha256sum -c *.sha256)
+          mkdir ptc-extracted
+          tar -xzf ptc-release/*.tar.gz -C ptc-extracted
+          cd "ptc-extracted/simplex-ptc-${GITHUB_REF_NAME}"
+          uv sync --locked --no-dev
+          .venv/bin/simplex-ptc --module simplex_ptc.tools.process --module simplex_ptc.tools.files capabilities
+          uv sync --locked
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+          uv run --locked pytest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ptc-source-release-assets
+          path: ptc-release/
           if-no-files-found: error
           retention-days: 7
 

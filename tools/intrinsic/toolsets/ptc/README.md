@@ -3,7 +3,9 @@
 This optional intrinsic set exposes `ptc_execute(source)` as a serial,
 RequireConfirm tool. The operator installs an external interpreter and selects
 its executable/argv; no Python runtime is linked into or bundled with the worker.
-Native process and file tools remain registered. Program-level confirmation
+The optional `tools.intrinsic` allowlist controls registration independently:
+select `ptc` and omit `process`, `reading`, and `editing` to use only PTC for
+those operations. Omitting the list preserves legacy automatic registration. Program-level confirmation
 precedes execution; shell bypass rules never classify Python source.
 
 `PtcRuntime` owns a private ProcessSessionStore, separate from model-visible

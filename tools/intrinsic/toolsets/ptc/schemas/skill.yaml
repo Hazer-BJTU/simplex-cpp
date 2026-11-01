@@ -3,19 +3,42 @@ title: Persistent Python tool composition
 description: Compose installed PTC functions and return selected results.
 keywords: [python, ptc, files, process]
 text: |
-  Use ptc_execute(source=...) to compose tools in Python. Discover actual functions:
+  Use ptc_execute(source=...) to compose installed tools in a Python subset, not
+  arbitrary host Python. Discover available functions and their complete manuals:
   for info in manual(): print(info.name, info.summary)
-  Query manual("name").render() before using an unfamiliar function.
-  Python state survives successful calls, worker restarts and compact. Handles do
-  not: store command.id and reacquire with get_command(id); reopen file editors.
-  Use to_dict() for persistent result data, render() for readable text.
-  File edits use original coordinates, require explicit commit, and an error
-  invalidates all still-open editors in this invocation. Already committed files
-  and command effects are never rolled back. keep commands may survive failure
-  or cancellation; commands_created identifies launches even on failed calls.
-  Output and final results are bounded. Return selected information and redirect
-  large command output to files. A preview is not a complete JSON result.
-  Never replay source after unknown commit/transport failure. Inspect the session
-  with operator assistance; no implicit reset or recovery is performed.
-  Each program requires the worker's usual confirmation policy. This is not a
-  filesystem sandbox. Native tools remain available for unsupported operations.
+  print(manual("name").render())
+  Manuals describe signatures, return objects, methods and examples. Only use
+  registered functions; process/file modules may not be installed. Imports and
+  ordinary Python packages are not a replacement for registered host functions.
+
+  A trailing expression becomes the result; print() adds captured output.
+  Prefer short programs that inspect results before deciding the next action.
+  Result objects expose attributes and methods: use to_dict() for plain persistent
+  data and render() for readable text. Do not return live handles as final results.
+  Successful calls preserve Python state across calls, worker restarts and compact.
+  Failed calls do not commit Python state, but external side effects are not undone.
+
+  When available, run_command("...") returns a command handle. Inspect its manual
+  for read/wait/send/stop/release methods. The default timeout action is keep:
+  a wait timeout is not process failure. Save command.id and use get_command(id)
+  in a later invocation; live commands do not survive daemon restart. Release
+  settled commands when finished. commands_created identifies launches even when
+  the program fails or is cancelled; check them before launching replacements.
+
+  For files, reopen editors each invocation. Example:
+  f = open_text("/path/to/file")
+  print(f.read_lines(0, 40).render("lines"))
+  f.close()
+  Text slices render as plain text, aligned lines, or byte ranges; byte reads do
+  not support line rendering. Open with writable=True to stage edits. Coordinates
+  are zero-based bytes/lines in the ORIGINAL snapshot, not the edited text.
+  Inspect preview().render("lines"), then explicitly commit(); close/discard
+  abandons staged changes. A file-operation error invalidates all still-open
+  editors in that invocation. Already committed files are never rolled back.
+
+  Output and final results are bounded. Select useful fields/ranges and redirect
+  large command output to files. A truncated preview is not complete JSON.
+  Never replay source after unknown commit/transport failure: obtain operator
+  assistance to inspect the session; no implicit reset or recovery occurs.
+  Programs follow the worker's confirmation policy. This is not a filesystem
+  sandbox. Native tools are available only if separately enabled.

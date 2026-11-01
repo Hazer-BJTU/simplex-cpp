@@ -310,3 +310,27 @@ BOOST_AUTO_TEST_CASE(ptc_requires_explicit_persistent_session)
     value["ptc"]["arguments"] = Json::array({123});
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(intrinsic_selection_is_explicit_ordered_and_validated)
+{
+    auto value = configuration();
+    BOOST_CHECK(!load::parse_configuration(value, "/tmp").intrinsic_tools);
+    value["tools"]["intrinsic"] = Json::array();
+    auto config = load::parse_configuration(value, "/tmp");
+    BOOST_REQUIRE(config.intrinsic_tools);
+    BOOST_CHECK(config.intrinsic_tools->empty());
+    value["tools"]["intrinsic"] = {"ptc", "reading", "ptc", "archive_memory"};
+    config = load::parse_configuration(value, "/tmp");
+    const std::vector<std::string> expected{"ptc", "reading", "archive_memory"};
+    BOOST_TEST(*config.intrinsic_tools == expected, boost::test_tools::per_element());
+    // Selection alone does not require interpreter/model/endpoint configuration.
+    BOOST_CHECK(!config.ptc);
+    for (const auto& invalid : {Json(nullptr), Json("process"),
+            Json::array({1}), Json::array({"unknown"})}) {
+        value["tools"]["intrinsic"] = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    }
+    value["tools"]["intrinsic"] = Json::array();
+    value["ptc"] = {{"executable", ""}};
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+}
