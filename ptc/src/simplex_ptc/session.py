@@ -8,6 +8,7 @@ is deliberately not promised. IDs must not be recycled by callers.
 import base64
 import hashlib
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pydantic_monty as monty
@@ -31,12 +32,59 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def evaluate(source, state, registry, output, response):
+    """Run and convert invocation-local host objects before crossing runner IPC.
+
+    No persistent storage is touched here. The owner publishes the candidate only
+    after this function and invocation resource cleanup both succeed.
+    """
+    result, state = runtime.run(source, state, registry, output)
+    response.update(result=result, output=output.text, output_omitted_bytes=output.omitted_bytes)
+    return bound_response(response), state
+
+
+def failure_code(exc):
+    """Share runtime failure classification between local and isolated evaluation."""
+    if isinstance(exc, PTCError):
+        return exc.code
+    if isinstance(exc, KeyboardInterrupt):
+        return "cancelled"
+    if isinstance(exc, monty.MontySyntaxError):
+        return "compile_error"
+    if isinstance(exc, monty.MontyRuntimeError) and isinstance(
+        exc.exception(), (TimeoutError, MemoryError, RecursionError)
+    ):
+        return "resource_limit"
+    if isinstance(exc, monty.MontyCrashedError):
+        return "runtime_crashed"
+    return "runtime_error"
+
+
 class Session:
     """Manage one trusted POSIX directory; all operations hold its exclusive lock."""
 
-    def __init__(self, directory: Path, registry: ToolRegistry | None = None):
+    def __init__(
+        self, directory: Path, registry: ToolRegistry | None = None, *, daemon_owned: bool = False
+    ):
+        self.daemon_owned = daemon_owned
         self.storage = Storage(directory)
         self.registry = registry if registry is not None else ToolRegistry()
+
+    @contextmanager
+    def _locked(self):
+        """Defend low-level embedding against an already running daemon.
+
+        Only the daemon coordinator, which already owns the lifetime lock, may
+        bypass its reacquisition. CLI users always go through Client instead.
+        """
+        from .endpoint import Endpoint
+
+        if self.daemon_owned:
+            with self.storage.locked():
+                yield
+        else:
+            with Endpoint(self.storage.directory).locked(), self.storage.locked():
+                yield
 
     def _new(self) -> dict:
         """An empty state is represented by no dump, not replayable source text."""
@@ -115,7 +163,7 @@ class Session:
 
     def inspect(self) -> dict:
         """Expose metadata only. Inspection never resumes, repairs or clears state."""
-        with self.storage.locked():
+        with self._locked():
             checkpoint = self._load()
             pending = self._pending(checkpoint)
             return {
@@ -130,13 +178,17 @@ class Session:
                 else None,
             }
 
-    def execute(self, request: Request) -> dict:
+    def execute(self, request: Request, *, evaluator=None, context: dict | None = None) -> dict:
         """Commit success or a failure receipt without rolling back external effects."""
         request = Request.parse(
             {"execution_id": request.execution_id, "source": request.source, "epoch": request.epoch}
         )
-        request_digest = digest(encode({"source": request.source, "epoch": request.epoch}))
-        with self.storage.locked():
+        identity = {"source": request.source, "epoch": request.epoch}
+        if context is not None:
+            identity["context"] = context
+        request_digest = digest(encode(identity))
+        evaluator = evaluator or evaluate
+        with self._locked():
             checkpoint = self._load()
             if self._pending(checkpoint) is not None:
                 raise PTCError(
@@ -195,13 +247,9 @@ class Session:
                 "output_omitted_bytes": 0,
             }
             try:
-                result, state = runtime.run(
-                    request.source, self._dump(checkpoint), self.registry, output
+                response, state = evaluator(
+                    request.source, self._dump(checkpoint), self.registry, output, response
                 )
-                response.update(
-                    result=result, output=output.text, output_omitted_bytes=output.omitted_bytes
-                )
-                response = bound_response(response)
                 candidate = dict(checkpoint)
                 candidate["dump"] = base64.b64encode(state).decode()
                 candidate["dump_sha256"] = digest(state)
@@ -212,19 +260,7 @@ class Session:
                 response.update(committed=True, revision=candidate["revision"])
                 response = bound_response(response)
             except (monty.MontyError, PTCError, KeyboardInterrupt) as exc:
-                code = (
-                    exc.code
-                    if isinstance(exc, PTCError)
-                    else ("cancelled" if isinstance(exc, KeyboardInterrupt) else "runtime_error")
-                )
-                if isinstance(exc, monty.MontySyntaxError):
-                    code = "compile_error"
-                elif isinstance(exc, monty.MontyRuntimeError) and isinstance(
-                    exc.exception(), (TimeoutError, MemoryError, RecursionError)
-                ):
-                    code = "resource_limit"
-                elif isinstance(exc, monty.MontyCrashedError):
-                    code = "runtime_crashed"
+                code = failure_code(exc)
                 response.update(
                     status="failed",
                     committed=False,
@@ -254,7 +290,7 @@ class Session:
 
     def recover(self, epoch: str, execution_id: str) -> None:
         """Acknowledge unknown effects without re-running the interrupted source."""
-        with self.storage.locked():
+        with self._locked():
             checkpoint = self._load()
             pending = self._pending(checkpoint)
             if (
@@ -287,7 +323,7 @@ class Session:
 
     def reset(self, epoch: str) -> None:
         """Replace an idle compatible session with an empty epoch; keep external files."""
-        with self.storage.locked():
+        with self._locked():
             checkpoint = self._load()
             if not checkpoint or checkpoint["epoch"] != epoch:
                 raise PTCError("stale_reset", "session epoch does not match")

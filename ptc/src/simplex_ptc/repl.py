@@ -6,14 +6,14 @@ normal Monty execution, result conversion and checkpoint rules.
 
 import contextlib
 import json
+import shutil
 import sys
 import tempfile
 import uuid
 from pathlib import Path
 
-from .extensions import ToolRegistry
+from .client import Client
 from .protocol import PTCError, Request
-from .session import Session
 
 HELP = """Enter one line of Python and press Enter to execute.
 :paste   collect multiline code; :run submits it, :abort discards it
@@ -49,7 +49,7 @@ def show(response: dict) -> None:
     )
 
 
-def interact(session: Session) -> int:
+def interact(session) -> int:
     """Submit unique requests, refreshing epoch without replaying uncertain work."""
     print(HELP)
     lines = None
@@ -102,16 +102,27 @@ def interact(session: Session) -> int:
             print("[no retry performed; use :state; recover/reset via the session CLI if needed]")
 
 
-def run_console(directory: Path | None, modules: list[str]) -> int:
+def run_console(directory: Path | None, modules: list[str], policy=None) -> int:
     """Use an explicitly persistent directory or a disposable test session."""
     try:
-        registry = ToolRegistry.load(modules)
         if directory is not None:
             print(f"Persistent session: {directory.absolute()}")
-            return interact(Session(directory, registry))
-        with tempfile.TemporaryDirectory(prefix="simplex-ptc-repl-") as temporary:
-            print("Temporary test session; state will be removed on exit.")
-            return interact(Session(Path(temporary), registry))
+            return interact(Client(directory, modules, policy))
+        temporary = Path(tempfile.mkdtemp(prefix="simplex-ptc-repl-"))
+        client = Client(temporary, modules, policy)
+        print("Temporary test session; state will be removed on exit.")
+        try:
+            return interact(client)
+        finally:
+            try:
+                result = client.stop()
+                if result.get("status") == "failed":
+                    raise OSError("daemon cleanup reported failure")
+            except BaseException:
+                print(f"[cleanup incomplete; preserved session at {temporary}]")
+                raise
+            else:
+                shutil.rmtree(temporary)
     except Exception as exc:
         print(f"[console error: {type(exc).__name__}] {exc}", file=sys.stderr)
         return 2
