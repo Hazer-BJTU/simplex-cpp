@@ -573,13 +573,16 @@ platform and software availability. They are operator-supplied prompt hints.
 
 At startup, core replaces the host-owned `environment.runtime` section with
 current configuration, including when restoring a session. It is Volatile and
-appears after tool skills, before user-defined Volatile sections. Empty settings
-remove any old section without adding a new one. The section is saved with the
+appears after tool skills, before user-defined Volatile sections. The section always ends with the initial system time in UTC, even when all
+environment settings are empty. The timestamp is captured once per worker startup,
+including restore, and is not refreshed during requests or compaction. It explicitly
+asks the model to recheck the system clock when current time matters. The section is saved with the
 session, is not hot-reloaded, and remains editable through existing loop hooks.
 
 The worker appends a short, untitled `signature.runtime` Volatile section after
-configured sections and before restored memory: a simplex version welcome, a greeting to the configured
-provider, and a wish for successful tasks. This decorative footer is regenerated
+configured sections and before restored memory: “Powered by agent runtime simplex version <version>. Greetings to <provider>.”
+For the provider factory IDs `deepseek`, `qwen`, `glm`, and `zhipu`, the greeting
+acknowledges an “open source AI technology contributor” before the provider name. This decorative footer is regenerated
 at startup, including on restore, using the current build version and provider.
 It is host-owned and cannot be declared in a role YAML file.
 

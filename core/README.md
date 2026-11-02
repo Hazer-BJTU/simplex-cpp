@@ -270,7 +270,9 @@ Runtime environment hints can be supplied through `worker.environment`:
 expected conditions without changing the working directory or enforcing access
 restrictions. At startup, including restore, current hints replace the
 `environment.runtime` Volatile section after tool skills and before other
-Volatile sections. Empty configuration removes old hints. See
+Volatile sections. Empty configuration removes old hints but still includes the
+initial UTC system time, captured once per startup (including restore). The prompt
+asks the model to recheck the clock when needed; requests do not update it. See
 [configuration and lifecycle details](../load/README.md#runtime-environment-hints).
 
 ## Explicit context compaction

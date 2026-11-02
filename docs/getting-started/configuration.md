@@ -139,7 +139,10 @@ names `environment.runtime`, `signature.runtime`, and `memory.runtime` are
 reserved for the worker. Prompt text is not expanded from environment variables.
 
 The worker injects active tool skills, configured environment hints, a runtime
-signature, and any restored compaction memory separately. Keep custom role YAML
+signature, and any restored compaction memory separately. The environment section
+always ends with the initial UTC system time, captured once per worker startup
+(including restore), with an instruction to recheck the clock when needed. It is
+not refreshed per request. Keep custom role YAML
 focused on base instructions.
 
 ### Startup and restored sessions
