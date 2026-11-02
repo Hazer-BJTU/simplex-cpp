@@ -31,7 +31,7 @@ it('preserves all startup roles/options, relative external paths and launch envi
         providers: { chosen: { plugin: 'qwen', model: 'qwen-vl', endpoint: { base_url: 'https://provider.invalid/v1' },
             generation: { temperature: 0.7, reasoning_effort: 'high' } } },
         models: { driver_model: 'chosen', modality_assist_model: 'chosen' },
-        prompts: { system: 'general_agent.yaml' },
+        prompts: { system: 'default.yaml' },
         persistence: { directory: '/parent-only', restore: 'required', state: 'custom-state', memory: 'custom-memory' },
         security: { confirmation: { endpoint: 'ws://old.invalid/confirm' } },
     };

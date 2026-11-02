@@ -41,7 +41,7 @@ async function fixture(t, { version = '0.2.0', broken = false, platform = 'linux
     for (const dir of ['bin/prompts/operations', 'bin/schemas/process', 'bin/plugins/llm', 'lib', 'third_party_licenses']) {
         await mkdir(join(tree, dir), { recursive: true });
     }
-    for (const file of ['bin/config.example.yaml', 'bin/prompts/coding_agent.yaml',
+    for (const file of ['bin/config.example.yaml', 'bin/prompts/default.yaml',
         'bin/prompts/operations/compact.yaml', 'bin/schemas/process/skill.yaml',
         ...['run_command', 'spawn_process', 'read_process', 'send_process', 'poll_process'].map(name => `bin/schemas/process/${name}.yaml`),
         'bin/plugins/llm/libllm_example.so', 'LICENSE', 'README.md', 'lib/libfixture.so.1']) {
@@ -846,3 +846,18 @@ for (const platform of ['linux-amd64-standard', 'linux-amd64-bundled']) {
         }
     });
 }
+
+/** New defaults must not break installation of historical release archives. */
+test('installation accepts default and legacy prompts but rejects invalid defaults', async t => {
+    const f = await fixture(t);
+    const current = join(f.tree, 'bin/prompts/default.yaml');
+    const legacy = join(f.tree, 'bin/prompts/coding_agent.yaml');
+    await validateTree(f.tree, 'linux-amd64-standard');
+    await rename(current, legacy);
+    await validateTree(f.tree, 'linux-amd64-standard');
+    await writeFile(current, '');
+    await assert.rejects(validateTree(f.tree, 'linux-amd64-standard'), /system prompt/);
+    await rm(current);
+    await rm(legacy);
+    await assert.rejects(validateTree(f.tree, 'linux-amd64-standard'), /ENOENT/);
+});

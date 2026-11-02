@@ -83,7 +83,10 @@ test('session snapshots preserve selected files, optional omissions and live end
         store.remove('launch', 'local', store.read('launch', 'local').revision);
         assert.equal(sessionLaunch(config, 'demo').launch.launcher.command[0], 'simplex');
         const endpoints = { events: 'ws://localhost:1234/agent/demo/events?token=x', confirm: 'ws://localhost:1234/agent/demo/confirm?token=x', tools: 'ws://localhost:1235/agent/demo/tools?token=x' };
+        config.worker.systemPromptFile = 'prompts/hub-override.yaml';
         const rendered = prepareSessionConfig({ config, sessionId: 'demo', rawSpec: {}, endpoints });
+        assert.equal(rendered.spec.systemPromptFile, undefined);
+        assert.equal(Object.hasOwn(rendered.document.worker, 'system_prompt_file'), false);
         assert.equal(rendered.document.client.endpoint, endpoints.events);
         assert.equal(rendered.document.persistence.directory, join(dataDir, 'sessions/demo'));
         assert.equal(rendered.document.security, undefined);
@@ -335,6 +338,7 @@ test('default worker template is provider-neutral with optional settings comment
             assert.equal(doc.providers.YOUR_PROVIDER.plugin, 'YOUR_PROVIDER_PLUGIN');
             assert.equal(doc.providers.YOUR_PROVIDER.model, 'YOUR_MODEL');
             assert.equal(doc.modality_assist_model, undefined);
+            assert.equal(Object.hasOwn(doc.worker, 'system_prompt_file'), false);
             assert.equal(doc.hub_remote_call, undefined);
             assert.doesNotMatch(text, /deepseek|127\.0\.0\.1|\/chat\/completions|\/agent\//i);
             assert.match(text, /# modality_assist_model: YOUR_ASSIST_PROVIDER/);

@@ -84,28 +84,34 @@ replace them with actual URLs and a local persistence path first.
 
 ## System prompts
 
-Role prompt YAML files live in `core/prompts/` in the source tree. Builds copy
+System prompt YAML files live in `core/prompts/` in the source tree. Builds copy
 and installs ship them under `<worker-install>/bin/prompts/`, beside the
-`simplex_worker` executable. Choose a role in your worker YAML:
+`simplex_worker` executable. Select the default in your worker YAML:
 
 ```yaml
 worker:
-  system_prompt_file: prompts/general_agent.yaml
+  system_prompt_file: prompts/default.yaml
 ```
 
-This selects `<worker-install>/bin/prompts/general_agent.yaml`. The path is
+This selects `<worker-install>/bin/prompts/default.yaml`. The path is
 relative to the running executable's directory, **not** the worker config file
 or the invocation working directory. In a container, the file must exist in the
 worker's installation inside that container. Omit `system_prompt_file` to use
-`prompts/coding_agent.yaml`.
+`prompts/default.yaml` with current workers. Hub-generated configurations and the
+bundled worker template omit this setting by default, so older deployed workers
+can select their own shipped prompt. Explicit custom paths are passed unchanged.
 
-| File | Purpose and behavior |
-| --- | --- |
-| `prompts/coding_agent.yaml` | Default software-focused role with the same communication, clarification, and safety principles as the general agent. Adds repository inspection, focused code changes, compatibility and resource-lifetime considerations, relevant tests and builds, evidence-based reporting, and recovery from interruptions. |
-| `prompts/general_agent.yaml` | General-purpose role for tasks beyond coding. Covers task analysis, environment checks, comparing approaches, acceptance criteria, verification, and resource cleanup. Both roles allow a relaxed, graceful, formal tone and feminine expression, require clear language and detailed clarification for unclear requirements or multiple viable approaches, and protect privacy while requiring confirmation before destructive actions. |
-| `prompts/operations/compact.yaml` | An operation prompt, not a role. Loaded through `worker.compact_prompt_file` and sent as an internal user message for `compact`. Requests a structured handoff summary without tool calls, retaining useful prior memory and the user's explicit habits, preferences, and rules, including later corrections. |
+`default.yaml` covers both general-purpose and coding tasks. Its four sections
+set the role, language style, task execution, and privacy/safety guidance. It asks
+for clear, respectful communication, bounded work, verification, cleanup, and
+explicit confirmation where appropriate.
 
-Both roles help the user complete tasks and follow the user's language; their
+The former `coding_agent.yaml` and `general_agent.yaml` files are no longer shipped.
+Update saved worker configurations that explicitly select either old path to
+`prompts/default.yaml`, or omit the setting. Existing restored snapshots keep
+their saved base prompt; the new template applies to new sessions.
+
+The default helps the user complete tasks and follow the user's language. Its
 instructions guide model behavior and do not change tool permissions or the
 worker's security policy.
 
@@ -183,7 +189,7 @@ selection and schema overrides.
 | --- | --- |
 | `--config` | `config.yaml` in the invocation working directory |
 | Explicit plugin/configuration paths | Relative to the worker YAML's directory |
-| `worker.system_prompt_file` | Relative to the executable directory; defaults to `prompts/coding_agent.yaml` |
+| `worker.system_prompt_file` | Relative to the executable directory; defaults to `prompts/default.yaml` |
 | `worker.compact_prompt_file` | Same rule; defaults to `prompts/operations/compact.yaml` |
 | `worker.environment.workspace` | Config-relative prompt hint; does not call `chdir` or sandbox tools |
 | `persistence.directory` | Direct session root, config-relative when not absolute |

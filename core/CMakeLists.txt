@@ -7,7 +7,7 @@ foreach(operation_prompt IN ITEMS compact auto_compact auto_compact_continue)
         DESTINATION bin/prompts/operations)
 endforeach()
 
-foreach(role_prompt IN ITEMS coding_agent general_agent)
+foreach(role_prompt IN ITEMS default)
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/prompts/${role_prompt}.yaml"
         "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/prompts/${role_prompt}.yaml"

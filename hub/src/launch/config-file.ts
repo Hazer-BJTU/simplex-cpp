@@ -11,7 +11,7 @@ import { renderSessionConfig, sessionDir, workerConfigPath } from './config-rend
 import type { RenderSessionConfigOptions } from './config-render.ts';
 import { normalizeSpec } from './spec.ts';
 import type { NormalizedSpec } from './spec.ts';
-import type { HubConfig } from '../config.ts';
+import { checkPromptFile, type HubConfig } from '../config.ts';
 
 /** Same lexical child-directory rule as load::parse_configuration. */
 export function persistenceChild(root: string, value: unknown, key: string): string {
@@ -158,7 +158,12 @@ export function applyConfigurationSpec(spec: NormalizedSpec, result: any): void 
         throw new Error('invalid auto compact threshold or attempt budget');
     }
     spec.eventCapacity = result.worker?.event_capacity ?? spec.eventCapacity;
-    spec.systemPromptFile = result.worker?.system_prompt_file ?? spec.systemPromptFile;
+    // A saved omission means inherit the worker default, not today's Hub override.
+    if (result.worker?.system_prompt_file === undefined) {
+        delete spec.systemPromptFile;
+    } else {
+        spec.systemPromptFile = checkPromptFile(result.worker.system_prompt_file, 'worker.system_prompt_file');
+    }
     spec.workspace = result.worker?.environment?.workspace ?? '';
     spec.platform = result.worker?.environment?.platform ?? '';
     spec.software = result.worker?.environment?.software ?? [];

@@ -53,7 +53,7 @@ security:
 worker:
   max_exchanges: 512
   event_capacity: 1024
-  system_prompt_file: prompts/coding_agent.yaml
+  system_prompt_file: prompts/default.yaml
 persistence:
   directory: ./data/session
   state: state
@@ -61,8 +61,8 @@ persistence:
   memory: memory
 ~~~
 
-The default structured prompt lives in [core/prompts/coding_agent.yaml](prompts/coding_agent.yaml)
-and is copied/installed as `bin/prompts/coding_agent.yaml`. The loader resolves
+The default structured prompt lives in [core/prompts/default.yaml](prompts/default.yaml)
+and is copied/installed as `bin/prompts/default.yaml`. The loader resolves
 an explicit relative path against the executable's own directory and refuses a
 rooted path (a leading separator in either grammar, or a drive letter) and `..`
 components; the containment is lexical, so symlinks are the filesystem's

@@ -38,9 +38,9 @@ struct Scratch {
         std::ofstream(path) << content;
         return path;
     }
-    /** Stage both shipped prompt files, which every parse loads eagerly. */
+    /** Stage the shipped prompt files, which every parse loads eagerly. */
     void stage_defaults() const {
-        install("prompts/coding_agent.yaml", structured);
+        install("prompts/default.yaml", structured);
         install("prompts/operations/auto_compact_continue.yaml",
             "sections:\n  - name: resume\n    text: Continue from memory.\n");
         install("prompts/operations/auto_compact.yaml",
@@ -125,8 +125,8 @@ BOOST_AUTO_TEST_CASE(backslash_spellings_are_relative_paths_not_traversal) {
     Scratch scratch;
     scratch.stage_defaults();
     auto document = configuration();
-    for (const auto& selected : {"prompts\\coding_agent.yaml",
-                                 ".\\prompts\\coding_agent.yaml"}) {
+    for (const auto& selected : {"prompts\\default.yaml",
+                                 ".\\prompts\\default.yaml"}) {
         scratch.install(selected, structured);
         document["worker"] = {{"system_prompt_file", selected}};
         const auto parsed = load::parse_configuration(
@@ -144,7 +144,7 @@ BOOST_AUTO_TEST_CASE(default_prompt_is_loaded_beside_the_executable) {
     BOOST_TEST(defaults.system_prompt.contains("persona"));
     BOOST_TEST(!defaults.system_prompt.render().markdown.empty());
     BOOST_TEST(defaults.compact_prompt.find("Do not call tools") != std::string::npos);
-    BOOST_TEST(!fs::exists(scratch.root / "prompts/coding_agent.yaml"));
+    BOOST_TEST(!fs::exists(scratch.root / "prompts/default.yaml"));
     // An explicit installation directory moves both defaults with it: nothing
     // is staged below it yet, so the executable's own prompts must not answer.
     BOOST_CHECK_THROW(load::parse_configuration(configuration(), scratch.root, scratch.installation()),

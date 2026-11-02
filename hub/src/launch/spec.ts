@@ -36,7 +36,8 @@ export interface NormalizedSpec {
     autoCompactThreshold: number;
     maxAutoCompactions: number;
     eventCapacity: number;
-    systemPromptFile: string;
+    /** Undefined inherits the deployed worker's default prompt. */
+    systemPromptFile?: string;
     workspace: string;
     platform: string;
     software: string[];
@@ -103,8 +104,10 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
     if (!Array.isArray(software) || software.some((item) => typeof item !== 'string')) {
         throw new ConfigError('spec.software must be an array of strings');
     }
-    const promptFile = checkPromptFile(
-        raw.systemPromptFile ?? config.worker.systemPromptFile, 'spec.systemPromptFile');
+    const selectedPrompt = raw.systemPromptFile !== undefined
+        ? raw.systemPromptFile : config.worker.systemPromptFile;
+    const promptFile = selectedPrompt === undefined ? undefined
+        : checkPromptFile(selectedPrompt, 'spec.systemPromptFile');
     const persistence = isPlainObject(raw.persistence) ? raw.persistence : {};
     const backend = persistence.backend ?? config.worker.persistence.backend ?? 'sqlite';
     if (backend !== 'json' && backend !== 'sqlite') throw new ConfigError('spec.persistence.backend must be json or sqlite');
@@ -121,7 +124,7 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
         // Relative to the worker's installation directory, and stored exactly
         // as given: the hub never rewrites it into a path of its own, so one
         // session spec describes the same prompt on every machine.
-        systemPromptFile: promptFile,
+        ...(promptFile === undefined ? {} : { systemPromptFile: promptFile }),
         workspace: typeof raw.workspace === 'string'
             ? raw.workspace
             : config.worker.environment.workspace,

@@ -82,13 +82,14 @@ export interface HubConfig {
          */
         connectHost: string;
         /**
-         * Prompt file for new sessions, relative to the worker's installation
+         * Omit to inherit the deployed worker's default. An explicit prompt
+         * file for new sessions is relative to the worker's installation
          * directory (`load::parse_configuration` reads it exactly that way).
          * The hub deliberately keeps no directory of its own here: a prompt is
          * an asset of the deployed worker, so a session spec stays portable to
          * a worker running on another machine or inside a container.
          */
-        systemPromptFile: string;
+        systemPromptFile?: string;
         maxExchanges: number;
         autoCompactThreshold: number;
         maxAutoCompactions: number;
@@ -163,7 +164,6 @@ export function defaultConfig(): HubConfig {
             // Empty means "derive it from the listener": loopback, or the host
             // it is bound to.
             connectHost: '',
-            systemPromptFile: 'prompts/coding_agent.yaml',
             maxExchanges: 512,
             autoCompactThreshold: 0,
             maxAutoCompactions: 5,
@@ -484,7 +484,10 @@ export function validateConfig(config: HubConfig): HubConfig {
     if (isPlainObject(config.worker?.persistence)) {
         delete (config.worker.persistence as Record<string, unknown>).readable;
     }
-    const unknown = unknownConfigKeys(config, defaultConfig());
+    const shape = defaultConfig();
+    // Optional override remains a known key even though defaults omit it.
+    shape.worker.systemPromptFile = '';
+    const unknown = unknownConfigKeys(config, shape);
     check(unknown.length === 0,
         `unknown configuration ${unknown.length === 1 ? 'key' : 'keys'}: ${unknown.join(', ')}`);
     check(typeof config.listen?.host === 'string' && config.listen.host.length > 0,
@@ -538,7 +541,9 @@ export function validateConfig(config: HubConfig): HubConfig {
     // down, which is a confusing way to learn about a typo.
     check(worker.connectHost === '' || !/[/:?#\s]/.test(worker.connectHost),
         'worker.connectHost must be a bare host or address, without a scheme, port or path');
-    checkPromptFile(worker.systemPromptFile, 'worker.systemPromptFile');
+    if (worker.systemPromptFile !== undefined) {
+        checkPromptFile(worker.systemPromptFile, 'worker.systemPromptFile');
+    }
     check(Number.isSafeInteger(worker.autoCompactThreshold) && worker.autoCompactThreshold >= 0
         && worker.autoCompactThreshold <= 2147483647, 'worker.autoCompactThreshold must be an integer in 0..2147483647');
     check(Number.isSafeInteger(worker.maxAutoCompactions) && worker.maxAutoCompactions > 0

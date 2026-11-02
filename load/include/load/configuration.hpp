@@ -121,7 +121,7 @@ const std::vector<std::string>& intrinsic_toolset_names();
  * relative paths; rooted forms (a leading `/` or `\`, or a drive letter, which
  * a POSIX build and a Windows build would otherwise read differently) and `..`
  * components are refused instead of interpreted. Omitting either selects
- * prompts/coding_agent.yaml or prompts/operations/compact.yaml below the same
+ * prompts/default.yaml or prompts/operations/compact.yaml below the same
  * root.
  *
  * That containment is LEXICAL, not a filesystem sandbox: symlinks are not

@@ -8,7 +8,7 @@ export function workerUnavailableReason(worker, { required = false } = {}) {
     const bin = dirname(worker);
     const prerequisites = [
         [worker, constants.R_OK | constants.X_OK],
-        [join(bin, 'prompts', 'coding_agent.yaml'), constants.R_OK],
+        [join(bin, 'prompts', 'default.yaml'), constants.R_OK],
     ];
     if (required) {
         // These are actual inputs of the offline mock/compact/process E2E.

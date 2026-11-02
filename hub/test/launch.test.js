@@ -37,7 +37,7 @@ describe('normalizeSpec', () => {
         assert.equal(spec.maxExchanges, 512);
         assert.equal(spec.persistence.enabled, true);
         assert.equal(spec.restore, 'if_present');
-        assert.equal(spec.systemPromptFile, 'prompts/coding_agent.yaml');
+        assert.equal(spec.systemPromptFile, undefined);
     });
 
     it('keeps a prompt path relative to the worker installation', () => {
@@ -48,7 +48,7 @@ describe('normalizeSpec', () => {
         // The worker refuses rooted paths and parent traversal, so the hub
         // refuses them at the spec layer rather than failing a spawn later.
         for (const rejected of [
-            '/tmp/agent.yaml', '../coding_agent.yaml',
+            '/tmp/agent.yaml', '../default.yaml',
             'prompts/../../outside.yaml', '', 7,
             '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml',
         ]) {
@@ -371,4 +371,18 @@ describe('createLauncher', () => {
             'command');
     });
 
+});
+
+// Default selection belongs to the deployed worker, not the Hub's release.
+describe('prompt inheritance', () => {
+    it('omits an unspecified prompt and preserves explicit overrides', () => {
+        const config = testConfig();
+        const render = rawSpec => renderSessionConfig({ config, sessionId: 'demo', rawSpec, endpoints }).document;
+        assert.equal(Object.hasOwn(render({}).worker, 'system_prompt_file'), false);
+        config.worker.systemPromptFile = 'prompts/custom.yaml';
+        assert.equal(render({}).worker.system_prompt_file, 'prompts/custom.yaml');
+        assert.equal(render({ systemPromptFile: 'prompts/other.yaml' }).worker.system_prompt_file, 'prompts/other.yaml');
+        assert.throws(() => normalizeSpec(config, { systemPromptFile: null }), ConfigError);
+        assert.throws(() => normalizeSpec(config, { systemPromptFile: '' }), ConfigError);
+    });
 });

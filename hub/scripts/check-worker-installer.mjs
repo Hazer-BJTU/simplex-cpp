@@ -32,7 +32,7 @@ try {
         for (const dir of ['bin/prompts/operations', 'bin/schemas/process', 'bin/plugins/llm', 'lib', 'third_party_licenses']) {
             mkdirSync(join(tree, dir), { recursive: true });
         }
-        for (const file of ['bin/config.example.yaml', 'bin/prompts/coding_agent.yaml',
+        for (const file of ['bin/config.example.yaml', 'bin/prompts/default.yaml',
             'bin/prompts/operations/compact.yaml', 'bin/schemas/process/skill.yaml',
             ...['run_command', 'spawn_process', 'read_process', 'send_process', 'poll_process'].map(name => `bin/schemas/process/${name}.yaml`),
             'bin/plugins/llm/libllm_fixture.so', 'lib/libfixture.so.1', 'LICENSE', 'README.md']) {
