@@ -703,9 +703,10 @@ page. Pages preserve every answer byte/part without mounting an entire large
 Markdown document. Large inline answers use plain-text section navigation without discarding
 the retained text; reasoning always uses lazy literal text, never Markdown/highlighting.
 
-Headless conversation projections preserve `answer_source` in storage. A parent
-may call `subagent_receive` with `subagent_id` and `answer: {source, part, offset}`
-to read the exact child answer in 32 KiB pages. Turn pagination (`cursor`, `limit`)
+Headless conversation projections preserve `answer_source` in storage. Legacy parent workers may use the `subagent/receive` wire route with
+`subagent_id` and `answer: {source, part, offset}` to read exact child answers
+in 32 KiB pages. The current model-facing tool instead offers a bounded preview
+or an `output_path` export of saved dialogue; pagination is internal. Turn pagination (`cursor`, `limit`)
 and answer pagination are mutually exclusive. Direct-parent authorization is
 rechecked after the awaited query; child stop/deletion and worker restart retain
 the existing lifecycle semantics. Unknown/older workers offer explicit previews

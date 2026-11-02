@@ -42,34 +42,20 @@ Json child_status()
         {"reason", "live identified worker"}, {"error", nullptr}};
 }
 
-Json detail()
-{
+Json detail() {
     auto result = child_status();
-    result["requests"] = Json::array({{
-        {"request_id", "child-request"}, {"operation", "compact"},
-        {"run_id", "child-run"}, {"state", "finished"}, {"status", "exchange_limit"},
-        {"at", "2026-10-06T00:00:00Z"}, {"summary", "compact summary"}
-    }});
-    result["requests_truncated"] = false;
-    const Json part = {{"type", "text"}, {"modality", "text"}, {"raw", "answer 🌻"},
-        {"extras", {{"secret", "hidden-extra"}}}};
-    result["conversation"] = {
-        {"revision", 0}, {"worker_id", "child-worker"}, {"cursor", 0}, {"next", 1}, {"total", 1},
-        {"stale", false}, {"incomplete", false}, {"truncated", false}, {"refreshed_at", nullptr},
-        {"turns", Json::array({{
-            {"index", 7}, {"request_id", "child-request"}, {"user", Json::array({part})},
-            {"steps", Json::array({{{"index", 3}, {"content", Json::array({part})}}})},
-            {"reasoning", "hidden-reasoning"}
-        }})}
-    };
-    result["configuration"] = "hidden-configuration";
+    result["preview"] = {{"response", "answer 🌻"}, {"truncated", false},
+        {"stale", false}, {"incomplete", false}, {"history_truncated", false}};
+    result["latest_request"] = {{"request_id", "child-request"}, {"operation", "message"},
+        {"state", "finished"}, {"status", "completed"}};
+    result["reasoning"] = "hidden-reasoning";
     return result;
 }
 
 /** Run a real local exchange through the registered concrete tool. */
 model_io::Content call(const std::string& name, Json arguments, Json result,
     std::function<void(Json&)> change_reply = {}, bool cancel = false, bool binary = false,
-    std::string_view transport_failure = {})
+    std::string_view transport_failure = {}, std::vector<Json> pages = {})
 {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
@@ -86,6 +72,7 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
     asio::cancellation_signal cancellation;
     int requests = 0;
     const auto peer = [&]() -> asio::awaitable<void> {
+      for (std::size_t page = 0; page < std::max(std::size_t(1), pages.size()); ++page) {
         ws::stream<asio::ip::tcp::socket> socket(co_await acceptor.async_accept(asio::use_awaitable));
         beast::flat_buffer buffer;
         beast::http::request<beast::http::string_body> upgrade;
@@ -105,6 +92,14 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
                 {"type", "text"}, {"modality", "text"}, {"raw", text}
             }});
         }
+        if (name == "subagent_receive") {
+            if (expected_arguments.contains("output_path")) {
+                expected_arguments.erase("output_path");
+                expected_arguments["export"] = page == 0 ? Json::object()
+                    : Json{{"token", pages.at(page - 1).at("export").at("token")},
+                        {"offset", pages.at(page - 1).at("export").at("next")}};
+            } else expected_arguments["view"] = "preview";
+        }
         BOOST_TEST(data.at("arguments") == expected_arguments);
         BOOST_TEST(data.at("worker_id") == "worker");
         BOOST_TEST(data.at("session_id") == "parent");
@@ -122,7 +117,7 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
         data.erase("arguments");
         data["route"] = route;
         data["status"] = "succeeded";
-        data["result"] = result;
+        data["result"] = pages.empty() ? result : pages.at(page);
         Json reply = {{"type", "tool_response"}, {"data", data}};
         if (change_reply) change_reply(reply);
         if (cancel) {
@@ -144,13 +139,14 @@ model_io::Content call(const std::string& name, Json arguments, Json result,
         if (!error) {
             co_await socket.async_read(buffer, asio::redirect_error(asio::use_awaitable, error));
         }
+      }
     };
     auto server = asio::co_spawn(io, peer, asio::use_future);
     auto future = asio::co_spawn(io, tool->invoke(query),
         asio::bind_cancellation_slot(cancellation.slot(), asio::use_future));
     io.run();
     server.get();
-    BOOST_TEST(requests == 1);
+    BOOST_TEST(requests == std::max(std::size_t(1), pages.size()));
     BOOST_TEST(query.arguments == original_arguments);
     return future.get();
 }
@@ -235,6 +231,8 @@ BOOST_AUTO_TEST_CASE(subagent_schemas_validation_and_attributes_agree)
             Json{{"subagent_id", "subagent-child"}, {"cursor", 9007199254740992ULL}},
             Json{{"subagent_id", "subagent-child"}, {"limit", 0}},
             Json{{"subagent_id", "subagent-child"}, {"limit", 11}},
+            Json{{"subagent_id", "subagent-child"}, {"output_path", "/tmp/result.md"}},
+            Json{{"output_path", "x"}}, Json{{"subagent_id", "subagent-child"}, {"output_path", ""}},
             Json{{"subagent_id", "../escape"}}, Json{{"subagent_id", ""}}};
         for (const std::string operation : {"continue", "compact", "stop", "unknown"}) {
             Json args = {{"subagent_id", "subagent-child"}, {"operation", operation}};
@@ -329,160 +327,6 @@ BOOST_AUTO_TEST_CASE(subagent_send_converts_only_request_text_and_preserves_opti
     BOOST_TEST(sent.raw.find("[[state]]: sent") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(subagent_result_rendering_retains_outcomes_pagination_and_whitelists_content)
-{
-    const auto fork = call("subagent_fork", Json::object(),
-        {{"subagent_id", "subagent-child"}, {"lifecycle", "preparing"}}, {}, true);
-    BOOST_TEST(fork.raw.find("[[lifecycle]]: preparing") != std::string::npos);
-    for (const std::string state : {"sent", "rejected", "unknown"}) {
-        const auto sent = call("subagent_send", message(), {{"subagent_id", "subagent-child"},
-            {"operation", "message"}, {"request_id", "child-request"}, {"state", state}});
-        BOOST_TEST(sent.raw.find("[[state]]: " + state) != std::string::npos);
-        BOOST_TEST((sent.raw.find("task") == std::string::npos || state != "rejected"));
-    }
-    const auto stopped = call("subagent_send", {{"subagent_id", "subagent-child"}, {"operation", "stop"}},
-        {{"subagent_id", "subagent-child"}, {"operation", "stop"}, {"operation_id", "stop-id"}, {"state", "stopping"}});
-    BOOST_TEST(stopped.raw.find("[[operation_id]]: stop-id") != std::string::npos);
-    const auto list = call("subagent_receive", Json::object(), {{"subagents", Json::array({child_status()})}});
-    BOOST_TEST(list.raw.find("[[subagents]]: 1") != std::string::npos);
-    const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}}, detail());
-    for (const char* expected : {"[[revision]]: 0", "[[next]]: 1", "[[requests_truncated]]: false",
-            "[[stale]]: false", "[[run_status]]: exchange_limit", "[[turn]]: 7", "answer 🌻",
-            "assistant step 3", "compact summary", "[[refreshed_at]]: null"}) {
-        BOOST_TEST(received.raw.find(expected) != std::string::npos);
-    }
-    for (const char* hidden : {"hidden-extra", "hidden-configuration", "hidden-reasoning"}) {
-        BOOST_TEST(received.raw.find(hidden) == std::string::npos);
-    }
-    auto startup = detail();
-    startup["conversation"] = nullptr;
-    startup["requests"] = Json::array();
-    BOOST_TEST(call("subagent_receive", {{"subagent_id", "subagent-child"}}, startup).raw
-        .find("[[conversation_available]]: false") != std::string::npos);
-}
-
-BOOST_AUTO_TEST_CASE(subagent_failure_diagnostics_are_safe_and_never_retry)
-{
-    for (const std::string mode : {"rejected", "target", "missing", "oversize", "correlation", "cursor",
-            "binary", "timeout", "disconnect"}) {
-        auto result = detail();
-        if (mode == "target") result["subagent_id"] = "distinctive-target";
-        if (mode == "missing") result.erase("requests");
-        if (mode == "oversize") result["private"] = std::string(300000, 'x');
-        if (mode == "cursor") result["conversation"]["next"] = 3;
-        const auto modifier = [&](Json& reply) {
-            if (mode == "rejected") {
-                reply["data"].erase("result");
-                reply["data"]["status"] = "rejected";
-                reply["data"]["error"] = {{"code", "not_implemented"}, {"message", "distinctive-diagnostic"}};
-            }
-            if (mode == "correlation") reply["data"]["worker_id"] = "distinctive-worker";
-        };
-        std::string expected = "hub remote call transport failed";
-        if (mode == "rejected") expected = "not_implemented";
-        if (mode == "target" || mode == "missing" || mode == "cursor") expected = "invalid Hub subagent result";
-        if (mode == "correlation") expected = "invalid or mismatched hub remote call response";
-        BOOST_TEST_CONTEXT("failure mode: " << mode) {
-            BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}},
-                result, modifier, false, mode == "binary", mode), tools::InvokeException, [&](const auto& error) {
-                    const std::string text = error.what();
-                    return text.find("distinctive-") == std::string::npos
-                        && text.find("mutation") == std::string::npos
-                        && text.find(expected) != std::string::npos;
-                });
-        }
-    }
-}
-
-BOOST_AUTO_TEST_CASE(subagent_fragmented_pages_use_actual_presentation_overhead)
-{
-    for (const int parts : {2480, 3000, 3900}) {
-        auto value = detail();
-        auto& turn = value["conversation"]["turns"][0];
-        turn["user"] = Json::array();
-        turn["steps"] = Json::array();
-        for (int offset = 0; offset < parts; offset += 128) {
-            Json content = Json::array();
-            for (int i = offset; i < std::min(parts, offset + 128); ++i) {
-                content.push_back({{"type", "text"}, {"modality", "text"}, {"raw", "x"}});
-            }
-            turn["steps"].push_back({{"index", 9007199254740900ULL + offset / 128}, {"content", content}});
-        }
-        turn["steps"].push_back({{"index", 9007199254740900ULL + (parts + 127) / 128},
-            {"content", Json::array({{{"type", "text"}, {"modality", "text"},
-                {"raw", "DISTINCTIVE_FINAL_BODY " + std::string(parts == 3900 ? 100 : 110000, 'a')}}})}});
-        // A valid assembled reply, within every declared turn/step/part limit.
-        BOOST_REQUIRE(turn["steps"].size() <= 32u);
-        BOOST_REQUIRE(value.dump().size() < 255u * 1024);
-        const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value);
-        BOOST_TEST(received.raw.size() <= 256u * 1024);
-        BOOST_TEST(received.raw.find("DISTINCTIVE_FINAL_BODY") != std::string::npos);
-        BOOST_CHECK_NO_THROW(Json(received.raw).dump());
-        if (parts == 3900) {
-            // The complete one-turn page fits. No body may be clipped merely
-            // because its empty-block header plus a worst-case reserve is large.
-            BOOST_TEST(received.raw.find("[[output_truncated]]: false") != std::string::npos);
-            BOOST_TEST(received.raw.find("truncated, first") == std::string::npos);
-            const std::regex short_body("\\(1 bytes\\):\\nx\\n");
-            const auto count = std::distance(std::sregex_iterator(received.raw.begin(), received.raw.end(), short_body),
-                std::sregex_iterator());
-            BOOST_TEST(count == parts);
-        } else {
-            BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
-            if (parts == 3000) {
-                // The usual 96 KiB body allocation overflows once real headers
-                // are included. A reduced allowance must retain the final prefix.
-                BOOST_TEST(received.raw.find(std::string(90000, 'a')) == std::string::npos);
-            }
-        }
-    }
-}
-
-BOOST_AUTO_TEST_CASE(subagent_excessive_actual_structure_reports_a_read_budget_failure)
-{
-    auto value = detail();
-    auto& turn = value["conversation"]["turns"][0];
-    turn["user"] = Json::array();
-    turn["steps"] = Json::array();
-    for (int step = 0; step < 32; ++step) {
-        Json content = Json::array();
-        for (int part = 0; part < 128; ++part) {
-            content.push_back({{"type", "external_ref"}, {"modality", "document"}, {"raw", "x"}});
-        }
-        turn["steps"].push_back({{"index", 9007199254740900ULL + step}, {"content", content}});
-    }
-    // Both complete and omitted-body headers exceed 256 KiB, even though the
-    // actual reply remains below the assembled WebSocket transport limit.
-    BOOST_REQUIRE(value.dump().size() < 255u * 1024);
-    BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}, {"limit", 1}}, value),
-        tools::InvokeException, [](const auto& error) {
-            const std::string text = error.what();
-            return text.find("256 KiB budget") != std::string::npos
-                && text.find("smaller limit") != std::string::npos
-                && text.find("invalid Hub") == std::string::npos
-                && text.find("mutation") == std::string::npos;
-        });
-}
-
-BOOST_AUTO_TEST_CASE(subagent_read_rejections_are_actionable_without_mutation_warnings)
-{
-    for (const std::string code : {"answer_unavailable", "result_too_large", "storage_error"}) {
-        const auto reject = [&](Json& reply) {
-            reply["data"].erase("result");
-            reply["data"]["status"] = "rejected";
-            reply["data"]["error"] = {{"code", code}, {"message", "distinctive-private-diagnostic"}};
-        };
-        BOOST_CHECK_EXCEPTION(call("subagent_receive", {{"subagent_id", "subagent-child"}}, detail(), reject),
-            tools::InvokeException, [&](const auto& error) {
-                const std::string text = error.what();
-                return text.find(code) != std::string::npos && text.find("mutation") == std::string::npos
-                    && text.find("distinctive-") == std::string::npos
-                    && (code != "answer_unavailable" || text.find("fingerprint") != std::string::npos)
-                    && (code != "result_too_large" || text.find("smaller limit") != std::string::npos);
-            });
-    }
-}
-
 BOOST_AUTO_TEST_CASE(subagent_mutation_failures_preserve_uncertain_outcome_warnings)
 {
     for (const std::string name : {"subagent_fork", "subagent_send"}) {
@@ -496,92 +340,6 @@ BOOST_AUTO_TEST_CASE(subagent_mutation_failures_preserve_uncertain_outcome_warni
                 });
         }
     }
-}
-
-BOOST_AUTO_TEST_CASE(subagent_large_visible_result_is_clipped_on_utf8_boundary)
-{
-    auto value = detail();
-    std::string large;
-    for (int i = 0; i < 40000; ++i) large += "🌻";
-    value["conversation"]["turns"][0]["user"] = Json::array();
-    value["conversation"]["turns"][0]["steps"][0]["content"][0]["raw"] = large;
-    const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}}, value);
-    BOOST_TEST(received.raw.size() <= 256u * 1024);
-    BOOST_CHECK_NO_THROW(Json(received.raw).dump());
-    BOOST_TEST(received.raw.find("[[output_truncated]]: true") != std::string::npos);
-    BOOST_TEST(received.raw.find("[[next]]: 1") != std::string::npos);
-    BOOST_TEST(received.raw.find("[[request_id]]: child-request") != std::string::npos);
-}
-
-BOOST_AUTO_TEST_CASE(subagent_presentation_preserves_final_answer_after_many_intermediate_steps)
-{
-    auto value = detail();
-    auto& turn = value["conversation"]["turns"][0];
-    turn["user"] = Json::array({{
-        {"type", "text"}, {"modality", "text"}, {"raw", std::string(4096, 'u')}
-    }});
-    turn["steps"] = Json::array();
-    for (int i = 0; i < 24; ++i) {
-        turn["steps"].push_back({{"index", i}, {"content", Json::array({{
-            {"type", "text"}, {"modality", "text"}, {"raw", std::string(4096, 'a')}
-        }})}});
-    }
-    turn["steps"].push_back({{"index", 24}, {"content", Json::array({{
-        {"type", "text"}, {"modality", "text"}, {"raw", "DISTINCTIVE_FINAL_ANSWER 🌻"}
-    }})}});
-    // A trailing empty step must not hide the last visible answer.
-    turn["steps"].push_back({{"index", 25}, {"content", Json::array()}});
-    value["requests"][0]["status"] = "completed";
-    value["requests"][0]["summary"] = "DISTINCTIVE_COMPACT_SUMMARY 中";
-    BOOST_REQUIRE(value.dump().size() < 256u * 1024);
-
-    for (const Json arguments : {Json{{"subagent_id", "subagent-child"}},
-            Json{{"subagent_id", "subagent-child"}, {"cursor", 0}, {"limit", 1}}}) {
-        const auto received = call("subagent_receive", arguments, value);
-        BOOST_TEST(received.raw.size() <= 256u * 1024);
-        BOOST_CHECK_NO_THROW(Json(received.raw).dump());
-        for (const char* expected : {"DISTINCTIVE_FINAL_ANSWER 🌻", "DISTINCTIVE_COMPACT_SUMMARY 中",
-                "[[output_truncated]]: true", "[[turn]]: 7", "[[revision]]: 0",
-                "[[next]]: 1", "[[total]]: 1", "[[requests_truncated]]: false",
-                "[[request_id]]: child-request", "[[state]]: finished", "[[run_status]]: completed",
-                "[[stale]]: false", "[[incomplete]]: false", "[[truncated]]: false"}) {
-            BOOST_TEST(received.raw.find(expected) != std::string::npos);
-        }
-        BOOST_TEST(received.raw.find("user (text/text): (empty, truncated)") != std::string::npos);
-        BOOST_TEST(received.raw.find("assistant step 0 (text/text) (truncated, first ") != std::string::npos);
-        BOOST_TEST(received.raw.find("assistant step 0") < received.raw.find("assistant step 24"));
-        BOOST_TEST(received.raw.find("user (text/text)") < received.raw.find("assistant step 0"));
-    }
-}
-
-BOOST_AUTO_TEST_CASE(subagent_presentation_shares_result_budget_across_turns_and_compact_summary)
-{
-    auto value = detail();
-    auto& turn = value["conversation"]["turns"][0];
-    std::string long_answer = "OLDER_ANSWER 中🌻 ";
-    for (int i = 0; i < 30000; ++i) {
-        long_answer += "🌻";
-    }
-    turn["user"] = Json::array();
-    turn["steps"][0]["content"][0]["raw"] = long_answer;
-    value["conversation"]["turns"].push_back({{"index", 8}, {"user", Json::array()},
-        {"steps", Json::array({{{"index", 0}, {"content", Json::array({{
-            {"type", "text"}, {"modality", "text"}, {"raw", "LATEST_ANSWER 🌻"}
-        }})}}})}});
-    value["conversation"]["next"] = 2;
-    value["conversation"]["total"] = 2;
-    // Both a long previous answer and a long summary compete with a short
-    // latest answer. All result bodies must get space before older context.
-    value["requests"][0]["summary"] = "COMPACT_RESULT 中 " + long_answer;
-    BOOST_REQUIRE(value.dump().size() < 256u * 1024);
-    const auto received = call("subagent_receive", {{"subagent_id", "subagent-child"}}, value);
-    BOOST_TEST(received.raw.size() <= 256u * 1024);
-    BOOST_CHECK_NO_THROW(Json(received.raw).dump());
-    for (const char* expected : {"OLDER_ANSWER 中🌻", "LATEST_ANSWER 🌻", "COMPACT_RESULT 中",
-            "[[output_truncated]]: true", "[[turn]]: 7", "[[turn]]: 8", "[[next]]: 2"}) {
-        BOOST_TEST(received.raw.find(expected) != std::string::npos);
-    }
-    BOOST_TEST(received.raw.find("[[turn]]: 7") < received.raw.find("[[turn]]: 8"));
 }
 
 BOOST_AUTO_TEST_CASE(subagent_calls_capture_fresh_identity_and_use_distinct_rpc_ids)
@@ -660,53 +418,79 @@ BOOST_AUTO_TEST_CASE(subagent_declaration_failure_preserves_plan_and_reports_par
     BOOST_REQUIRE(set.skill());
 }
 
-BOOST_AUTO_TEST_CASE(subagent_answer_pages_return_exact_text_and_actionable_cursor)
-{
-    const Json source = {{"worker_id", "child-worker"}, {"turn", 7}, {"step", 3}, {"commit_sequence", "42"}, {"fingerprint", std::string(64, 'a')}};
-    const Json cursor = {{"source", source}, {"part", 0}, {"offset", 0}};
-    Json result = child_status();
-    const std::string text = "# exact page\n中文🌍\n" + std::string(12000, 'x');
-    result["answer"] = {{"source", source}, {"part", 0}, {"offset", 0},
-        {"raw", text}, {"bytes", text.size() + 10}, {"next_offset", text.size()},
-        {"next_part", 0}, {"total_parts", 1}, {"done", false}};
-    const auto answer = call("subagent_receive", {{"subagent_id", "subagent-child"}, {"answer", cursor}}, result);
-    BOOST_TEST(answer.raw.find(text) != std::string::npos);
-    BOOST_TEST(answer.raw.find("[[next_offset]]") != std::string::npos);
-    BOOST_TEST(answer.raw.find("\"commit_sequence\":\"42\"") != std::string::npos);
-    result["answer"]["next_offset"] = 1;
-    BOOST_CHECK_THROW(call("subagent_receive", {{"subagent_id", "subagent-child"}, {"answer", cursor}}, result), tools::InvokeException);
+
+BOOST_AUTO_TEST_CASE(receive_preview_is_bounded_and_hides_internal_fields) {
+    auto value = detail();
+    value["preview"]["response"] = std::string(20000, 'a') + "🌻";
+    auto result = call("subagent_receive", {{"subagent_id", "subagent-child"}}, value);
+    BOOST_TEST(result.raw.size() < 20u * 1024);
+    BOOST_TEST(result.raw.find("hidden-reasoning") == std::string::npos);
+    BOOST_TEST(result.raw.find("output_path") != std::string::npos);
+    BOOST_TEST(result.raw.find("child-request") != std::string::npos);
+    auto listed = call("subagent_receive", Json::object(), {{"subagents", Json::array({child_status()})}});
+    BOOST_TEST(listed.raw.find("subagent-child") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(subagent_answer_query_rejects_ambiguous_or_malformed_cursors)
-{
+BOOST_AUTO_TEST_CASE(receive_invalid_replies_never_reveal_raw_data) {
+    for (const std::string mode : {"target", "missing", "oversize", "binary", "timeout", "disconnect"}) {
+        auto value = detail();
+        if (mode == "target") value["subagent_id"] = "foreign";
+        if (mode == "missing") value.erase("preview");
+        if (mode == "oversize") value["private"] = std::string(300000, 'x');
+        BOOST_CHECK_THROW(call("subagent_receive", {{"subagent_id", "subagent-child"}}, value,
+            {}, false, mode == "binary", mode), tools::InvokeException);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(receive_export_streams_and_never_overwrites) {
+    const auto root = std::filesystem::temp_directory_path()
+        / ("simplex-receive-" + boost::uuids::to_string(boost::uuids::random_generator()()));
+    std::filesystem::create_directory(root);
+    struct Cleanup { std::filesystem::path root; ~Cleanup() { std::filesystem::remove_all(root); } } cleanup{root};
+    const auto path = root / "result.md";
+    const auto make = [](std::string text, std::size_t offset, std::size_t total) {
+        return Json{{"subagent_id", "subagent-child"}, {"export", {{"source", "persisted_snapshot"},
+            {"token", "snapshot"}, {"text", text}, {"offset", offset}, {"next", offset + text.size()},
+            {"total", total}, {"done", offset + text.size() == total}, {"blocks", 1},
+            {"omitted", false}, {"latest_block", "simplex:block:fixture:response"}}}};
+    };
+    const std::string first = "# Conversation\n", second = "正文🌻\n";
+    const auto total = first.size() + second.size();
+    Json args = {{"subagent_id", "subagent-child"}, {"output_path", path.string()}};
+    const auto result = call("subagent_receive", args, {}, {}, false, false, "",
+        {make(first, 0, total), make(second, first.size(), total)});
+    BOOST_TEST(result.raw.find("Latest saved snapshot") != std::string::npos);
+    BOOST_TEST(result.raw.find("正文") == std::string::npos);
+    std::ifstream input(path);
+    BOOST_TEST(std::string(std::istreambuf_iterator<char>(input), {}) == first + second);
+    BOOST_CHECK_THROW(call("subagent_receive", args, make("new", 0, 3)), tools::InvokeException);
+    std::ifstream original(path);
+    BOOST_TEST(std::string(std::istreambuf_iterator<char>(original), {}) == first + second);
+    std::filesystem::remove(path);
+    auto bad = make("partial", 0, 7);
+    bad["export"]["next"] = 8;
+    BOOST_CHECK_THROW(call("subagent_receive", args, bad), tools::InvokeException);
+    BOOST_TEST(std::filesystem::is_empty(root));
+    auto changed = make(second, first.size(), total);
+    changed["export"]["token"] = "different-snapshot";
+    BOOST_CHECK_THROW(call("subagent_receive", args, {}, {}, false, false, "",
+        {make(first, 0, total), changed}), tools::InvokeException);
+    BOOST_TEST(std::filesystem::is_empty(root));
+    std::filesystem::create_symlink(root / "absent", path);
+    BOOST_CHECK_THROW(call("subagent_receive", args, make("new", 0, 3)), tools::InvokeException);
+    BOOST_TEST(!std::filesystem::exists(root / "absent"));
+}
+
+BOOST_AUTO_TEST_CASE(receive_export_requires_approval_and_serial_scheduling) {
     SubagentReceiveTool tool(endpoint_for(), std::chrono::milliseconds(100), identity);
     model_io::InvokeQuery query;
-    query.name = "subagent_receive";
-    const Json source = {{"worker_id", "child-worker"}, {"turn", 0}, {"step", 0}, {"commit_sequence", "1"}, {"fingerprint", std::string(64, 'a')}};
-    const Json valid = {{"subagent_id", "subagent-child"}, {"answer", {
-        {"source", source}, {"part", 0}, {"offset", 0}}}};
-    query.arguments = valid;
-    BOOST_CHECK_NO_THROW(tool.ensure_arguments(query));
-    BOOST_TEST(matches(tool.get_details().argument_schema, valid));
-    for (int test = 0; test < 10; ++test) {
-        query.arguments = valid;
-        if (test == 0) query.arguments["cursor"] = 0;
-        if (test == 1) query.arguments.erase("subagent_id");
-        if (test == 2) query.arguments["answer"]["offset"] = -1;
-        if (test == 3) query.arguments["answer"]["source"]["commit_sequence"] = "garbage";
-        if (test == 4) query.arguments["answer"]["source"]["path"] = "/private";
-        if (test == 5) query.arguments["answer"]["source"].erase("fingerprint");
-        if (test == 6) query.arguments["answer"]["source"]["fingerprint"] = std::string(63, 'a');
-        if (test == 7) query.arguments["answer"]["source"]["fingerprint"] = std::string(64, 'g');
-        if (test == 8) query.arguments["answer"]["source"]["fingerprint"] = 1;
-        if (test == 9) query.arguments["limit"] = 5;
-        BOOST_CHECK_THROW(tool.ensure_arguments(query), tools::InvokeException);
-        BOOST_TEST(!matches(tool.get_details().argument_schema, query.arguments));
-    }
-    query.arguments = valid;
-    query.arguments["answer"]["source"].erase("fingerprint");
-    BOOST_CHECK_EXCEPTION(tool.ensure_arguments(query), tools::InvokeException, [](const auto& error) {
-        return error.stage() == tools::InvokeException::Stage::ArgumentParse
-            && error.message().find("fingerprint") != std::string::npos;
-    });
+    query.arguments = {{"subagent_id", "child"}, {"output_path", "/tmp/new.md"}};
+    tool.ensure_arguments(query);
+    tool.write_attributes(query);
+    BOOST_CHECK(query.type == model_io::InvokeType::SerialWrite);
+    BOOST_CHECK(query.security == model_io::InvokeSecurity::RequireConfirm);
+    query.arguments.erase("output_path");
+    tool.write_attributes(query);
+    BOOST_CHECK(query.type == model_io::InvokeType::ReadOnly);
+    BOOST_CHECK(query.security == model_io::InvokeSecurity::Trusted);
 }

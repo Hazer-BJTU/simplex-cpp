@@ -19,15 +19,14 @@ text: |
   no attachments are sent. The child has fresh conversation and
   memory; configured workspaces may still be shared. Coordinate shared-file edits.
   Continue useful work between snapshot queries; do not busy-poll. Use receive
-  without a target to discover direct children, or with subagent_id/cursor/limit
-  for status, recent outcomes and visible conversation. Match request IDs and
-  inspect run status, pending approvals and stale/incomplete/truncated flags.
-  If answer_source is present, read exact answer pages with subagent_receive:
-  answer: {source: answer_source, part: 0, offset: 0}. Continue with next_part and
-  next_offset; reset offset to 0 when the part advances. Stop on done. Match source
-  identity, the required fingerprint and byte offsets; copy the complete source
-  unchanged and refresh receive after a restart or expired source.
-  Turn cursors cannot retrieve a clipped answer suffix. Collect pages before stop.
+  without a target to discover direct children, or with subagent_id for status
+  and a bounded latest-reply preview. Match request IDs and check freshness flags.
+  For full saved dialogue, pass output_path to subagent_receive: a new Markdown
+  file on this worker host, with an existing parent directory. Export requires
+  confirmation and never overwrites a file. Search simplex:block: markers and
+  read nearby lines with available file tools. The saved snapshot may lag a
+  running child; reasoning, tool calls and compacted-away history are excluded.
+  Export before stopping the child, which removes its saved state.
   sent means queued, not completed; unknown means uncertain delivery. No RPC is
   retried automatically, and a repeated tool call has a fresh RPC ID. After a
   timeout/lost reply, receive before another mutation; recovery may be inconclusive.

@@ -18,7 +18,7 @@ namespace tools::intrinsic {
  */
 class SubagentToolBase : public HubRemoteCallToolBase {
 public:
-    /// Fork/send are SerialWrite; receive is ReadOnly. All are Trusted.
+    /// Fork/send are trusted SerialWrite; receive overrides attributes for export.
     void write_attributes(model_io::InvokeQuery& query) const override;
 
     /// Capture fresh host identity, perform one RPC, validate and format its result.
@@ -33,7 +33,7 @@ protected:
         std::chrono::milliseconds timeout,
         HubRemoteCallIdentityProvider identity);
 
-private:
+protected:
     const std::string route_;
     HubRemoteCallIdentityProvider identity_;
 };
@@ -73,14 +73,10 @@ public:
     void ensure_arguments(model_io::InvokeQuery& query) const override;
 };
 
-/**
- * List direct children with {}, or inspect one child's status/outcomes/history.
- * Targeted queries accept cursor (default 0) and limit (default 5, range 1..10).
- * Cursors address the Hub's current bounded projection; restart from zero when
- * its revision/worker changes. This is a snapshot with no polling or waiting.
- * Exact answer queries require all source fields, including the fingerprint.
- * Presentation counts actual structural overhead and reduces body allowances
- * only if needed; excessive structure is a read-only budget failure.
+/** List children, preview the latest reply, or export a saved dialogue snapshot.
+ * output_path selects an explicitly approved serial file write. Internal snapshot
+ * cursors never enter model arguments or rendered results. Each export owns one
+ * temporary file and publishes only after every page has been validated.
  */
 class SubagentReceiveTool final : public SubagentToolBase {
 public:
@@ -89,6 +85,8 @@ public:
         std::chrono::milliseconds timeout,
         HubRemoteCallIdentityProvider identity);
     void ensure_arguments(model_io::InvokeQuery& query) const override;
+    void write_attributes(model_io::InvokeQuery& query) const override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 };
 
 } // namespace tools::intrinsic

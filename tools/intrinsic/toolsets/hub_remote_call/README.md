@@ -78,40 +78,38 @@ declarations report partial availability without disabling unrelated tools.
   The tool converts request to one `{type: text, modality: text, raw: request}`
   part for the existing Hub route, without changing the recorded model call.
   Both the tool arguments and converted wire arguments must fit 64 KiB UTF-8.
-- `subagent_receive({})` lists direct children. With `subagent_id`, optional
-  cursor (default 0) and limit (default 5, 1–10), it returns a snapshot of status,
-  latest request outcomes and one primary-conversation page. It does not wait.
-  A displayed assistant step's `answer_source` is a read-only source. Pass
-  `answer: {source, part: 0, offset: 0}` with `subagent_id` (no cursor/limit) to
-  retrieve exact text in 32 KiB UTF-8 segments. Follow `next_part`/`next_offset`,
-  resetting offset to zero on a new part, until `done`. These pages bypass the
-  96 KiB presentation clip. Source identity and offsets are checked; disconnect,
-  restart, compaction or stop can make a source unavailable. Read answers before
-  stopping the child; no generic URL/filesystem download is used.
+- `subagent_receive({})` lists direct children (up to 32 per display). With
+  `subagent_id`, it returns status, the latest request outcome and a 16 KiB UTF-8
+  preview of the latest visible reply. It does not wait for completion.
+- Add `output_path` to export the latest persisted primary dialogue as Markdown
+  on the parent worker host. The parent directory must exist; relative paths use
+  the worker's current directory. Existing entries, including symlinks, are never
+  overwritten. Export is SerialWrite + RequireConfirm; preview/list remain
+  ReadOnly + Trusted. Fork/send remain SerialWrite + Trusted.
 
-Fork/send are SerialWrite and receive is ReadOnly. All are Trusted; child tool
-approvals keep the independent user-owned policy. Ownership is enforced by the
-Hub against the fresh worker/run identity. No caller IDs, arbitrary routes,
-launcher settings or confirmation policy are accepted as model arguments.
+Only user text/reference content and visible model responses are exported. No
+reasoning, tool calls/results, system instructions or arbitrary extras are copied.
+The document includes a contents list and unique ASCII `simplex:block:` begin/end
+markers. The tool returns the path, size, block count and latest response marker,
+not the document body. It explicitly identifies the source as a saved snapshot:
+running work may not yet be saved, and compacted-away history is absent.
 
-Outputs use plain intrinsic metadata and readable content blocks. They retain
-request/operation IDs, truthful dispatch/run states, visible turn/step association,
-pagination and history completeness/freshness flags. Response diagnostics and
-conversation bodies are clipped on UTF-8 boundaries with `output_truncated`;
-bodies share up to 96 KiB and the rendered document cannot exceed 256 KiB.
-The initial presentation counts actual labels, separators and clipping annotations,
-preserving short-part pages that fit. Only an oversized presentation reduces the
-body allowance in bounded local passes over the same reply; no RPC is repeated.
-Exact answer pages do not use this clipping fallback. Each turn's latest nonempty assistant
-step and compact summaries share space first, then older assistant steps and
-user input use the remainder. Display stays chronological, with original indices
-and explicit clipping markers even for bodies omitted entirely. If the prioritized
-result bodies together exceed the budget, they are also clipped.
-If structural overhead exhausts the presentation budget, receive reports a budget
-failure with a smaller-page/exact-answer hint. Invalid replies and read transport
-failures have separate diagnostics; only fork/send failures warn that a mutation
-may have committed. An expired answer source requires refreshing receive and
-copying the complete current source, including its mandatory fingerprint.
+Hub obtains a complete backend-neutral state through the managed launcher. An
+immutable Markdown snapshot is transferred in 32 KiB UTF-8 pages; its cursors are
+internal and never model arguments. The Hub retains at most two snapshots or
+pending reads, each up to 64 MiB, for 120 seconds. Oversized exports fail explicitly
+rather than silently truncating answers. Each page reauthorizes the active parent
+run and direct-child relationship. Export requires managed persistence; no fallback
+to truncated display history or local Hub filesystem reads is used.
+
+The worker writes each page on a file worker thread, validating snapshot identity,
+byte offsets and stable metadata. Only a complete transfer is synchronized and
+atomically published with no overwrite. Failures remove temporary data; a directory
+sync error after publication explicitly reports uncertain durability. Tool execution
+shields inherited cancellation through this publication boundary, consistent with
+other side-effectful tools. Hard process termination can leave a private temporary
+file named `.simplex-export-*`. No automatic RPC retry is performed.
+
 Unknown future fields are ignored rather than blindly returned. Child text is
 untrusted data, not instructions for the parent.
 
@@ -124,6 +122,5 @@ An older Hub can reject these tools as `not_implemented` while plan continues wo
 Every invocation generates a fresh RPC ID. There is no retry/polling/destructor
 cleanup and no exactly-once promise for repeated tool calls. A lost response may
 follow a committed mutation; list/receive before repeating, and report ambiguity
-when bounded outcome retention prevents correlation. Receive cursors address the
-current bounded turn array, not original worker turn IDs; reset to zero on a
-revision/worker change. See [the full lifecycle contract](../../../../docs/hub/subagents.md).
+when bounded outcome retention prevents correlation. Model-facing receive has
+no pagination fields; the older wire pagination remains available for older workers. See [the full lifecycle contract](../../../../docs/hub/subagents.md).

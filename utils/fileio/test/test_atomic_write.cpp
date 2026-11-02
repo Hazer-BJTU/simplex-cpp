@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "fileio/atomic_write.hpp"
+#include "fileio/new_file.hpp"
 
 #include <filesystem>
 #include <fcntl.h>
@@ -169,4 +170,32 @@ BOOST_FIXTURE_TEST_CASE(staged_write_defers_publication_and_cleans_abandoned_fil
     BOOST_TEST(read("memory.md") == std::string(128 * 1024, 'S'));
     BOOST_TEST(static_cast<unsigned>(fs::status(file).permissions() & fs::perms::all) == 0600u);
     no_temporary_files();
+}
+
+BOOST_AUTO_TEST_CASE(new_file_streams_without_overwriting_and_cleans_failed_candidates) {
+    Scratch scratch;
+    {
+        fileio::NewFile file(scratch.root / "result.md");
+        file.append("first\n");
+        file.append("second 🌻\n");
+        BOOST_TEST(!fs::exists(scratch.root / "result.md"));
+        file.publish();
+        BOOST_CHECK_THROW(file.publish(), std::logic_error);
+    }
+    BOOST_TEST(scratch.read("result.md") == "first\nsecond 🌻\n");
+    {
+        fileio::NewFile file(scratch.root / "race.md");
+        file.append("candidate");
+        std::ofstream(scratch.root / "race.md") << "concurrent writer";
+        BOOST_CHECK_EXCEPTION(file.publish(), fileio::AtomicWriteError,
+            [](const auto& error) { return !error.published(); });
+    }
+    BOOST_TEST(scratch.read("race.md") == "concurrent writer");
+    {
+        fileio::NewFile file(scratch.root / "failed.md");
+        file.append("incomplete");
+    }
+    BOOST_TEST(!fs::exists(scratch.root / "failed.md"));
+    for (const auto& entry : fs::directory_iterator(scratch.root))
+        BOOST_TEST(!entry.path().filename().string().starts_with(".simplex-export-"));
 }

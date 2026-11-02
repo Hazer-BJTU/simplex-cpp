@@ -1,4 +1,7 @@
 import type { RecoveryStatus, RecoveryState } from '../../ui/rest.ts';
+import { receivePreview } from './receive-preview.ts';
+import { ReceiveExports } from './receive-export.ts';
+import { readManagedState } from '../launch/managed-sessions.ts';
 import { readAnswer } from '../worker/answers.ts';
 import { answerQuery } from '../../shared/answers.ts';
 /** Session-level family supervisor and the fixed subagent remote operations. */
@@ -94,6 +97,7 @@ export interface SubagentServiceOptions {
  */
 export class SubagentService {
     readonly children = new Map<string, ChildRecord>();
+    private readonly receiveExports = new ReceiveExports();
     private operations = new Map<string, Operations>();
     /** Failed synchronous publications stay dirty until a later successful write. */
     private readonly dirtyOperations = new Set<string>();
@@ -371,14 +375,55 @@ export class SubagentService {
 
     private receive(context: ToolContext): Record<string, unknown> | Promise<Record<string, unknown>> {
         const args = context.request.arguments;
-        exact(args, ['subagent_id', 'cursor', 'limit', 'answer']);
+        exact(args, ['subagent_id', 'cursor', 'limit', 'answer', 'view', 'export']);
         if (args.subagent_id === undefined) {
+            if (args.export !== undefined) throw new ToolFailure('invalid_arguments', 'export requires a target');
+            if (args.view !== undefined && args.view !== 'preview') throw new ToolFailure('invalid_arguments', 'unknown receive view');
             if (args.cursor !== undefined || args.limit !== undefined || args.answer !== undefined) throw new ToolFailure('invalid_arguments', 'pagination requires a target');
             return { subagents: [...this.children.values()].filter(record =>
                 record.parent.session_id === context.caller.id && record.parent.lifecycle_id === context.caller.lifecycleId
                 && record.parent.worker_id === context.request.worker_id).map(record => this.status(record)) };
         }
         const record = this.child(context, args.subagent_id);
+        if (args.view !== undefined || args.export !== undefined) {
+            if (args.cursor !== undefined || args.limit !== undefined || args.answer !== undefined
+                || (args.view !== undefined && args.export !== undefined))
+                throw new ToolFailure('invalid_arguments', 'receive modes cannot be combined');
+            if (args.view !== undefined) {
+                if (args.view !== 'preview') throw new ToolFailure('invalid_arguments', 'unknown receive view');
+                const last = (this.operations.get(record.session.id) ?? this.ops(record.session)).requests.at(-1);
+                return { ...this.status(record), preview: receivePreview(record.conversation?.value ?? null,
+                    last?.operation === 'compact' && last.state === 'finished' && typeof last.summary === 'string'
+                        ? { request_id: last.request_id, summary: last.summary } : undefined),
+                    latest_request: last ? { request_id: last.request_id, operation: last.operation,
+                        state: last.state, status: last.status ?? null } : null };
+            }
+            if (!args.export || typeof args.export !== 'object' || Array.isArray(args.export))
+                throw new ToolFailure('invalid_arguments', 'invalid export request');
+            const options = args.export as Record<string, unknown>;
+            exact(options, ['token', 'offset']);
+            const childLifecycle = record.session.lifecycleId;
+            const validate = (): void => {
+                context.validate();
+                if (this.child(context, args.subagent_id) !== record || record.removed || record.session.closing
+                    || record.session.lifecycleId !== childLifecycle)
+                    throw new ToolFailure('export_unavailable', 'child lifecycle is stopping or changed');
+            };
+            validate();
+            const owner = JSON.stringify([context.caller.id, context.caller.lifecycleId,
+                context.request.worker_id, context.request.run_id, record.session.id, record.session.lifecycleId]);
+            const wrap = (page: Record<string, unknown>): Record<string, unknown> => ({ subagent_id: record.session.id, export: page });
+            if (Object.keys(options).length) {
+                if (!('token' in options) || !('offset' in options)) throw new ToolFailure('invalid_arguments', 'incomplete export cursor');
+                return wrap(this.receiveExports.page(owner, options));
+            }
+            return this.receiveExports.start(owner, async () => {
+                const managed = readManagedSession(this.options.config, record.session.id);
+                if (!managed) throw new ToolFailure('snapshot_unavailable', 'child has no managed persistence');
+                try { return (await readManagedState(managed)).state; }
+                catch { throw new ToolFailure('snapshot_unavailable', 'could not read saved child conversation'); }
+            }, validate).then(wrap);
+        }
         if (args.answer !== undefined) {
             if (args.cursor !== undefined || args.limit !== undefined) throw new ToolFailure('invalid_arguments', 'answer cannot carry turn pagination');
             if (!answerQuery(args.answer)) throw new ToolFailure('invalid_arguments',
@@ -1017,6 +1062,7 @@ export class SubagentService {
     /** Freeze before shutdown; timers cannot recreate a deleted directory. */
     async shutdown(): Promise<void> {
         this.closing = true;
+        this.receiveExports.close();
         if (this.retryTimer) clearInterval(this.retryTimer);
         this.retryTimer = null;
         for (const session of this.options.registry.list()) session.closing = true;

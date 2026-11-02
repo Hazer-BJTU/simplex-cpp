@@ -844,3 +844,20 @@ it('retrieves every large child answer part through authorized parent pages and 
     assert.equal((await rpc(ctx, 'subagent/receive', { subagent_id: ctx.parent.id,
         answer: { source, part: 0, offset: 0 } })).error.code, 'unauthorized');
 });
+
+it('model receive preview hides pagination and saved export remains direct-child authorized', async () => {
+    const ctx = await setup();
+    const { id } = await fork(ctx);
+    const preview = await rpc(ctx, 'subagent/receive', { subagent_id: id, view: 'preview' });
+    assert.equal(preview.status, 'succeeded');
+    assert.equal(typeof preview.result.preview.response, 'string');
+    assert.ok(!('conversation' in preview.result));
+    assert.ok(!('answer_source' in preview.result.preview));
+    const other = await rpc(ctx, 'subagent/receive', { subagent_id: 'not-a-child', export: {} });
+    assert.equal(other.status, 'rejected');
+    const mixed = await rpc(ctx, 'subagent/receive', { subagent_id: id, view: 'preview', cursor: 0 });
+    assert.equal(mixed.status, 'rejected');
+    const foreign = await rpc(ctx, 'subagent/receive', { subagent_id: id, export: { token: 'foreign', offset: 0 } });
+    assert.equal(foreign.status, 'rejected');
+    assert.equal(foreign.error.code, 'export_expired');
+});
