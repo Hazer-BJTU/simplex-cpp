@@ -166,7 +166,7 @@ async function archiveFixture(root) {
     for (const folder of ['bin/prompts/operations', 'bin/schemas/process', 'bin/plugins/llm', 'lib', 'third_party_licenses']) {
         await mkdir(join(tree, folder), { recursive: true });
     }
-    for (const file of ['bin/config.example.yaml', 'bin/prompts/coding_agent.yaml', 'bin/prompts/operations/compact.yaml',
+    for (const file of ['bin/config.example.yaml', 'bin/prompts/default.yaml', 'bin/prompts/operations/compact.yaml',
         'bin/schemas/process/skill.yaml', ...['run_command', 'spawn_process', 'read_process', 'send_process', 'poll_process']
             .map(tool => `bin/schemas/process/${tool}.yaml`), 'bin/plugins/llm/libllm_fixture.so', 'lib/runtime.so', 'LICENSE', 'README.md']) {
         await writeFile(join(tree, file), 'fixture');

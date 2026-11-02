@@ -196,7 +196,7 @@ guarantee.
   config.example.yaml
   config.yaml                  # operator-owned copy
   prompts/
-    coding_agent.yaml         # default prompt for new sessions
+    default.yaml              # default prompt for new sessions
   plugins/
     llm/
     tools/
@@ -470,13 +470,13 @@ persistence APIs do not interpret YAML.
 
 ## System prompt files
 
-The default file is maintained in `core/prompts/coding_agent.yaml` and exported
-as `<build>/bin/prompts/coding_agent.yaml` and
-`<prefix>/bin/prompts/coding_agent.yaml`. The startup template selects it using:
+The default file is maintained in `core/prompts/default.yaml` and exported
+as `<build>/bin/prompts/default.yaml` and
+`<prefix>/bin/prompts/default.yaml`. The startup template selects it using:
 
 ```yaml
 worker:
-  system_prompt_file: prompts/coding_agent.yaml
+  system_prompt_file: prompts/default.yaml
 ```
 
 A configured path is relative to the **installation directory**, the directory
@@ -484,7 +484,7 @@ holding the running executable, and not to the configuration file. One spelling
 therefore names the same prompt whatever directory a session keeps its generated
 configuration in, and a configuration copied from another machine still reads
 that machine's installed worker. If the field is omitted, the loader reads
-`<executable_dir>/prompts/coding_agent.yaml`. Missing files fail startup; there
+`<executable_dir>/prompts/default.yaml`. Missing files fail startup; there
 is no embedded text fallback. The old inline `worker.system_prompt` field is
 rejected with a migration error. Plugin-only loading APIs do not read prompt
 files.
@@ -494,7 +494,7 @@ A path is refused when it is empty, contains a NUL, is rooted, or contains a
 host's alone, because a configuration written on one platform is read on the
 other: a leading `/` or `\`, and a drive letter with or without a following
 separator (`C:\x` and `C:x`), are all rejected on every platform, while
-`prompts\coding_agent.yaml` is a relative path — a Windows build resolves it as
+`prompts\default.yaml` is a relative path — a Windows build resolves it as
 two components and a POSIX build reads the backslash as an ordinary filename
 character, which is the filesystem's business, not this check's.
 

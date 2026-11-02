@@ -89,7 +89,7 @@ security:
 worker:
   event_capacity: 1024
   max_exchanges: 512
-  system_prompt_file: prompts/coding_agent.yaml
+  system_prompt_file: prompts/default.yaml
 persistence:
   enabled: true
   directory: ./data/session
@@ -121,7 +121,7 @@ letter with or without a separator), because the file may be written on one
 platform and read on another. Containment is lexical, not a sandbox: symlinks
 are not resolved, so a link below the installation directory points wherever it
 points.
-Omitting it reads `prompts/coding_agent.yaml` beside the executable. The file is
+Omitting it reads `prompts/default.yaml` beside the executable. The file is
 validated at startup, including when restoring a session; missing or malformed
 files fail startup. Restored sessions retain their stored prompt. Current tool
 skills and configured `worker.environment` hints are refreshed in both cases.

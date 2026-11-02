@@ -20,7 +20,7 @@ function fixture(t) {
     };
     write('simplex_worker', '#!/bin/sh\nexit 0\n');
     chmodSync(worker, 0o755);
-    write('prompts/coding_agent.yaml');
+    write('prompts/default.yaml');
     const runtime = [
         'prompts/operations/compact.yaml', 'prompts/operations/auto_compact.yaml',
         'prompts/operations/auto_compact_continue.yaml', 'plugins/llm/libllm_deepseek.so',
@@ -44,13 +44,13 @@ test('missing and non-executable workers are unavailable even in local mode', (t
 test('strict CI validates every required runtime input; local mode can still skip', (t) => {
     const f = fixture(t);
     assert.equal(workerUnavailableReason(f.worker, { required: true }), null);
-    for (const path of ['prompts/coding_agent.yaml', ...f.runtime]) {
+    for (const path of ['prompts/default.yaml', ...f.runtime]) {
         rmSync(join(f.bin, path));
         assert.match(workerUnavailableReason(f.worker, { required: true }), /prerequisite/);
         f.write(path);
     }
-    rmSync(join(f.bin, 'prompts/coding_agent.yaml'));
-    mkdirSync(join(f.bin, 'prompts/coding_agent.yaml'));
+    rmSync(join(f.bin, 'prompts/default.yaml'));
+    mkdirSync(join(f.bin, 'prompts/default.yaml'));
     assert.match(workerUnavailableReason(f.worker), /not a regular file/);
 });
 
@@ -71,14 +71,14 @@ test('helper import skips locally but throws in strict CI instead of marking the
         env: { ...process.env, SIMPLEX_WORKER_BIN: f.worker,
             SIMPLEX_E2E_REQUIRED: required ? '1' : '0' },
     });
-    rmSync(join(f.bin, 'prompts/coding_agent.yaml'));
+    rmSync(join(f.bin, 'prompts/default.yaml'));
     const local = check(false);
     assert.equal(local.status, 0, local.stderr);
     assert.match(local.stdout, /real worker unavailable/);
     const required = check(true);
     assert.notEqual(required.status, 0);
     assert.match(required.stderr, /Required real-worker E2E unavailable/);
-    f.write('prompts/coding_agent.yaml');
+    f.write('prompts/default.yaml');
     const available = check(true);
     assert.equal(available.status, 0, available.stderr);
     assert.equal(available.stdout.trim(), 'false');

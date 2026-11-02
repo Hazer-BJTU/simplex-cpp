@@ -26,7 +26,7 @@
 #   <prefix>/bin/plugins/tools/   dlopen'd toolset modules
 #   <prefix>/bin/plugins/loop/    dlopen'd loop-hook modules
 #   <prefix>/bin/schemas/         editable intrinsic and extension configuration
-#   <prefix>/bin/prompts/         role prompts (coding_agent, general_agent)
+#   <prefix>/bin/prompts/         default system prompt
 #   <prefix>/bin/prompts/operations/ compact and automatic-continuation prompts
 #   <prefix>/bin/config.example.yaml editable startup template
 #   <prefix>/lib/                 project shared libraries + bundled runtime

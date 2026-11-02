@@ -310,7 +310,7 @@ from old files but ignored and omitted from newly generated state/configuration.
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.args`, `worker.connectHost` | `[]`, `""` | direct-binary flags and a host reachable from workers; empty host derives from the listener |
-| `worker.systemPromptFile` | `prompts/coding_agent.yaml` | default prompt for new sessions, relative to the worker's installation directory |
+| `worker.systemPromptFile` | `prompts/default.yaml` | default prompt for new sessions, relative to the worker's installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
 | `worker.autoCompactThreshold` | `0` | last-exchange total-token threshold; zero disables automatic compact; when enabled, exchange-limit exhaustion also triggers it |
 | `worker.maxAutoCompactions` | `5` | maximum successful automatic compactions per user request; positive integer |

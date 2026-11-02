@@ -171,7 +171,7 @@ Most messages embed this object, produced by `Session.describe()`:
   "spec": {
     "provider": "mock", "model": "", "threads": 1, "maxExchanges": 512,
     "autoCompactThreshold": 0, "maxAutoCompactions": 5,
-    "systemPromptFile": "prompts/coding_agent.yaml",
+    "systemPromptFile": "prompts/default.yaml",
     "workspace": "", "platform": "", "software": [],
     "persistence": {"enabled": true, "readable": false}, "restore": "if_present",
     "env": {}, "extraArgs": []

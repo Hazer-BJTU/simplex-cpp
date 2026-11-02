@@ -321,7 +321,7 @@ Configuration parse_configuration(
         throw std::invalid_argument("worker.system_prompt is no longer supported; use system_prompt_file");
     }
     result.system_prompt = read_system_prompt(
-        installed_file(worker, "system_prompt_file", installation, "prompts/coding_agent.yaml"));
+        installed_file(worker, "system_prompt_file", installation, "prompts/default.yaml"));
     const auto compact_file = installed_file(
         worker, "compact_prompt_file", installation, "prompts/operations/compact.yaml");
     result.compact_prompt = read_system_prompt(compact_file).render().markdown;

@@ -18,7 +18,7 @@ test('glibc packaging and extracted-archive checks reject missing/empty provider
     // Executable placeholders satisfy layout checks; native/package validation
     // runs the real manager protocol separately, without --layout-only.
     for (const name of ['simplex', 'simplex_worker', 'simplex_manager']) copyFileSync('/bin/true', join(stage, 'bin', name));
-    writeFileSync(join(stage, 'bin/prompts/coding_agent.yaml'), 'fixture');
+    writeFileSync(join(stage, 'bin/prompts/default.yaml'), 'fixture');
     writeFileSync(join(stage, 'bin/schemas/process/skill.yaml'), 'fixture');
     const output = join(root, 'output');
     const pack = () => execFileSync('bash', [join(repo, 'docker/package-worker-release.sh'), stage, output], { encoding: 'utf8', stdio: 'pipe' }).trim();

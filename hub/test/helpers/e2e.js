@@ -23,7 +23,7 @@ export const WORKER_BIN = process.env.SIMPLEX_WORKER_BIN
     ?? join(repoRoot, 'build', 'bin', 'simplex_worker');
 
 /** The default role prompt, which the worker reads beside its own executable. */
-export const PROMPT_FILE = join(dirname(WORKER_BIN), 'prompts', 'coding_agent.yaml');
+export const PROMPT_FILE = join(dirname(WORKER_BIN), 'prompts', 'default.yaml');
 
 const required = process.env.SIMPLEX_E2E_REQUIRED === '1';
 const unavailable = workerUnavailableReason(WORKER_BIN, { required });

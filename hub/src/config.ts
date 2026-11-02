@@ -163,7 +163,7 @@ export function defaultConfig(): HubConfig {
             // Empty means "derive it from the listener": loopback, or the host
             // it is bound to.
             connectHost: '',
-            systemPromptFile: 'prompts/coding_agent.yaml',
+            systemPromptFile: 'prompts/default.yaml',
             maxExchanges: 512,
             autoCompactThreshold: 0,
             maxAutoCompactions: 5,

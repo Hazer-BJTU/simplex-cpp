@@ -32,7 +32,7 @@
         "connectHost": "",
         // Relative to the worker's installation directory, which is where the
         // worker looks for it; the hub never rewrites it into a local path.
-        "systemPromptFile": "prompts/coding_agent.yaml",
+        "systemPromptFile": "prompts/default.yaml",
         "threads": 1,
         "maxExchanges": 512,
         // Zero disables automatic compact. A positive last-exchange token

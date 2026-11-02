@@ -37,7 +37,7 @@ describe('normalizeSpec', () => {
         assert.equal(spec.maxExchanges, 512);
         assert.equal(spec.persistence.enabled, true);
         assert.equal(spec.restore, 'if_present');
-        assert.equal(spec.systemPromptFile, 'prompts/coding_agent.yaml');
+        assert.equal(spec.systemPromptFile, 'prompts/default.yaml');
     });
 
     it('keeps a prompt path relative to the worker installation', () => {
@@ -48,7 +48,7 @@ describe('normalizeSpec', () => {
         // The worker refuses rooted paths and parent traversal, so the hub
         // refuses them at the spec layer rather than failing a spawn later.
         for (const rejected of [
-            '/tmp/agent.yaml', '../coding_agent.yaml',
+            '/tmp/agent.yaml', '../default.yaml',
             'prompts/../../outside.yaml', '', 7,
             '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml',
         ]) {

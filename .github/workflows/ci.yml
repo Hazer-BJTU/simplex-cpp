@@ -404,7 +404,7 @@ jobs:
 
       - name: Assert the release carries the default role prompt
         run: |
-          test -s stage/bin/prompts/coding_agent.yaml
+          test -s stage/bin/prompts/default.yaml
           test -s stage/bin/prompts/operations/compact.yaml
           test -s stage/bin/prompts/operations/auto_compact.yaml
           test -s stage/bin/prompts/operations/auto_compact_continue.yaml
@@ -722,7 +722,7 @@ jobs:
       - name: Verify executable-relative default prompt in the installed tree
         run: |
           set -euo pipefail
-          test -s stage/bin/prompts/coding_agent.yaml
+          test -s stage/bin/prompts/default.yaml
           test -s stage/bin/prompts/operations/compact.yaml
           test -s stage/bin/prompts/operations/auto_compact.yaml
           test -s stage/bin/prompts/operations/auto_compact_continue.yaml

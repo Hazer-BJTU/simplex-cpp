@@ -1,18 +1,21 @@
-# Role-based worker prompts
+# Worker system prompts
 
-Each YAML filename identifies a role. `coding_agent.yaml` provides the concise,
-general-purpose coding agent and is the default for new worker sessions.
-`general_agent.yaml` provides a general-purpose role with guidance on communication,
-task planning, requirement clarification, privacy and safety. CMake copies both
-roles to `bin/prompts/` and installs them in the same location relative to the
-installation prefix. No prompt text is embedded in the worker.
+`default.yaml` is the shared default for all new worker sessions, including coding
+and general-purpose tasks. It defines the role, language style, task execution,
+privacy, and safety guidance. CMake copies and installs it under `bin/prompts/`.
+No prompt text is embedded in the worker.
 
-Select the general-purpose role in the startup YAML:
+The startup YAML can explicitly select the default, or omit this field:
 
 ```yaml
 worker:
-  system_prompt_file: prompts/general_agent.yaml
+  system_prompt_file: prompts/default.yaml
 ```
+
+The former `coding_agent.yaml` and `general_agent.yaml` files are no longer shipped.
+Update existing configurations that explicitly select either old path to
+`prompts/default.yaml`, or remove the setting. Restored snapshots retain their
+saved base prompt; changing the configured file affects new sessions.
 
 Select a custom file through `worker.system_prompt_file` in the startup YAML.
 Relative paths are resolved against the executable's own directory, the

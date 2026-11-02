@@ -145,7 +145,7 @@ describe('validateConfig', () => {
         // Rooted in either grammar: the hub may be preparing a configuration for
         // a worker on another OS, so a leading backslash and a drive letter are
         // refused here even though this host would read them as a filename.
-        for (const rejected of ['', '/srv/prompts/coding_agent.yaml', '../coding_agent.yaml',
+        for (const rejected of ['', '/srv/prompts/default.yaml', '../default.yaml',
             'prompts/../../outside.yaml', 7,
             '\\rooted\\prompt.yaml', 'C:\\absolute\\prompt.yaml', 'C:prompt.yaml',
             '..\\outside.yaml', 'prompts\\..\\..\\outside.yaml']) {
@@ -153,8 +153,8 @@ describe('validateConfig', () => {
             assert.throws(() => validateConfig(config), /systemPromptFile/);
         }
         // Backslash spellings are relative paths, not traversal.
-        for (const accepted of ['prompts/coding_agent.yaml', 'prompts\\coding_agent.yaml',
-            '.\\prompts\\coding_agent.yaml']) {
+        for (const accepted of ['prompts/default.yaml', 'prompts\\default.yaml',
+            '.\\prompts\\default.yaml']) {
             config.worker.systemPromptFile = accepted;
             assert.doesNotThrow(() => validateConfig(config));
         }

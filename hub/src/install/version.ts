@@ -59,7 +59,7 @@ export async function validateTree(directory: string, platform: WorkerPlatform):
     ] : [];
     for (const file of [
         'bin/simplex', 'bin/simplex_worker', 'bin/simplex_manager', 'bin/config.example.yaml',
-        'bin/prompts/coding_agent.yaml', 'bin/prompts/operations/compact.yaml',
+        'bin/prompts/operations/compact.yaml',
         'bin/schemas/process/skill.yaml', 'bin/schemas/process/run_command.yaml',
         'bin/schemas/process/spawn_process.yaml', 'bin/schemas/process/read_process.yaml',
         'bin/schemas/process/send_process.yaml', 'bin/schemas/process/poll_process.yaml',
@@ -67,6 +67,15 @@ export async function validateTree(directory: string, platform: WorkerPlatform):
     ]) {
         const stat = await lstat(join(directory, file));
         if (!stat.isFile() || stat.size === 0) throw new Error(`Missing required worker file: ${file}`);
+    }
+    // Historical releases shipped coding_agent.yaml; new packages use default.yaml.
+    // Only absence permits the legacy fallback, never a malformed new template.
+    const prompt = await lstat(join(directory, 'bin/prompts/default.yaml')).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return lstat(join(directory, 'bin/prompts/coding_agent.yaml'));
+    });
+    if (!prompt.isFile() || prompt.size === 0) {
+        throw new Error('Missing required worker system prompt');
     }
     const platformExecutables = platform === 'linux-amd64-bundled'
         ? ['bin/simplex_worker.bin', 'lib/ld-musl-x86_64.so.1'] : [];
