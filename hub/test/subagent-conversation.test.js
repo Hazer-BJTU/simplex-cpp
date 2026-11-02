@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
 import { Session } from '../src/state/registry.ts';
+import { receivePreview } from '../src/subagents/receive-preview.ts';
 import { ConversationProjection } from '../src/subagents/conversation.ts';
 import { until } from './helpers/worker.js';
 const part = raw => ({ type: 'text', modality: 'text', raw });
@@ -316,4 +317,81 @@ it('preserves a large answer source through projection storage and restore rathe
     t.after(() => restored.stop());
     assert.deepEqual(restored.value.turns[0].steps[0].answer_source, source);
     assert.deepEqual(restored.value.turns[0].steps[0].content, parts);
+});
+
+it('attributes continue responses per step through live events, history and persistence', async t => {
+    const { view, sent, page, session, connection, path } = await projection(t);
+    page({ total: 0, next: 0 });
+    const execution = request => ({ worker_id: 'worker', request_id: request, run_id: `run-${request}` });
+    function event(name, request, data = {}) {
+        view.event({ event: name, ...execution(request), data }, connection);
+    }
+    session.requests.set('A', { operation: 'message' });
+    session.activeRunId = 'run-A';
+    view.trackInput('A', [part('goal')]);
+    event('input_committed', 'A');
+    event('model_response', 'A', { content: [part('answer A')] });
+    assert.equal(receivePreview(view.value).request_id, 'A');
+
+    session.requests.set('B', { operation: 'continue' });
+    session.activeRunId = 'run-B';
+    event('input_committed', 'B');
+    assert.equal(view.value.turns.length, 1);
+    assert.equal(receivePreview(view.value).request_id, 'A');
+    event('model_response', 'B', { content: [] });
+    assert.equal(receivePreview(view.value).response, 'answer A');
+    assert.equal(receivePreview(view.value).request_id, 'A');
+    event('model_response', 'B', { content: [part('answer B')] });
+    assert.equal(receivePreview(view.value).request_id, 'B');
+    assert.equal(view.value.turns[0].request_id, 'A');
+
+    const restored = () => {
+        assert.equal(view.flush(), true);
+        const copy = new ConversationProjection(session, path, 4096);
+        try {
+            assert.equal(receivePreview(copy.value).response, 'answer B');
+            assert.equal(receivePreview(copy.value).request_id, 'B');
+            assert.deepEqual(copy.value.turns[0].steps.at(-1).execution, execution('B'));
+            assert.ok(!JSON.stringify(copy.value).includes('PRIVATE'));
+        } finally { copy.stop(); }
+    };
+    restored();
+    session.activeRunId = '';
+    event('run_finished', 'B');
+    await until(() => sent.length === 2);
+    page({ next: 0, next_step: 1, turns: [{ index: 0, user: [part('goal')], steps: [
+        { index: 0, content: [part('answer A')], execution: execution('A') },
+    ] }] });
+    page({ turns: [{ index: 0, user: [part('goal')], steps: [
+        { index: 1, content: [], execution: execution('B') },
+        { index: 2, content: [part('answer B')], execution: { ...execution('B'), private: 'PRIVATE' } },
+    ] }] });
+    assert.equal(view.value.stale, false);
+    assert.equal(view.value.incomplete, false);
+    assert.equal(receivePreview(view.value).request_id, 'B');
+    restored();
+});
+
+it('drops malformed persisted response provenance rather than using a turn identity', async t => {
+    const { view, page, session, path } = await projection(t);
+    page({ turns: [{ index: 0, user: [part('goal')], steps: [
+        { index: 0, content: [part('answer')], execution: { worker_id: 'worker', request_id: 'A' } },
+    ] }] });
+    assert.equal(receivePreview(view.value).request_id, undefined);
+    assert.equal(view.flush(), true);
+    const copy = new ConversationProjection(session, path, 4096);
+    try { assert.equal(receivePreview(copy.value).request_id, undefined); }
+    finally { copy.stop(); }
+});
+
+it('canonical history keeps the older visible response identity when continue has no visible reply', async t => {
+    const { view, page } = await projection(t);
+    page({ turns: [{ index: 0, request_id: 'unrelated-turn-id', user: [part('goal')], steps: [
+        { index: 0, content: [part('answer A')], execution: { worker_id: 'worker', request_id: 'A', run_id: 'run-A' } },
+        { index: 1, content: [], execution: { worker_id: 'worker', request_id: 'B', run_id: 'run-B' } },
+    ] }] });
+    assert.equal(view.value.stale, false);
+    assert.equal(view.value.incomplete, false);
+    assert.equal(receivePreview(view.value).response, 'answer A');
+    assert.equal(receivePreview(view.value).request_id, 'A');
 });

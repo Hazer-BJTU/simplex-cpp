@@ -15,7 +15,7 @@ export function receivePreview(conversation: Conversation | null,
     const turn = conversation?.turns.at(-1);
     const step = turn?.steps.findLast(item => item.content.some(part => part.raw.length > 0));
     const parts = compact ? [{ type: 'text', modality: 'text', raw: compact.summary }] : step?.content ?? [];
-    const requestId = compact?.request_id ?? turn?.request_id;
+    const requestId = compact?.request_id ?? step?.execution?.request_id;
     let remaining = 16 * 1024;
     let truncated = false;
     const text: string[] = [];

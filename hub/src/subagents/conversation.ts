@@ -6,6 +6,8 @@ import type { ForwardedEnvelope, WorkerConnection } from '../worker/connection.t
 import { readPrivate, writePrivate } from './storage.ts';
 import { ProjectionFlush } from './projection-flush.ts';
 
+/** Provenance of one committed response, independent of its containing user turn. */
+interface ResponseExecution { worker_id: string; request_id: string; run_id: string }
 export interface DialoguePart { type: string; modality: string; raw: string; truncated?: boolean; bytes?: number }
 export interface DialogueTurn {
     index: number;
@@ -13,7 +15,7 @@ export interface DialogueTurn {
     internal_input?: 'auto_compact_continue';
     source?: { worker_id: string; request_id: string; run_id: string };
     user: DialoguePart[];
-    steps: { index: number; content: DialoguePart[]; answer_source?: AnswerSource }[];
+    steps: { index: number; content: DialoguePart[]; answer_source?: AnswerSource; execution?: ResponseExecution }[];
 }
 export interface Conversation {
     revision: number | null;
@@ -43,6 +45,16 @@ interface Refresh {
 const object = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown> : null;
+/** Whitelist identity fields from live envelopes, canonical history and saved projections.
+ * Missing/invalid provenance stays unknown; never infer it from a turn or pending request.
+ */
+function responseExecution(raw: unknown): ResponseExecution | undefined {
+    const value = object(raw);
+    if (!value || !['worker_id', 'request_id', 'run_id'].every(key =>
+        typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 128)) return undefined;
+    return { worker_id: value.worker_id as string, request_id: value.request_id as string,
+        run_id: value.run_id as string };
+}
 const MAX_REFRESH_PAGES = 64;
 const MAX_TURN_STEPS = 32;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -201,7 +213,9 @@ export class ConversationProjection {
         } else if (envelope.event === 'model_response' && request?.operation !== 'compact') {
             const turn = this.value.turns.at(-1);
             const content = dialogueParts(object(envelope.data)?.content, () => { this.value.truncated = true; });
+            const execution = responseExecution(envelope);
             if (turn) turn.steps.push({ index: (turn.steps.at(-1)?.index ?? -1) + 1, content,
+                ...(execution ? { execution } : {}),
                 ...(answerSource(object(envelope.data)?.answer_source)
                     ? { answer_source: object(envelope.data)!.answer_source as AnswerSource } : {}) });
             else this.value.incomplete = true;
@@ -238,7 +252,9 @@ export class ConversationProjection {
                 const step = object(rawStep);
                 if (!step || !integer(step.index) || !Array.isArray(step.content)) return [];
                 if (step.omitted_parts) mark();
+                const execution = responseExecution(step.execution);
                 return [{ index: step.index, content: dialogueParts(step.content, mark),
+                    ...(execution ? { execution } : {}),
                     ...(answerSource(step.answer_source) ? { answer_source: step.answer_source } : {}) }];
             }) };
     }

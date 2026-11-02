@@ -463,6 +463,11 @@ including peer diagnostics, credentials or launch arguments.
 New worker adapters use `subagent/receive` with `view: "preview"` for list/detail.
 Targeted replies contain status, `latest_request` (ID, operation, state, status),
 and `preview` (response, truncation/freshness flags and optional source request ID).
+The preview request ID belongs to the selected response step, obtained from its
+live event envelope or canonical history `execution` identity and retained in the
+saved projection. A continue response may belong to a different request than its
+user turn. Unknown response provenance omits this ID; it is never inferred from
+the turn or latest pending request. Compact summaries retain their own request ID.
 Legacy cursor/limit and answer-page requests remain supported on the wire, but
 are no longer part of the model-facing tool schema.
 

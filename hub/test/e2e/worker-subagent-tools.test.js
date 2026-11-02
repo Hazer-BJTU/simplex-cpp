@@ -40,7 +40,7 @@ it('the real worker forks, sends, receives, continues, compacts and stops throug
             const text = typeof result?.content === 'string' ? result.content : '';
             if (result) {
                 responses.push(text);
-                assert.doesNotMatch(text, /invalid subagent result|subagent exchange failed|hub rejected subagent request/);
+                assert.doesNotMatch(text, /invalid subagent result|subagent exchange failed|hub rejected subagent request|subagent receive (?:failed|rejected)/);
             }
             assert.ok(sequence < 100, 'delegation fixture must make bounded progress');
             switch (phase) {
@@ -74,16 +74,14 @@ it('the real worker forks, sends, receives, continues, compacts and stops throug
                 case 'message-received':
                 case 'continue-received':
                 case 'compact-received': {
-                    const outcome = text.split('\n---\n\n').find(record =>
-                        record.includes(`[[request_id]]: ${childRequest}\n`)
-                        && record.includes('[[state]]:')) ?? '';
+                    const outcome = text.includes(`[[request_id]]: ${childRequest}\n`) ? text : '';
                     if (outcome.includes('[[state]]: finished')) {
-                        assert.match(outcome, /\[\[run_status\]\]: completed/, 'child operation failed');
+                        assert.match(outcome, /\[\[status\]\]: completed/, 'child operation failed');
                     }
                     if (!outcome.includes('[[state]]: finished')
-                        || !outcome.includes('[[run_status]]: completed')
+                        || !outcome.includes('[[status]]: completed')
                         || !text.includes('offline child answer')
-                        || (phase === 'compact-received' && !outcome.includes('compact summary'))) {
+                        || !text.includes(`[[response_request_id]]: ${childRequest}\n`)) {
                         return invoke('subagent_receive', { subagent_id: childId });
                     }
                     const record = ctx.hub.subagents.children.get(childId);
@@ -98,7 +96,8 @@ it('the real worker forks, sends, receives, continues, compacts and stops throug
                         phase = 'compact-sent';
                         return invoke('subagent_send', { subagent_id: childId, operation: 'compact' });
                     }
-                    assert.match(text, /compact summary/);
+                    assert.match(text, /response \(\d+ bytes\):/);
+                    assert.ok(text.includes(`[[response_request_id]]: ${childRequest}\n`));
                     phase = 'stopping';
                     return invoke('subagent_send', { subagent_id: childId, operation: 'stop' });
                 }
@@ -123,7 +122,8 @@ it('the real worker forks, sends, receives, continues, compacts and stops throug
         assert.equal(calls.filter(call => call.name === 'subagent_fork').length, 1);
         assert.deepEqual(calls.filter(call => call.name === 'subagent_send')
             .map(call => call.args.operation), ['message', 'continue', 'compact', 'stop']);
-        assert.ok(responses.some(text => text.includes('[[requests_truncated]]: false')));
+        assert.ok(responses.some(text => text.includes('[[truncated]]: false')));
+        assert.ok(responses.every(text => !/\[\[(?:cursor|next|requests_truncated|answer_source)\]\]/.test(text)));
         assert.ok(responses.some(text => text.includes('offline child answer 🌻')));
         const parentState = readFileSync(`${sessionDir(ctx.config, parent.id)}/state/state.json`, 'utf8');
         assert.match(parentState, /delegation complete/);

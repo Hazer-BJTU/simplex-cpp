@@ -10,11 +10,11 @@ const conversation = steps => ({ revision: 1, worker_id: 'child', stale: false,
 test('receive preview favors the latest visible reply and hides transport identities', () => {
     const result = receivePreview(conversation([
         { index: 0, content: [part('earlier')] },
-        { index: 1, content: [part('final')], answer_source: { fingerprint: 'secret' } },
+        { index: 1, content: [part('final')], execution: { worker_id: 'worker', request_id: 'response-request', run_id: 'run' }, answer_source: { fingerprint: 'secret' } },
         { index: 2, content: [] },
     ]));
     assert.equal(result.response, 'final');
-    assert.equal(result.request_id, 'request');
+    assert.equal(result.request_id, 'response-request');
     assert.equal(result.truncated, false);
     assert.ok(!JSON.stringify(result).includes('fingerprint'));
 });
@@ -34,4 +34,10 @@ test('a finished compact summary remains visible after turns are removed', () =>
     const result = receivePreview(null, { request_id: 'compact-request', summary: 'saved summary' });
     assert.equal(result.response, 'saved summary');
     assert.equal(result.request_id, 'compact-request');
+});
+
+test('unknown response provenance is never inferred from the turn request', () => {
+    const result = receivePreview(conversation([{ index: 0, content: [part('legacy response')] }]));
+    assert.equal(result.response, 'legacy response');
+    assert.ok(!('request_id' in result));
 });
