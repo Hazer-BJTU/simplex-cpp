@@ -34,6 +34,8 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <array>
+#include <string_view>
 
 namespace core {
 namespace asio = boost::asio;
@@ -93,8 +95,9 @@ private:
 /**
  * Append configured environment hints after tool skills and before user Volatile
  * sections. These statements describe the environment; they do not change the
- * working directory, restrict access, or verify installed software. Empty
- * settings contribute no section. The caller removes any old host-owned copy.
+ * working directory, restrict access, or verify installed software. A UTC clock
+ * snapshot is always appended once during startup (including session restore),
+ * never refreshed per request. The caller removes any old host-owned copy.
  */
 void inject_environment(
     model_io::PromptTemplate& prompt,
@@ -118,13 +121,17 @@ void inject_environment(
         text += "Software (configured; availability not verified):" + software;
     }
     if (!text.empty()) {
-        prompt.add_section(
-            "environment.runtime",
-            "Runtime Environment",
-            text,
-            model_io::SectionStability::Volatile
-        );
+        text += "\n\n";
     }
+    text += "Initial system time (UTC): " + persistence::utc_timestamp();
+    text += "\nCaptured once at worker startup; this timestamp is not updated. "
+        "Recheck the system clock yourself whenever the task requires current time.";
+    prompt.add_section(
+        "environment.runtime",
+        "Runtime Environment",
+        text,
+        model_io::SectionStability::Volatile
+    );
 }
 
 /** Queue cancellation must not hide the transport error that closed it. */
@@ -740,10 +747,23 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
         // A decorative footer refreshed on restore, immediately before memory.
-        std::string signature = "Welcome to simplex ";
+        // Match provider factory IDs, not user-defined configuration aliases.
+        // This acknowledgement is decorative and grants no runtime capability.
+        static constexpr std::array<std::string_view, 4> contributors{
+            "deepseek", "qwen", "glm", "zhipu"
+        };
+        const auto provider = config.provider.empty()
+            ? std::string("provider") : config.provider;
+        const bool contributor = std::find(
+            contributors.begin(), contributors.end(), provider
+        ) != contributors.end();
+        std::string signature = "Powered by agent runtime simplex version ";
         signature += simplex::VERSION_STRING;
-        signature += ". Hello, " + (config.provider.empty() ? std::string("provider") : config.provider);
-        signature += "! May your tasks go smoothly.";
+        signature += ". Greetings to ";
+        if (contributor) {
+            signature += "open source AI technology contributor ";
+        }
+        signature += provider + ".";
         prompt.add_section(
             "signature.runtime",
             "",

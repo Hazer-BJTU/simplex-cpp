@@ -28,14 +28,17 @@ and a required `sections` list. See [the format and lifecycle contract](../../lo
 Use these files for base instructions; the worker separately injects the active
 tool registry's skills. Names beginning with `skill.` and the names `environment.runtime` / `signature.runtime` / `memory.runtime` are reserved.
 The worker refreshes configured environment hints after tool skills at startup,
-including on restore; see [environment configuration](../../load/README.md#runtime-environment-hints).
+including on restore. Its final paragraph records the initial system time in UTC
+once per startup and asks the model to recheck the clock as needed; it does not
+update during requests or compaction. See [environment configuration](../../load/README.md#runtime-environment-hints).
 
 Editing the file affects new sessions. Existing session snapshots keep their
 stored prompt when restored; the worker does not hot-reload prompt files.
 
 The worker appends a short, untitled `signature.runtime` Volatile section after
-other configured sections and before any restored memory: a simplex version welcome, a greeting to the configured
-provider, and a wish for successful tasks. This decorative footer is regenerated
+other configured sections and before any restored memory: “Powered by agent runtime simplex version <version>. Greetings to <provider>.”
+For `deepseek`, `qwen`, `glm`, and `zhipu`, the greeting adds “open source AI
+technology contributor” before the provider factory name. This decorative footer is regenerated
 at startup, including on restore, using the current build version and provider.
 It is host-owned and cannot be declared in a role YAML file.
 

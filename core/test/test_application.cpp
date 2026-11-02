@@ -494,14 +494,18 @@ sections:
             const auto& signature = *std::prev(state.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
-            BOOST_TEST(signature.text.find("Welcome to simplex ") == 0u);
-            BOOST_TEST(signature.text.find("Hello, fixture!") != std::string::npos);
+            BOOST_TEST(signature.text.find("Powered by agent runtime simplex version ") == 0u);
+            BOOST_TEST(signature.text.find("Greetings to fixture.") != std::string::npos);
             const auto environment = state.system_prompt.find("environment.runtime");
             BOOST_REQUIRE(environment != state.system_prompt.end());
             BOOST_CHECK(environment->stability == model_io::SectionStability::Volatile);
             BOOST_TEST(environment->text.find(config.environment.workspace.string()) != std::string::npos);
             BOOST_TEST(environment->text.find("Test platform") != std::string::npos);
             BOOST_TEST(environment->text.find("Test compiler") != std::string::npos);
+            const auto clock = environment->text.find("Initial system time (UTC): ");
+            BOOST_REQUIRE(clock != std::string::npos);
+            BOOST_TEST(environment->text.find("Initial system time (UTC): ", clock + 1) == std::string::npos);
+            BOOST_TEST(clock > environment->text.find("Test compiler"));
             bool saw_environment = false;
             for (const auto& section : state.system_prompt) {
                 if (section.name.starts_with("skill.")) BOOST_TEST(!saw_environment);
@@ -557,9 +561,10 @@ sections:
         std::ofstream(prompt_file) << "sections: [{name: persona, text: Changed instructions.}]\n";
         config.system_prompt = load::read_system_prompt(prompt_file);
         // Both replacement and removal must discard the snapshot's old hints.
-        for (const bool clear : {false, true}) {
+        for (const std::string provider : {"restored-provider", "deepseek", "qwen", "glm", "zhipu"}) {
+            const bool clear = provider != "restored-provider";
             io.restart();
-            config.provider = "restored-provider";
+            config.provider = provider;
             config.environment = {};
             if (!clear) config.environment.platform = "Replacement platform";
             core::Application restored(io.get_executor(), config, "test", model);
@@ -573,14 +578,20 @@ sections:
             const auto& signature = *std::prev(saved_snapshot.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
-            BOOST_TEST(signature.text.find("Hello, restored-provider!") != std::string::npos);
+            const auto greeting = clear
+                ? "Greetings to open source AI technology contributor " + provider + "."
+                : "Greetings to " + provider + ".";
+            BOOST_TEST(signature.text.find(greeting) != std::string::npos);
             BOOST_TEST(saved_snapshot.system_prompt.find("persona")->text == "Initial instructions.");
             const auto environment = saved_snapshot.system_prompt.find("environment.runtime");
+            BOOST_REQUIRE(environment != saved_snapshot.system_prompt.end());
+            BOOST_TEST(environment->text.find("Initial system time (UTC): ") != std::string::npos);
+            BOOST_TEST(environment->text.find("this timestamp is not updated") != std::string::npos);
+            BOOST_TEST(environment->text.find("Recheck the system clock") != std::string::npos);
             if (clear) {
-                BOOST_CHECK(environment == saved_snapshot.system_prompt.end());
+                BOOST_TEST(environment->text.find("Initial system time (UTC): ") == 0u);
             } else {
-                BOOST_REQUIRE(environment != saved_snapshot.system_prompt.end());
-                BOOST_TEST(environment->text == "Platform (configured): Replacement platform");
+                BOOST_TEST(environment->text.find("Platform (configured): Replacement platform") == 0u);
             }
             BOOST_CHECK(std::filesystem::current_path() == original_cwd);
         }
