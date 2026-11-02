@@ -97,7 +97,9 @@ This selects `<worker-install>/bin/prompts/default.yaml`. The path is
 relative to the running executable's directory, **not** the worker config file
 or the invocation working directory. In a container, the file must exist in the
 worker's installation inside that container. Omit `system_prompt_file` to use
-`prompts/default.yaml`.
+`prompts/default.yaml` with current workers. Hub-generated configurations and the
+bundled worker template omit this setting by default, so older deployed workers
+can select their own shipped prompt. Explicit custom paths are passed unchanged.
 
 `default.yaml` covers both general-purpose and coding tasks. Its four sections
 set the role, language style, task execution, and privacy/safety guidance. It asks

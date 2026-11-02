@@ -472,7 +472,7 @@ persistence APIs do not interpret YAML.
 
 The default file is maintained in `core/prompts/default.yaml` and exported
 as `<build>/bin/prompts/default.yaml` and
-`<prefix>/bin/prompts/default.yaml`. The startup template selects it using:
+`<prefix>/bin/prompts/default.yaml`. The startup template leaves selection to the worker. To select it explicitly:
 
 ```yaml
 worker:

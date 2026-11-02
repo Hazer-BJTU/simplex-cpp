@@ -77,7 +77,7 @@ export interface WorkerConfigDocument {
         auto_compact_threshold: number;
         max_auto_compactions: number;
         event_capacity: number;
-        system_prompt_file: string;
+        system_prompt_file?: string;
         environment: { workspace: string; platform: string; software: string[] };
     };
     persistence: {
@@ -168,7 +168,7 @@ export function renderWorkerConfig({
             auto_compact_threshold: spec.autoCompactThreshold,
             max_auto_compactions: spec.maxAutoCompactions,
             event_capacity: spec.eventCapacity,
-            system_prompt_file: spec.systemPromptFile,
+            ...(spec.systemPromptFile === undefined ? {} : { system_prompt_file: spec.systemPromptFile }),
             environment: {
                 workspace: spec.workspace,
                 platform: spec.platform,
