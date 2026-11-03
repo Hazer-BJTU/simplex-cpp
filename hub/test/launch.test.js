@@ -385,20 +385,4 @@ describe('prompt inheritance', () => {
         assert.throws(() => normalizeSpec(config, { systemPromptFile: null }), ConfigError);
         assert.throws(() => normalizeSpec(config, { systemPromptFile: '' }), ConfigError);
     });
-
-    it('reads a removed default prompt as an inherited default', () => {
-        const config = testConfig();
-        // Hubs through v1.3.0 wrote coding_agent.yaml; older installations also
-        // shipped general_agent.yaml. Both names meant "the default prompt".
-        for (const legacy of ['prompts/coding_agent.yaml', 'prompts/general_agent.yaml',
-            'prompts\\coding_agent.yaml']) {
-            assert.equal(normalizeSpec(config, { systemPromptFile: legacy }).systemPromptFile, undefined);
-            config.worker.systemPromptFile = legacy;
-            assert.equal(normalizeSpec(config, {}).systemPromptFile, undefined);
-        }
-        // Only the exact historical names are migrated; a lookalike custom file
-        // stays a custom selection and still reaches the worker.
-        config.worker.systemPromptFile = 'prompts/coding_agent_custom.yaml';
-        assert.equal(normalizeSpec(config, {}).systemPromptFile, 'prompts/coding_agent_custom.yaml');
-    });
 });

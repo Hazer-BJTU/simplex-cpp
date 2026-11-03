@@ -449,32 +449,6 @@ export function checkPromptFile(value: unknown, field: string): string {
     return path;
 }
 
-/**
- * The system prompts that earlier releases installed as the default.
- *
- * Every Hub through v1.3.0 wrote `prompts/coding_agent.yaml` into each
- * generated worker configuration, and older worker installations also shipped
- * `prompts/general_agent.yaml`. v1.3.1 replaced both with `prompts/default.yaml`,
- * so a saved selection of either name pins a file the deployed worker no longer
- * has. Both names meant "the default prompt", not a specific asset, and are
- * therefore read as an omission instead of a custom file.
- */
-export const LEGACY_DEFAULT_PROMPTS = [
-    'prompts/coding_agent.yaml',
-    'prompts/general_agent.yaml',
-] as const;
-
-/**
- * Whether a stored prompt selection names a removed default.
- *
- * Windows installations were documented to write backslashes and the worker
- * accepts either separator, so the comparison is separator-neutral.
- */
-export function isLegacyDefaultPrompt(value: unknown): boolean {
-    return typeof value === 'string'
-        && (LEGACY_DEFAULT_PROMPTS as readonly string[]).includes(value.replace(/\\/g, '/'));
-}
-
 /** Normalize optional decoration without adding disabled/default scaffolding. */
 function normalizePanelBackground(config: HubConfig): void {
     if (!isPlainObject(config.panel) || config.panel.background === undefined) return;

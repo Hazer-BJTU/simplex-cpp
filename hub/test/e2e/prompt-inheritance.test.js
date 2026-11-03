@@ -133,36 +133,43 @@ test('an old configuration that pins the removed default prompt starts the curre
         config, sessionId: 'legacy-prompt', rawSpec: {},
         endpoints: { events: endpoint, confirm: endpoint, tools: endpoint },
     };
-    // Write the file the way a v1.3.0 Hub did, then migrate it through the
-    // current Hub code: the saved name must become an omission.
-    const initial = prepareSessionConfig(options).document;
-    initial.worker.system_prompt_file = 'prompts/coding_agent.yaml';
-    const path = workerConfigPath(config, options.sessionId);
-    writeFileSync(path, JSON.stringify(initial));
-    const migrated = prepareSessionConfig(options);
-    assert.equal(migrated.migratedPrompt, 'prompts/coding_agent.yaml');
-    assert.equal(Object.hasOwn(JSON.parse(readFileSync(path, 'utf8')).worker, 'system_prompt_file'), false);
+    for (const legacy of ['prompts/coding_agent.yaml', 'prompts/general_agent.yaml']) {
+        await t.test(legacy, async () => {
+            assert.equal(existsSync(join(dirname(current), legacy)), false,
+                'migration requires an installation without the legacy file');
+            // Write the file the way an older Hub did, then migrate it through
+            // current startup preparation and verify the durable omission.
+            const initial = prepareSessionConfig(options).document;
+            initial.worker.system_prompt_file = legacy;
+            const path = workerConfigPath(config, options.sessionId);
+            writeFileSync(path, JSON.stringify(initial));
+            const migrated = prepareSessionConfig(options);
+            assert.equal(migrated.migratedPrompt, legacy);
+            assert.equal(Object.hasOwn(parse(readFileSync(path, 'utf8')).worker, 'system_prompt_file'), false);
+            assert.equal(prepareSessionConfig(options).migratedPrompt, undefined);
 
-    const child = spawn(current, ['--config', path, '--session', options.sessionId],
-        { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
-    let diagnostics = '';
-    child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-65536); });
-    const exited = once(child, 'exit');
-    let connected = false;
-    const onConnection = () => { connected = true; child.kill('SIGTERM'); };
-    server.on('connection', onConnection);
-    const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
-    try {
-        const [code, signal] = await exited;
-        assert.equal(connected, true, diagnostics);
-        assert.equal(signal, null, diagnostics);
-        assert.equal(code, 0, diagnostics);
-    } finally {
-        clearTimeout(deadline);
-        server.off('connection', onConnection);
-        if (child.exitCode === null && child.signalCode === null) {
-            child.kill('SIGKILL');
-            await exited;
-        }
+            const child = spawn(current, ['--config', path, '--session', options.sessionId],
+                { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
+            let diagnostics = '';
+            child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-65536); });
+            const exited = once(child, 'exit');
+            let connected = false;
+            const onConnection = () => { connected = true; child.kill('SIGTERM'); };
+            server.on('connection', onConnection);
+            const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+            try {
+                const [code, signal] = await exited;
+                assert.equal(connected, true, diagnostics);
+                assert.equal(signal, null, diagnostics);
+                assert.equal(code, 0, diagnostics);
+            } finally {
+                clearTimeout(deadline);
+                server.off('connection', onConnection);
+                if (child.exitCode === null && child.signalCode === null) {
+                    child.kill('SIGKILL');
+                    await exited;
+                }
+            }
+        });
     }
 });

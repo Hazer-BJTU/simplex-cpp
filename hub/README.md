@@ -301,6 +301,19 @@ shows those settings; the [normal example](hub.config.example.jsonc) is minimal.
 `worker.persistence.readable` and `launcher.dockerManagementEnv` are accepted
 from old files but ignored and omitted from newly generated state/configuration.
 
+For existing direct-binary sessions, startup removes a saved selection of
+`prompts/coding_agent.yaml` or `prompts/general_agent.yaml` only when the old file
+is missing and the same local installation contains `prompts/default.yaml`.
+The omission is saved atomically and logged once; retained old files and custom
+paths stay unchanged. A missing custom file produces a start error with the
+selected path and remedies. Manager-owned immutable configurations, remote and
+command launchers, and executables resolved only through `PATH` are outside this
+migration. For editable worker configurations, remove `worker.system_prompt_file`
+to inherit the deployed default on upgrade or rollback; also remove any obsolete
+Hub-level `worker.systemPromptFile` override. To retain an old prompt explicitly,
+install the file and restore its selection. Saved conversation snapshots keep
+their base prompts.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
@@ -310,7 +323,7 @@ from old files but ignored and omitted from newly generated state/configuration.
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
 | `worker.bin` | `../build/bin/simplex_worker` | worker executable |
 | `worker.args`, `worker.connectHost` | `[]`, `""` | direct-binary flags and a host reachable from workers; empty host derives from the listener |
-| `worker.systemPromptFile` | omitted | inherit the deployed worker's default; explicit custom paths are relative to its installation directory; the removed `coding_agent.yaml`/`general_agent.yaml` names are read as omitted |
+| `worker.systemPromptFile` | omitted | inherit the deployed worker's default; explicit paths are relative to its installation directory |
 | `worker.threads`, `worker.maxExchanges`, `worker.eventCapacity` | `1`, `512`, `1024` | defaults copied into generated worker configurations |
 | `worker.autoCompactThreshold` | `0` | last-exchange total-token threshold; zero disables automatic compact; when enabled, exchange-limit exhaustion also triggers it |
 | `worker.maxAutoCompactions` | `5` | maximum successful automatic compactions per user request; positive integer |

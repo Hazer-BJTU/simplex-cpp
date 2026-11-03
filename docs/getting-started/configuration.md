@@ -107,14 +107,26 @@ for clear, respectful communication, bounded work, verification, cleanup, and
 explicit confirmation where appropriate.
 
 The former `coding_agent.yaml` and `general_agent.yaml` files are no longer shipped.
-When the Hub loads a session configuration that still selects one of those two
-names, it drops the setting and writes the file back, so the session inherits the
-deployed `prompts/default.yaml`. The migration happens once, on the next start,
-and leaves every other setting and comment untouched. A Hub configuration
-(`worker.systemPromptFile`) or session spec that names one of the old files is
-read as an omission in the same way. Custom prompt paths are never rewritten: a
-missing custom file still fails, and the Hub now names the file, the worker
-installation and both remedies in the start error.
+On the next start of an existing session using the built-in direct-binary
+launcher, the Hub removes a saved selection of `prompts/coding_agent.yaml` or
+`prompts/general_agent.yaml` only if that file is missing and the same worker
+installation contains a regular `prompts/default.yaml`. It saves the omission
+atomically and logs the migration once. Other settings and YAML comments remain
+intact. Retained legacy files, custom paths, and installations without the new
+default are not migrated. A missing custom file still fails; for a known local
+installation, the Hub start error names the file and explains how to inherit the
+worker default or install the selected file.
+
+This automatic migration covers existing Hub-owned local configuration files.
+It does not change immutable manager-owned configurations, SSH/Docker targets,
+arbitrary command launchers, or binaries resolved only through `PATH`. Manage
+those upgrades separately. For an editable configuration, remove
+`worker.system_prompt_file` or select `prompts/default.yaml` after upgrading the
+worker; remove any obsolete Hub-level `worker.systemPromptFile` override as well.
+When rolling back to an older worker, keep the setting omitted so that worker
+selects its own default. If you need a particular old prompt, install it and
+restore its explicit selection before starting the worker.
+
 Existing restored snapshots keep their saved base prompt; the new template applies
 to new sessions.
 
