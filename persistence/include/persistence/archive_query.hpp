@@ -66,12 +66,14 @@ struct ArchivePage {
     bool has_more = false;
 };
 
-/** Literal substring query, not SQL or FTS expression syntax. Text must be valid
- * UTF-8, contain no NUL, and occupy 1..256 bytes with a non-whitespace character.
- * Three or more Unicode scalars use case-insensitive FTS5 trigram matching.
- * One/two scalars use an exact, case-sensitive scan under the same budget.
- * At most 256 query scalars can match up to 1024 source bytes after case
- * folding; chunk overlap covers that conservative bound.
+/** Whitespace-separated search text, not SQL or FTS expression syntax. Text
+ * must be valid UTF-8, contain no NUL, and occupy 1..256 bytes with a
+ * non-whitespace character. Each term of three or more Unicode scalars is
+ * matched case-insensitively as an FTS5 trigram substring, and the terms are
+ * OR-combined; hits are ranked by BM25. Shorter terms cannot produce a trigram
+ * and are ignored, and text with no such term is scanned literally. At most 256
+ * query scalars can match up to 1024 source bytes after case folding; chunk
+ * overlap covers that conservative bound.
  */
 struct ArchiveSearchRequest {
     std::string text;
@@ -84,6 +86,8 @@ struct ArchiveSearchRequest {
 /** A source locator is scoped by archive_id; never persist a chunk rowid alone.
  * Offsets address the source projection in bytes. ToolCall projects name + '\n'
  * + serialized arguments. Other kinds project the corresponding original text.
+ * A hit is the best-ranked chunk of its source, so start_byte marks that chunk
+ * rather than the exact match position.
  */
 struct ArchiveHit {
     ArchiveInfo archive;
@@ -100,9 +104,10 @@ struct ArchiveHit {
     bool truncated = false;
 };
 
-/** Best-first hits (BM25, then newest archive and source position). Exact repeated
- * chunks of the same kind and overlapping chunks of a source are collapsed.
- * has_more means another distinct hit was observed, not a total-match count. */
+/** Best-first hits (BM25, then newest archive and source position). Each source
+ * contributes its best-ranked chunk; exact repeated chunks of the same kind are
+ * collapsed. has_more means another distinct hit may exist (or the ranked-row
+ * budget was reached), not a total-match count. */
 struct ArchiveSearchResult {
     std::vector<ArchiveHit> hits;
     bool has_more = false;

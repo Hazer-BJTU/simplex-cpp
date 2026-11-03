@@ -369,23 +369,25 @@ A v1 store reports `IndexUnavailable` until its owner's next normal write upgrad
 it. A missing or corrupted store is an error, not an empty result. JSON has no
 archive-query implementation or implicit SQLite fallback.
 
-Search text is a **literal substring**, not a Boolean/FTS expression or semantic
+Search text is whitespace-separated, not a Boolean/FTS expression or semantic
 query. It must be valid UTF-8 without NUL, contain a non-whitespace character,
-and fit in 256 bytes. Three or more Unicode scalars use FTS5 trigram matching
-(case-insensitive); shorter queries use an exact case-sensitive scan. Quoted
-operators and punctuation remain literal. A query has at most 256 Unicode
-scalars; the 1024-byte overlap covers case-equivalent source scalars even when
-their UTF-8 byte lengths differ. Search supports archive and text-kind filters, 1..100 hits (default 10),
-and 32..4096 preview bytes (default 512). Results use BM25 order, then newest
-archive and source position. Exact repeated chunks of the same kind and
-within-source overlapping hits are collapsed; this is not semantic deduplication
-of entire conversations. Different overlapping chunks in different archives can
-still produce distinct hits. `has_more` means another distinct hit was found;
-there is no expensive total count or cross-request relevance cursor.
+and fit in 256 bytes. Each term of three or more Unicode scalars is matched
+case-insensitively as an FTS5 trigram substring, and the terms are OR-combined;
+shorter terms are ignored when longer terms exist, and a query with no such term
+uses an exact case-sensitive scan. Operators and punctuation carry no FTS
+syntax; they are ordinary characters within a term. A query has at most 256
+Unicode scalars; the 1024-byte overlap covers case-equivalent source scalars even
+when their UTF-8 byte lengths differ. Search supports archive and text-kind
+filters, 1..100 hits (default 10), and 32..4096 preview bytes (default 512).
+Results use BM25 order, then newest archive and source position. Each source
+contributes only its best-ranked chunk; exact repeated chunks of the same kind
+are collapsed. This is not semantic deduplication of entire conversations.
+`has_more` means another distinct hit may exist; there is no expensive total
+count or cross-request relevance cursor.
 
 Hits include archive identity/outcome/time, source identity, optional zero-based
-turn/step positions, the source's half-open byte range, and a bounded UTF-8
-snippet with an explicit truncation flag. Previews use marker-safe FTS
+turn/step positions, the best-ranked chunk's half-open byte range, and a bounded
+UTF-8 snippet with an explicit truncation flag. Previews use marker-safe FTS
 highlights to locate source matches, then select UTF-8-safe context within the
 byte allowance. A complete match is retained whenever it fits, even if case
 folding changes its spelling or byte length. No ellipsis consumes preview space;

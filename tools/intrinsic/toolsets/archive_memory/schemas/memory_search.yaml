@@ -1,11 +1,15 @@
 name: memory_search
 description: >-
-  Find literal text in retained archives of this session, not the current live
-  conversation. Returns bounded previews and archive_id/source_id/offset locators
-  for memory_fetch. Prefer phrases of at least three Unicode characters; those
-  searches are case-insensitive. One/two-character queries are case-sensitive.
-  This is not semantic search or FTS expression syntax. has_more means refine
-  the query; no search cursor is provided. Archives can expire after search.
+  Find the best matches in retained archives of this session, not the current
+  live conversation. The query is split on whitespace; each term of three or more
+  characters is matched as a case-insensitive substring (trigram) and the terms
+  are OR-combined. Hits are ranked by BM25, and only the best chunk of each
+  source is returned. Shorter terms are ignored when longer terms exist; a query
+  with no longer term falls back to a literal scan. This is relevance-ranked term
+  matching, not vector search and not FTS expression syntax. Each hit carries
+  archive_id/source_id/offset locators for memory_fetch. has_more means refine
+  the query or read further; no search cursor is provided. Archives can expire
+  after search.
 type: read_only
 security: trusted
 config:
@@ -20,10 +24,10 @@ argument_schema:
     query:
       type: string
       minLength: 1
-      description: Nonblank literal UTF-8 text, at most 256 bytes; no NUL.
+      description: Nonblank UTF-8 text, at most 256 bytes; whitespace-separated terms are OR-matched and ranked.
     limit:
       type: integer
       minimum: 1
       maximum: 20
       default: 5
-      description: Maximum number of hits; host output budget can return fewer.
+      description: Maximum number of ranked results; host output budget can return fewer.

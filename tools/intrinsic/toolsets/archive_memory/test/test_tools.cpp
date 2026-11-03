@@ -110,9 +110,13 @@ BOOST_FIXTURE_TEST_CASE(search_then_fetch_uses_real_archive_and_trusted_readonly
     model_io::PromptTemplate prompt;
     BOOST_TEST(registry.inject_skills(prompt) == 1u);
     BOOST_TEST(prompt.render().markdown.find("Searching archived memory") != std::string::npos);
+    BOOST_TEST(prompt.render().markdown.find("BM25") != std::string::npos);
     for (const auto& tool : registry.get_tools()) {
         BOOST_TEST(!tool.argument_schema["properties"].contains("timeout_ms"));
         BOOST_TEST(tool.argument_schema["additionalProperties"] == false);
+        if (tool.name == "memory_search") {
+            BOOST_TEST(tool.description.find("BM25") != std::string::npos);
+        }
     }
 }
 
@@ -127,7 +131,7 @@ BOOST_FIXTURE_TEST_CASE(missing_store_and_unarchived_state_are_empty_searches_wi
     contains(result, "[[hits]]: 0");
 }
 
-BOOST_FIXTURE_TEST_CASE(literal_unicode_search_and_fetch_ranges, Fixture)
+BOOST_FIXTURE_TEST_CASE(unicode_search_and_fetch_ranges, Fixture)
 {
     const auto found = hit("中文资料 alpha AND beta");
     auto result = call("memory_search", {{"query", "中文资料"}});
@@ -148,6 +152,16 @@ BOOST_FIXTURE_TEST_CASE(literal_unicode_search_and_fetch_ranges, Fixture)
     arguments["offset"] = std::string("中文资料 alpha AND beta").size();
     result = call("memory_fetch", arguments);
     BOOST_REQUIRE(!tools::is_error(result));
+    contains(result, "[[has_more]]: false");
+}
+
+BOOST_FIXTURE_TEST_CASE(search_matches_any_term_and_returns_one_hit_per_source, Fixture)
+{
+    archive(state("alpha only"));
+    archive(state("alpha beta"));
+    const auto result = call("memory_search", {{"query", "alpha gamma"}});
+    BOOST_REQUIRE(!tools::is_error(result));
+    contains(result, "[[hits]]: 2");
     contains(result, "[[has_more]]: false");
 }
 
