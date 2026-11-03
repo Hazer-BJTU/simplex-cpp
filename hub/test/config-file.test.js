@@ -1,11 +1,12 @@
 /** Durable configuration reuse and the single session directory contract. */
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { parse, stringify } from 'yaml';
-import { prepareSessionConfig, persistenceChild, sessionStateDirectory } from '../src/launch/config-file.ts';
+import { missingPromptDiagnostic, prepareSessionConfig, persistenceChild, sessionStateDirectory }
+    from '../src/launch/config-file.ts';
 import { sessionDir, workerConfigPath } from '../src/launch/config-render.ts';
 import { testConfig } from './helpers/hub.js';
 
@@ -18,6 +19,16 @@ function options(sessionId = 'demo') {
         config: testConfig({ dataDir: root, worker: { hubRemoteCall: true } }), sessionId, rawSpec: {},
         endpoints: { events: 'ws://old/events?token=old', confirm: 'ws://old/confirm?token=old', tools: 'ws://old/tools?token=old' },
     };
+}
+
+/** A known local installation, independent of any real worker on the test host. */
+function currentInstallation(input) {
+    const bin = join(input.config.dataDir, 'installation', 'bin');
+    mkdirSync(join(bin, 'prompts'), { recursive: true });
+    writeFileSync(join(bin, 'simplex_worker'), '');
+    writeFileSync(join(bin, 'prompts/default.yaml'), 'default');
+    input.config.worker.bin = join(bin, 'simplex_worker');
+    return bin;
 }
 
 describe('session configuration files', () => {
@@ -145,6 +156,127 @@ describe('session configuration files', () => {
         prepareSessionConfig(input);
         assert.equal(parse(readFileSync(path, 'utf8')).persistence.directory,
             sessionDir(input.config, input.sessionId));
+    });
+
+    it('migrates a saved legacy default prompt once and inherits the deployed default', () => {
+        const input = options();
+        currentInstallation(input);
+        const path = workerConfigPath(input.config, input.sessionId);
+        const saved = prepareSessionConfig(input).document;
+        // Every Hub through v1.3.0 wrote this key into each configuration.
+        saved.worker.system_prompt_file = 'prompts/coding_agent.yaml';
+        writeFileSync(path, '# operator note\n' + stringify(saved));
+
+        const migrated = prepareSessionConfig(input);
+        assert.equal(migrated.migratedPrompt, 'prompts/coding_agent.yaml');
+        assert.equal(migrated.spec.systemPromptFile, undefined);
+        assert.equal(Object.hasOwn(migrated.document.worker, 'system_prompt_file'), false);
+        const text = readFileSync(path, 'utf8');
+        assert.match(text, /# operator note/);
+        assert.equal(Object.hasOwn(parse(text).worker, 'system_prompt_file'), false);
+
+        // The rewrite is persisted: a later start has nothing left to migrate.
+        input.config.providerProfiles = { replacement: { plugin: 'deepseek', model: 'new-model' } };
+        const restart = prepareSessionConfig(input);
+        assert.equal(restart.migratedPrompt, undefined);
+        assert.equal(restart.spec.systemPromptFile, undefined);
+        assert.equal(restart.document.driver_model, saved.driver_model);
+    });
+
+    it('migrates the other historical name but never rewrites a custom prompt', () => {
+        const input = options();
+        currentInstallation(input);
+        const path = workerConfigPath(input.config, input.sessionId);
+        const saved = prepareSessionConfig(input).document;
+        saved.worker.system_prompt_file = 'prompts/general_agent.yaml';
+        writeFileSync(path, stringify(saved));
+        const migrated = prepareSessionConfig(input);
+        assert.equal(migrated.migratedPrompt, 'prompts/general_agent.yaml');
+        assert.equal(Object.hasOwn(migrated.document.worker, 'system_prompt_file'), false);
+
+        const custom = prepareSessionConfig(input).document;
+        custom.worker.system_prompt_file = 'prompts/my_agent.yaml';
+        writeFileSync(path, stringify(custom));
+        const kept = prepareSessionConfig(input);
+        assert.equal(kept.migratedPrompt, undefined);
+        assert.equal(kept.spec.systemPromptFile, 'prompts/my_agent.yaml');
+        assert.equal(parse(readFileSync(path, 'utf8')).worker.system_prompt_file, 'prompts/my_agent.yaml');
+    });
+
+    it('preserves a legacy selection when its file or symlink still exists', () => {
+        const input = options();
+        const bin = currentInstallation(input);
+        const path = workerConfigPath(input.config, input.sessionId);
+        const saved = prepareSessionConfig(input).document;
+        saved.worker.system_prompt_file = 'prompts/coding_agent.yaml';
+        writeFileSync(path, stringify(saved));
+        const legacy = join(bin, saved.worker.system_prompt_file);
+        writeFileSync(legacy, 'operator-customized legacy file');
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        assert.equal(parse(readFileSync(path, 'utf8')).worker.system_prompt_file,
+            saved.worker.system_prompt_file);
+        rmSync(legacy);
+        symlinkSync(join(bin, 'missing-custom-target.yaml'), legacy);
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        assert.equal(parse(readFileSync(path, 'utf8')).worker.system_prompt_file,
+            saved.worker.system_prompt_file);
+    });
+
+    it('preserves legacy names without a known replacement or direct local launcher', () => {
+        const input = options();
+        const bin = currentInstallation(input);
+        const path = workerConfigPath(input.config, input.sessionId);
+        const saved = prepareSessionConfig(input).document;
+        saved.worker.system_prompt_file = 'prompts/general_agent.yaml';
+        writeFileSync(path, stringify(saved));
+        rmSync(join(bin, 'prompts/default.yaml'));
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        // A directory is not a replacement prompt either.
+        mkdirSync(join(bin, 'prompts/default.yaml'));
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        rmSync(join(bin, 'prompts/default.yaml'), { recursive: true });
+        writeFileSync(join(bin, 'prompts/default.yaml'), 'default');
+        input.config.launcher.kind = 'command';
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        input.config.launcher.kind = 'simplex-worker';
+        input.config.worker.bin = 'simplex_worker';
+        assert.equal(prepareSessionConfig(input).migratedPrompt, undefined);
+        assert.equal(parse(readFileSync(path, 'utf8')).worker.system_prompt_file,
+            saved.worker.system_prompt_file);
+    });
+
+    it('follows an executable symlink to the actual installation before migrating', () => {
+        const input = options();
+        const bin = currentInstallation(input);
+        const link = join(input.config.dataDir, 'worker-link');
+        symlinkSync(input.config.worker.bin, link);
+        input.config.worker.bin = link;
+        const saved = prepareSessionConfig(input).document;
+        saved.worker.system_prompt_file = 'prompts/coding_agent.yaml';
+        writeFileSync(workerConfigPath(input.config, input.sessionId), stringify(saved));
+        assert.equal(prepareSessionConfig(input).migratedPrompt, 'prompts/coding_agent.yaml');
+        assert.equal(readFileSync(join(bin, 'prompts/default.yaml'), 'utf8'), 'default');
+    });
+});
+
+describe('missing prompt diagnostics', () => {
+    it('names the missing file, the installation and both remedies', () => {
+        const root = mkdtempSync(join(tmpdir(), 'simplex-prompt-diagnostic-'));
+        roots.push(root);
+        mkdirSync(join(root, 'bin', 'prompts'), { recursive: true });
+        writeFileSync(join(root, 'bin', 'prompts', 'default.yaml'), 'base');
+        writeFileSync(join(root, 'bin', 'simplex_worker'), '');
+        const config = testConfig({ worker: { bin: join(root, 'bin', 'simplex_worker') } });
+        const diagnostic = missingPromptDiagnostic({ systemPromptFile: 'prompts/absent.yaml' }, config);
+        assert.match(diagnostic, /prompts\/absent\.yaml/);
+        assert.match(diagnostic, /remove worker\.system_prompt_file/);
+        assert.match(diagnostic, /prompts\/default\.yaml/);
+        assert.ok(diagnostic.includes(join(root, 'bin', 'prompts', 'absent.yaml')));
+        assert.equal(missingPromptDiagnostic({ systemPromptFile: 'prompts/default.yaml' }, config), null);
+        assert.equal(missingPromptDiagnostic({}, config), null);
+        // A binary resolved through PATH has no installation directory to inspect.
+        assert.equal(missingPromptDiagnostic({ systemPromptFile: 'prompts/absent.yaml' },
+            { ...config, worker: { ...config.worker, bin: 'simplex_worker' } }), null);
     });
 });
 

@@ -3,7 +3,7 @@
  * addresses are refreshed on restart; operator settings and YAML comments stay.
  */
 import { randomUUID } from 'node:crypto';
-import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, parse, sep } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
 import type { Document } from 'yaml';
@@ -74,9 +74,11 @@ function writeDocument(path: string, text: string): void {
  * Existing model credentials and unknown configuration keys remain untouched.
  * Launch-only spec fields still control threads, environment and extra args.
  */
-export function prepareSessionConfig(options: RenderSessionConfigOptions): {
+export function prepareSessionConfig(options: RenderSessionConfigOptions & { config: HubConfig }): {
     spec: NormalizedSpec;
     document: unknown;
+    /** The removed default prompt a saved configuration pinned, if migrated. */
+    migratedPrompt?: string;
 } {
     const { config, sessionId, rawSpec, endpoints, mock } = options;
     const path = workerConfigPath(config, sessionId);
@@ -87,6 +89,13 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
     }
 
     const document = readDocument(path);
+    // Migrate only a verified missing historical asset in the selected local
+    // installation. An older worker, a retained customized legacy file, and an
+    // unknown/remote installation must keep their explicit selections.
+    const worker = document.get('worker', true);
+    const savedPrompt = isMap(worker) ? worker.get('system_prompt_file') : undefined;
+    const migratedPrompt = canMigratePrompt(savedPrompt, config) ? savedPrompt as string : null;
+    if (migratedPrompt !== null) document.deleteIn(['worker', 'system_prompt_file']);
     // A persisted configuration no longer depends on its original hub profile
     // still existing. Only the launch parameters are taken from the spec.
     const raw = rawSpec && typeof rawSpec === 'object' && !Array.isArray(rawSpec)
@@ -123,7 +132,64 @@ export function prepareSessionConfig(options: RenderSessionConfigOptions): {
     const result = document.toJS({ maxAliasCount: 100 });
     applyConfigurationSpec(spec, result);
     writeDocument(path, document.toString());
-    return { spec, document: result };
+    return { spec, document: result, ...(migratedPrompt === null ? {} : { migratedPrompt }) };
+}
+
+/**
+ * Resolve only the built-in direct launcher's executable, including symlinks.
+ * Other launchers may select a different machine or executable; never inspect
+ * their paths as though they belonged to the Hub filesystem.
+ */
+function localInstallation(config: HubConfig): string | null {
+    if (config.launcher.kind !== 'simplex-worker') return null;
+    const bin = config.worker.bin;
+    if (typeof bin !== 'string' || !/[\\/]/.test(bin)) return null;
+    try { return dirname(realpathSync(bin)); } catch { return null; }
+}
+
+/** Only ENOENT proves absence; permission, I/O and non-file errors preserve the selection. */
+function missingFile(path: string): boolean {
+    try { lstatSync(path); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+}
+
+/**
+ * The two historical filenames alone are not proof of an obsolete setting.
+ * Require a missing legacy asset and a regular replacement in the same known
+ * installation. Keep even dangling legacy symlinks as explicit operator choices.
+ */
+function canMigratePrompt(value: unknown, config: HubConfig): boolean {
+    if (value !== 'prompts/coding_agent.yaml' && value !== 'prompts/general_agent.yaml') return false;
+    const installation = localInstallation(config);
+    if (installation === null || !missingFile(join(installation, value))) return false;
+    try { return statSync(join(installation, 'prompts/default.yaml')).isFile(); }
+    catch { return false; }
+}
+
+/**
+ * Name the remedy when a session pins a prompt file the deployed worker cannot
+ * see. The worker reports only `cannot open file`, which is easy to mistake for
+ * a broken installation.
+ *
+ * Returns null when the selection is inherited, the file is present, or this
+ * host cannot know the worker's installation directory: a `bin` resolved
+ * through PATH has none, and a managed or containerized worker owns a different
+ * filesystem.
+ */
+export function missingPromptDiagnostic(spec: NormalizedSpec, config: HubConfig): string | null {
+    if (spec.systemPromptFile === undefined) return null;
+    // The worker resolves its installation through the real executable path
+    // (`std::filesystem::canonical`), so a symlinked launcher must not point the
+    // diagnostic at the link's directory. A missing binary has no installation
+    // to inspect; the spawn reports that separately.
+    const installation = localInstallation(config);
+    if (installation === null) return null;
+    const installed = join(installation, spec.systemPromptFile);
+    if (!missingFile(installed)) return null;
+    return `system prompt '${spec.systemPromptFile}' is missing from the worker installation `
+        + `'${installation}'; remove worker.system_prompt_file from the session configuration `
+        + `to inherit the deployed default (prompts/default.yaml in current releases), `
+        + `or install the file at '${installed}'`;
 }
 
 /** Project public model/runtime metadata from an effective configuration without opening files. */
