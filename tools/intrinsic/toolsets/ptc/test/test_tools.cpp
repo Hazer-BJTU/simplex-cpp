@@ -22,6 +22,24 @@ BOOST_AUTO_TEST_CASE(envelope)
     value["result_truncated"] = true;
     value["result_preview"] = "[1,2...";
     BOOST_TEST(render_ptc_response(value, 0, "e", "p").raw.find("result_preview") != std::string::npos);
+
+    // A recovered receipt is an ordinary failed execution and must carry the
+    // same result fields; without them the adapter reports an unknown commit
+    // instead of a definite "interrupted" outcome.
+    const auto recovered = Json::parse(R"({"protocol":1,"execution_id":"e","session_id":"s",
+        "epoch":"p","revision":1,"status":"failed","committed":false,"result":null,
+        "output":"","output_omitted_bytes":0,
+        "error":{"code":"interrupted","message":"external effects are unknown; source was not replayed"}})");
+    const auto rendered = render_ptc_response(recovered, 1, "e", "p");
+    BOOST_TEST(rendered.raw.find("interrupted") != std::string::npos);
+    BOOST_TEST(rendered.raw.find("[[committed]]: false") != std::string::npos);
+    BOOST_REQUIRE(rendered.extras);
+    BOOST_TEST(rendered.extras->at("simplex.ptc").at("committed") == false);
+    for (const auto* field : {"result", "output", "output_omitted_bytes"}) {
+        auto missing = recovered;
+        missing.erase(field);
+        BOOST_CHECK_THROW(render_ptc_response(missing, 1, "e", "p"), std::exception);
+    }
 }
 
 // Opt-in real CLI/daemon integration. The dedicated CI job supplies this path;

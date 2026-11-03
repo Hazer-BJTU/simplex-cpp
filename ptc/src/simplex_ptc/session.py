@@ -313,6 +313,13 @@ class Session:
                 "revision": checkpoint["revision"],
                 "status": "failed",
                 "committed": False,
+                # Same envelope as any other failed execution: consumers and the
+                # worker adapter reject a receipt without these fields, and a
+                # recovered outcome must stay readable instead of looking like a
+                # protocol error.
+                "result": None,
+                "output": "",
+                "output_omitted_bytes": 0,
                 "error": {
                     "code": "interrupted",
                     "message": "external effects are unknown; source was not replayed",

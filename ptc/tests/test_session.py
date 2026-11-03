@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from simplex_ptc import PTCError, Request, Session, ToolDescriptor, ToolRegistry
+from simplex_ptc.client import Client
 from simplex_ptc.protocol import MAX_RESPONSE_BYTES, encode
 from simplex_ptc.storage import Storage
 
@@ -164,7 +165,59 @@ def test_write_failure_blocks_new_execution_until_recovery(tmp_path, monkeypatch
     with pytest.raises(PTCError):
         session.recover(info["epoch"], "wrong")
     session.recover(info["epoch"], "two")
-    assert execute(session, "two", "x = 2")["error"]["code"] == "interrupted"
+    recovered = execute(session, "two", "x = 2")
+    assert recovered["error"]["code"] == "interrupted"
+    # A recovered receipt is structurally identical to any other failed
+    # execution, so a consumer that validates the documented envelope can read
+    # it instead of treating it as a protocol error.
+    assert set(recovered) == {
+        "protocol",
+        "execution_id",
+        "session_id",
+        "epoch",
+        "revision",
+        "status",
+        "committed",
+        "result",
+        "output",
+        "output_omitted_bytes",
+        "error",
+    }
+    assert recovered["status"] == "failed"
+    assert recovered["committed"] is False
+    assert recovered["result"] is None
+    assert recovered["output"] == ""
+    assert recovered["output_omitted_bytes"] == 0
+    assert type(recovered["output_omitted_bytes"]) is int
+    assert execute(Session(tmp_path), "two", "x = 2") == recovered
+
+    # Both public receipt paths must preserve the durable envelope after a new
+    # daemon loads it. Neither query nor an exact retry may replay the source.
+    client = Client(tmp_path)
+    try:
+        client.inspect()
+        query = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "simplex_ptc",
+                "session",
+                "query",
+                "--state-directory",
+                str(tmp_path),
+                "--execution-id",
+                "two",
+                "--epoch",
+                info["epoch"],
+            ],
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert query.returncode == 0, query.stderr
+        assert json.loads(query.stdout) == {"status": "terminal", "response": recovered}
+    finally:
+        client.stop()
     assert execute(session, "three", "x")["result"] == 1
 
 
