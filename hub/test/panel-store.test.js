@@ -740,3 +740,19 @@ it('bounds byte retention across sessions and signals evicted history while abso
         + Buffer.byteLength(JSON.stringify(Object.values(v.latestEvents))), 0);
     assert.ok(bytes < 40 * 1024 * 1024);
 });
+
+it('prefers explicit activity over loop progress and preserves legacy status fallback', () => {
+    for (const name of ['ready', 'status']) {
+        for (const [data, expected] of [
+            [{ active: false, loop: { status: 'running' } }, false],
+            [{ active: true, loop: { status: 'completed' } }, true],
+            [{ loop: { status: 'running' } }, true],
+            [{ loop: { status: 'completed' } }, false],
+        ]) {
+            const view = indexEnvelope(emptyView('demo'), envelope(1, name, { data }));
+            assert.equal(view.runActive, expected, `${name}: ${JSON.stringify(data)}`);
+        }
+        const active = { ...emptyView('demo'), runActive: true };
+        assert.equal(indexEnvelope(active, envelope(1, name)).runActive, true);
+    }
+});

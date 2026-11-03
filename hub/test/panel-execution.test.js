@@ -214,3 +214,31 @@ test('replay evidence must match both request and worker, not just an admitted r
     assert.equal(store.getState().pendingExecutions.size, 1);
     assert.equal(client.sendInput('demo', [], 'continue'), false);
 });
+
+for (const name of ['ready', 'status']) {
+    for (const delivery of ['live', 'snapshot', 'replay']) {
+        test(`${delivery} ${name} makes a restored idle worker available despite running checkpoint`, async t => {
+            const { store, client, socket, sessions, emit, inputs } = await setup(t);
+            emit('run_started', 'interrupted');
+            store.getState().setCancelPending('demo', true);
+            const event = {
+                type: 'event', event: name, session_id: 'demo', worker_id: 'restarted-worker',
+                sequence: 2, hub_sequence: 2, request_id: '', run_id: '',
+                data: { active: false, loop: { status: 'running', phase: 'tools' } },
+            };
+            if (delivery === 'live') {
+                socket.receive({ type: 'event', session: 'demo', envelope: event });
+            } else {
+                socket.receive({ type: delivery === 'snapshot' ? 'snapshot' : 'subscribed',
+                    session: { ...sessions[0], identity: { state: 'live', worker_id: 'restarted-worker', since: null } },
+                    transcript: [event], latest: 2, logs: [],
+                    ...(delivery === 'replay' ? { replay_reset: true } : {}) });
+            }
+            const view = store.getState().views.get('demo');
+            assert.equal(view.runActive, false);
+            assert.equal(view.cancelPending, false);
+            assert.equal(client.sendInput('demo', [{ type: 'text', raw: 'Continue the task' }]), true);
+            assert.equal(inputs().length, 1);
+        });
+    }
+}

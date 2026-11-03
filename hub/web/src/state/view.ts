@@ -328,10 +328,17 @@ export function indexEnvelope(view: ViewState, envelope: WorkerEnvelope): ViewSt
         }
     } else if (name === 'status' || name === 'ready') {
         const data = (envelope.data ?? {}) as Record<string, unknown>;
-        if (typeof data.active === 'boolean') runActive = data.active;
-        const loop = data.loop as Record<string, unknown> | undefined;
-        if (loop && typeof loop.status === 'string') {
-            runActive = loop.status === 'running' || data.active === true;
+        // Activity describes the current worker, while loop progress may be a
+        // restored checkpoint from an interrupted run. In particular, an idle
+        // restarted worker can retain loop.status === 'running'. Only use that
+        // legacy fallback when the worker omits an explicit activity boolean.
+        if (typeof data.active === 'boolean') {
+            runActive = data.active;
+        } else {
+            const loop = data.loop as Record<string, unknown> | undefined;
+            if (loop && typeof loop.status === 'string') {
+                runActive = loop.status === 'running';
+            }
         }
     }
 
