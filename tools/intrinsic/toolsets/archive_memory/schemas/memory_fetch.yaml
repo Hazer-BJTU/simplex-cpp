@@ -2,7 +2,8 @@ name: memory_fetch
 description: >-
   Read one archived text source identified by memory_search, not a whole snapshot.
   Sources include messages and tool text. Offsets refer to original source bytes.
-  Use the search offset to read near a match, or zero to read from the beginning.
+  Use the search offset to read near the best-ranked chunk, or zero to read from
+  the beginning.
   Continue with next_offset while has_more is true. A source can expire between
   calls. Invalid UTF-8 and NUL are replaced only for display; display_replaced
   reports this. Host output limits may shorten a page without skipping bytes.

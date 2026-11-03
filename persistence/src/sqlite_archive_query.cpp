@@ -73,6 +73,52 @@ std::size_t validate_text(std::string_view text) {
     return count;
 }
 
+/** Count scalars in text already known to be valid UTF-8. */
+std::size_t scalar_count(std::string_view text) {
+    std::size_t count = 0;
+    for (char byte : text) {
+        if ((static_cast<unsigned char>(byte) & 0xc0) != 0x80) ++count;
+    }
+    return count;
+}
+
+/** Split the query on whitespace into terms the trigram index can match.
+ * A term shorter than three scalars cannot produce a trigram, so it is dropped
+ * rather than OR-ed in as noise. An empty list selects the literal fallback. */
+std::vector<std::string> search_terms(std::string_view text) {
+    std::vector<std::string> terms;
+    std::string term;
+    const auto flush = [&] {
+        if (!term.empty() && scalar_count(term) >= 3) terms.push_back(term);
+        term.clear();
+    };
+    for (char byte : text) {
+        if (byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r'
+            || byte == '\f' || byte == '\v') {
+            flush();
+        } else {
+            term += byte;
+        }
+    }
+    flush();
+    return terms;
+}
+
+/** Quote every term so user text never becomes FTS5 query syntax. */
+std::string search_expression(const std::vector<std::string>& terms) {
+    std::string expression;
+    for (const auto& term : terms) {
+        if (!expression.empty()) expression += " OR ";
+        expression += '"';
+        for (char byte : term) {
+            if (byte == '"') expression += '"';
+            expression += byte;
+        }
+        expression += '"';
+    }
+    return expression;
+}
+
 void validate_id(std::string_view id) {
     if (id.empty() || id.size() > 256 || id.find('\0') != std::string_view::npos) {
         invalid("archive/source identity must contain 1..256 bytes without NUL");
@@ -127,7 +173,7 @@ ArchiveInfo archive_info(sqlite::Statement& row) {
  * merged span still preserves its first complete match whenever it fits.
  */
 std::pair<std::size_t, std::size_t> first_fts_match(
-    sqlite::Database& database, std::int64_t chunk_id, std::string_view phrase,
+    sqlite::Database& database, std::int64_t chunk_id, std::string_view expression,
     std::string_view body, sqlite::ExecutionBudget& budget) {
     std::string opening;
     std::string closing;
@@ -147,7 +193,7 @@ std::pair<std::size_t, std::size_t> first_fts_match(
     match.bind_int64(1, chunk_id);
     match.bind_text(2, opening);
     match.bind_text(3, closing);
-    match.bind_text(4, phrase);
+    match.bind_text(4, expression);
     if (match.step() != sqlite::StepResult::Row) {
         throw std::runtime_error("archive match disappeared within its read transaction");
     }
@@ -219,19 +265,20 @@ public:
 
     ArchiveSearchResult search(const ArchiveSearchRequest& request,
                               const ArchiveQueryOptions& options) const override {
-        const bool fts = validate_text(request.text) >= 3;
+        (void)validate_text(request.text);
+        const auto terms = search_terms(request.text);
+        const bool fts = !terms.empty();
+        const auto expression = fts ? search_expression(terms) : std::string{};
         if (request.limit == 0 || request.limit > 100
             || request.snippet_bytes < 32 || request.snippet_bytes > 4096) {
             invalid("archive search requires limit 1..100 and snippet_bytes 32..4096");
         }
         if (request.archive_id) validate_id(*request.archive_id);
         if (request.kind) (void)kind_name(*request.kind);
-        std::string phrase = "\"";
-        for (char byte : request.text) {
-            if (byte == '"') phrase += '"';
-            phrase += byte;
-        }
-        phrase += '"';
+        // Bound the rows SQLite has to rank and sort. Over-fetch leaves room for
+        // sources whose chunks collapse; reaching the bound reports has_more
+        // rather than silently returning a short page.
+        const auto row_limit = std::min<std::size_t>(1000, request.limit * 16 + 16);
         return query(options, [&](sqlite::Database& db, sqlite::ExecutionBudget& budget) {
             std::string sql =
                 "SELECT a.archive_id, a.sequence, a.created_at, a.outcome, a.mode, "
@@ -246,17 +293,22 @@ public:
             sql += fts ? "archive_chunks_fts MATCH ?4 " : "instr(c.body, ?4) > 0 ";
             sql += "ORDER BY ";
             if (fts) sql += "archive_chunks_fts.rank, ";
-            sql += "a.sequence DESC, c.turn_index, c.step_index, c.source_id, c.start_byte";
+            sql += "a.sequence DESC, c.turn_index, c.step_index, c.source_id, c.start_byte ";
+            sql += "LIMIT ?5";
             auto rows = db.prepare(sql);
             rows.bind_text(1, session_);
             if (request.archive_id) rows.bind_text(2, *request.archive_id);
             else rows.bind_null(2);
             if (request.kind) rows.bind_text(3, kind_name(*request.kind));
             else rows.bind_null(3);
-            rows.bind_text(4, fts ? phrase : request.text);
+            rows.bind_text(4, fts ? expression : request.text);
+            rows.bind_int64(5, static_cast<std::int64_t>(row_limit));
             ArchiveSearchResult result;
             std::set<std::pair<ArchiveTextKind, std::string>> seen;
+            std::set<std::pair<std::string, std::string>> sources;
+            std::size_t scanned = 0;
             while (rows.step() == sqlite::StepResult::Row) {
+                ++scanned;
                 budget.check();
                 ArchiveHit hit;
                 hit.archive = archive_info(rows);
@@ -267,20 +319,18 @@ public:
                 hit.start_byte = static_cast<std::uint64_t>(rows.column_int64(9));
                 hit.end_byte = static_cast<std::uint64_t>(rows.column_int64(10));
                 const auto body = rows.column_text(11);
+                // Retire the source before content dedup: even when its best
+                // chunk duplicates an accepted chunk, a lower-ranked chunk of
+                // the same source must not take a later top-k slot.
+                if (!sources.emplace(hit.archive.archive_id, hit.source_id).second) continue;
                 if (seen.contains({hit.kind, body})) continue;
-                const bool overlaps = std::any_of(result.hits.begin(), result.hits.end(), [&](const auto& other) {
-                    return other.archive.archive_id == hit.archive.archive_id
-                        && other.source_id == hit.source_id && other.start_byte < hit.end_byte
-                        && hit.start_byte < other.end_byte;
-                });
-                if (overlaps) continue;
                 if (result.hits.size() == request.limit) {
                     result.has_more = true;
                     break;
                 }
                 seen.emplace(hit.kind, body);
                 const auto span = fts
-                    ? first_fts_match(db, rows.column_int64(13), phrase, body, budget)
+                    ? first_fts_match(db, rows.column_int64(13), expression, body, budget)
                     : std::pair{body.find(request.text), body.find(request.text) + request.text.size()};
                 hit.snippet = match_preview(body, span.first, span.second, request.snippet_bytes);
                 hit.truncated = hit.start_byte != 0
@@ -288,6 +338,7 @@ public:
                     || hit.snippet != body;
                 result.hits.push_back(std::move(hit));
             }
+            if (scanned == row_limit) result.has_more = true;
             return result;
         });
     }

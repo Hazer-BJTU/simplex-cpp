@@ -52,7 +52,7 @@ BOOST_FIXTURE_TEST_CASE(list_search_and_read_preserve_location_and_outcome, Fixt
     }
 }
 
-BOOST_FIXTURE_TEST_CASE(literal_queries_short_queries_and_filters, Fixture) {
+BOOST_FIXTURE_TEST_CASE(term_queries_short_fallbacks_and_filters, Fixture) {
     const auto ref = archive(state("literal \"quote\" OR NOT * % _ 和中文；只读；X"));
     archive(state("unrelated evidence"));
     auto reader = make_sqlite_archive_reader("test", root);
@@ -61,7 +61,9 @@ BOOST_FIXTURE_TEST_CASE(literal_queries_short_queries_and_filters, Fixture) {
         BOOST_REQUIRE_EQUAL(result.hits.size(), 1u);
         BOOST_TEST(result.hits[0].archive.archive_id == ref.archive_id);
     }
-    BOOST_TEST(reader->search({.text = "missing OR literal"}).hits.empty());
+    // Terms are OR-combined: one matching term is enough.
+    BOOST_REQUIRE_EQUAL(reader->search({.text = "missing OR literal"}).hits.size(), 1u);
+    BOOST_TEST(reader->search({.text = "missing absent"}).hits.empty());
     BOOST_TEST(reader->search({.text = "literal", .kind = ArchiveTextKind::Assistant}).hits.empty());
     BOOST_TEST(reader->search({.text = "literal", .archive_id = "absent"}).hits.empty());
     expect_failure([&] { reader->search({.text = ""}); }, ArchiveQueryFailure::InvalidArgument);
@@ -70,6 +72,48 @@ BOOST_FIXTURE_TEST_CASE(literal_queries_short_queries_and_filters, Fixture) {
     expect_failure([&] { reader->search({.text = std::string("a\0b", 3)}); }, ArchiveQueryFailure::InvalidArgument);
     expect_failure([&] { reader->list(0); }, ArchiveQueryFailure::InvalidArgument);
     expect_failure([&] { reader->list(1, -1); }, ArchiveQueryFailure::InvalidArgument);
+}
+
+BOOST_FIXTURE_TEST_CASE(or_terms_rank_and_return_one_hit_per_source, Fixture) {
+    archive(state("alpha only"));
+    const auto both = archive(state("alpha beta alpha beta"));
+    std::string repeated;
+    for (int i = 0; i < 4; ++i) repeated += std::string(3000, 'x') + " alpha ";
+    const auto long_source = archive(state(repeated));
+    auto reader = make_sqlite_archive_reader("test", root);
+
+    auto result = reader->search({.text = "alpha beta", .limit = 10});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 3u);
+    BOOST_TEST(result.hits.front().archive.archive_id == both.archive_id);
+    std::size_t long_hits = 0;
+    for (const auto& hit : result.hits) {
+        if (hit.archive.archive_id == long_source.archive_id) ++long_hits;
+    }
+    BOOST_TEST(long_hits == 1u);
+    BOOST_TEST(!result.has_more);
+
+    // Top-k stops at the requested number of distinct sources and says so.
+    result = reader->search({.text = "alpha", .limit = 2});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 2u);
+    BOOST_TEST(result.has_more);
+}
+
+BOOST_FIXTURE_TEST_CASE(duplicate_best_chunk_still_retires_its_source, Fixture) {
+    const auto unique = archive(state("unique relevant needle " + std::string(5000, 'z')));
+    const auto repeated = "needle " + std::string(5000, 'x')
+        + " needle " + std::string(4000, 'y') + " needle";
+    archive(state(repeated));
+    const auto newest = archive(state(repeated));
+    auto reader = make_sqlite_archive_reader("test", root);
+
+    // The two identical copies expose the same best chunk. Content dedup folds
+    // the older copy's best chunk into the newer hit, but that source must still
+    // be retired so its lower-ranked chunks cannot displace the distinct source.
+    const auto result = reader->search({.text = "needle", .limit = 2});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 2u);
+    BOOST_TEST(result.hits[0].archive.archive_id == newest.archive_id);
+    BOOST_TEST(result.hits[1].archive.archive_id == unique.archive_id);
+    BOOST_TEST(!result.has_more);
 }
 
 BOOST_FIXTURE_TEST_CASE(overlap_and_duplicate_archives_do_not_fill_result_page, Fixture) {

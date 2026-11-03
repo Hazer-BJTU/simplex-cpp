@@ -14,10 +14,14 @@ Tools and their skill are registered before refreshing the model's prompt.
 ```
 
 `memory_search` searches retained archived text, not live unarchived turns. The
-query is literal UTF-8, 1–256 bytes, nonblank and without NUL. Three or more Unicode
-characters use case-insensitive FTS5 trigram search; shorter queries use a
-case-sensitive scan. There is no FTS syntax, semantic search or search cursor.
-`limit` defaults to 5 and accepts 1–20. Refine the query when `has_more` is true.
+query is UTF-8, 1–256 bytes, nonblank and without NUL. It is split on whitespace;
+each term of three or more Unicode scalars is matched as a case-insensitive
+trigram substring and the terms are OR-combined. Hits are ranked by BM25, and
+only the best-ranked chunk of each source is returned. Shorter terms are ignored
+when longer terms exist; a query made only of shorter terms falls back to a
+case-sensitive literal scan. There is no FTS syntax, vector search or search
+cursor. `limit` defaults to 5 and accepts 1–20. Refine the query when `has_more`
+is true.
 
 Each hit includes `archive_id`, `source_id`, `kind`, `created_at`, a suggested
 `offset`, and a bounded preview. Copy both IDs into `memory_fetch`:
@@ -30,8 +34,8 @@ A source is one projected message/tool text, not an entire turn or snapshot.
 Tool-call sources contain the name, a newline and serialized arguments. Sources
 exclude reasoning, prompts, extras and binary/external-reference data. Failed or
 interrupted compaction attempts can also contribute historical text; a match is
-not evidence that an operation succeeded. The search offset starts the matched
-chunk, not the exact match; the default fetch page covers that chunk.
+not evidence that an operation succeeded. The search offset starts the
+best-ranked chunk, not the exact match; the default fetch page covers that chunk.
 
 Fetch defaults to offset 0 and length 8192. Length accepts 4–32768 original bytes.
 Offsets are zero-based original-source byte positions and must not split valid

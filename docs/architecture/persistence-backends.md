@@ -54,12 +54,15 @@ Retention removes an archive's index entries with the archive, so the default
 five-archive retention target also limits searchable history.
 
 When persistence is enabled and the selected backend is SQLite, the worker
-also loads `memory_search` and `memory_fetch`. The model can search for literal
-text, then fetch a hit using its `archive_id` and `source_id`. Long sources use
+also loads `memory_search` and `memory_fetch`. The model can search with keyword
+terms (each term of three or more characters is matched as a case-insensitive
+trigram substring, and results are ranked by BM25), then fetch a hit using its
+`archive_id` and `source_id`. Long sources use
 byte pagination (`next_offset` / `has_more`); results have bounded previews and
-invalid UTF-8 is replaced only for display. Prefer search phrases of at least
-three characters; shorter queries are case-sensitive. Retention may remove a
-source between search and fetch. Current unarchived turns are not searched.
+invalid UTF-8 is replaced only for display. Shorter terms are ignored when longer
+terms are present; a query of only short terms falls back to a literal scan.
+Retention may remove a source between search and fetch. Current unarchived turns
+are not searched.
 
 The tools require no extra worker setting, including with automatic backend
 selection. JSON and disabled persistence omit both tools and their skill.
