@@ -10,7 +10,7 @@
  * file. Threads, environment variables and extra command arguments remain
  * launch-time settings.
  */
-import { ConfigError, checkPromptFile } from '../config.ts';
+import { ConfigError, checkPromptFile, isLegacyDefaultPrompt } from '../config.ts';
 import type { HubConfig } from '../config.ts';
 
 /** Persistence restore policies accepted by the worker. */
@@ -106,8 +106,11 @@ export function normalizeSpec(config: HubConfig, spec: unknown = {}): Normalized
     }
     const selectedPrompt = raw.systemPromptFile !== undefined
         ? raw.systemPromptFile : config.worker.systemPromptFile;
-    const promptFile = selectedPrompt === undefined ? undefined
-        : checkPromptFile(selectedPrompt, 'spec.systemPromptFile');
+    // A Hub or session configuration that still selects the prompt file v1.3.1
+    // replaced selected "the default"; keeping the name would stop the worker
+    // at startup, so the selection is dropped and the deployed default applies.
+    const promptFile = selectedPrompt === undefined || isLegacyDefaultPrompt(selectedPrompt)
+        ? undefined : checkPromptFile(selectedPrompt, 'spec.systemPromptFile');
     const persistence = isPlainObject(raw.persistence) ? raw.persistence : {};
     const backend = persistence.backend ?? config.worker.persistence.backend ?? 'sqlite';
     if (backend !== 'json' && backend !== 'sqlite') throw new ConfigError('spec.persistence.backend must be json or sqlite');

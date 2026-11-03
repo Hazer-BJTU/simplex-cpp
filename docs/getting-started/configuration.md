@@ -107,9 +107,16 @@ for clear, respectful communication, bounded work, verification, cleanup, and
 explicit confirmation where appropriate.
 
 The former `coding_agent.yaml` and `general_agent.yaml` files are no longer shipped.
-Update saved worker configurations that explicitly select either old path to
-`prompts/default.yaml`, or omit the setting. Existing restored snapshots keep
-their saved base prompt; the new template applies to new sessions.
+When the Hub loads a session configuration that still selects one of those two
+names, it drops the setting and writes the file back, so the session inherits the
+deployed `prompts/default.yaml`. The migration happens once, on the next start,
+and leaves every other setting and comment untouched. A Hub configuration
+(`worker.systemPromptFile`) or session spec that names one of the old files is
+read as an omission in the same way. Custom prompt paths are never rewritten: a
+missing custom file still fails, and the Hub now names the file, the worker
+installation and both remedies in the start error.
+Existing restored snapshots keep their saved base prompt; the new template applies
+to new sessions.
 
 The default helps the user complete tasks and follow the user's language. Its
 instructions guide model behavior and do not change tool permissions or the

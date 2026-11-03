@@ -92,6 +92,18 @@ describe('worker supervisor', () => {
         assert.equal(session.latest.status.data.active, false);
     });
 
+    it('refuses a custom prompt missing beside the worker and names both remedies', async () => {
+        const { ctx, session } = await setup(supervisorOverrides({
+            systemPromptFile: 'prompts/absent-custom.yaml',
+        }));
+        const started = await ctx.hub.supervisor.start(session);
+        assert.equal(started.ok, false, started.error);
+        assert.match(started.error, /prompts\/absent-custom\.yaml/);
+        assert.match(started.error, /remove worker\.system_prompt_file/);
+        assert.match(started.error, /prompts\/default\.yaml/);
+        assert.match(started.error, /fixtures/);
+    });
+
     it('captures worker output in memory and on disk', async () => {
         const { ctx, session } = await setup();
         const logPath = join(sessionDir(ctx.config, session.id), 'logs', 'worker.log');

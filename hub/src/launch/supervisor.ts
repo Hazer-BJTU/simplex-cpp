@@ -34,7 +34,7 @@ import type { SplitLine } from '../util/ring.ts';
 import { logPreview } from '../util/log-preview.ts';
 import { BoundedWriter } from '../util/bounded-writer.ts';
 import { renderSessionConfig, sessionDir, workerConfigPath } from './config-render.ts';
-import { prepareSessionConfig, applyConfigurationSpec } from './config-file.ts';
+import { prepareSessionConfig, applyConfigurationSpec, missingPromptDiagnostic } from './config-file.ts';
 import { normalizeSpec } from './spec.ts';
 import { ManagedLauncher } from './managed-launcher.ts';
 import { DockerPreflightError, preflightDockerTarget } from './docker-preflight.ts';
@@ -427,7 +427,7 @@ export class WorkerSupervisor {
         let endpoints = this.endpointsFor(session.id, session.token);
         let launchSpec = specSource;
         let startupLaunch = null;
-        let rendered: { spec: NormalizedSpec; document: unknown };
+        let rendered: { spec: NormalizedSpec; document: unknown; migratedPrompt?: string };
         try {
             const saved = sessionLaunch(this.config, session.id);
             if (saved) {
@@ -508,6 +508,10 @@ export class WorkerSupervisor {
                     endpoints,
                     mock: this.mockProvider?.(),
                 });
+                if (rendered.migratedPrompt !== undefined) {
+                    this.log.info(`session ${session.id}: replaced removed default prompt `
+                        + `'${rendered.migratedPrompt}' with the deployed worker default`);
+                }
             }
         } catch (error) {
             if (error instanceof DockerPreflightError) {
@@ -524,6 +528,13 @@ export class WorkerSupervisor {
                 ...(error instanceof ManagementError ? { cause: error.message } : {}), config: specSource };
         }
         if (session.closing) return { ok: false, error: 'worker start cancelled' };
+        // A local worker resolves the saved prompt against its own installation.
+        // Answer with the remedy here instead of letting it fail with a bare
+        // "cannot open file"; a managed worker owns a different filesystem.
+        if (!managed && launcher.kind === 'simplex-worker') {
+            const missingPrompt = missingPromptDiagnostic(rendered.spec, launchConfig);
+            if (missingPrompt !== null) return { ok: false, error: missingPrompt, config: specSource };
+        }
         session.spec = { ...session.spec, ...rendered.spec,
             // Profile credentials stay in launch.jsonc, not public session metadata.
             ...(launcher !== this.launcher ? { env: {} } : {}),
