@@ -426,11 +426,12 @@ function AssistantMessage({ block, calls }: {
                     {...(reasoning?.bytes === undefined ? {} : { bytes: reasoning.bytes })} />
             )}
 
-            {block.text
-                ? <Markdown>{block.text}</Markdown>
-                : <p className="text-sm italic text-ink-faint">
-                    {omitted ? 'Response display omitted to fit the display budget.' : '(no text in this response)'}
-                </p>}
+            {block.text && <Markdown>{block.text}</Markdown>}
+            {/* Missing prose is silence: an empty response keeps its header and calls only,
+                so no placeholder line adds height where nothing was written. */}
+            {!block.text && omitted && <p className="text-sm italic text-ink-faint">
+                Response display omitted to fit the display budget.
+            </p>}
 
             <AnswerAccess source={block.historyStep?.answer_source
                 ?? display?.answer_source}
