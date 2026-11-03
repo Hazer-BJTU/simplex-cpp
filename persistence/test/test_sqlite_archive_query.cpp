@@ -98,6 +98,24 @@ BOOST_FIXTURE_TEST_CASE(or_terms_rank_and_return_one_hit_per_source, Fixture) {
     BOOST_TEST(result.has_more);
 }
 
+BOOST_FIXTURE_TEST_CASE(duplicate_best_chunk_still_retires_its_source, Fixture) {
+    const auto unique = archive(state("unique relevant needle " + std::string(5000, 'z')));
+    const auto repeated = "needle " + std::string(5000, 'x')
+        + " needle " + std::string(4000, 'y') + " needle";
+    archive(state(repeated));
+    const auto newest = archive(state(repeated));
+    auto reader = make_sqlite_archive_reader("test", root);
+
+    // The two identical copies expose the same best chunk. Content dedup folds
+    // the older copy's best chunk into the newer hit, but that source must still
+    // be retired so its lower-ranked chunks cannot displace the distinct source.
+    const auto result = reader->search({.text = "needle", .limit = 2});
+    BOOST_REQUIRE_EQUAL(result.hits.size(), 2u);
+    BOOST_TEST(result.hits[0].archive.archive_id == newest.archive_id);
+    BOOST_TEST(result.hits[1].archive.archive_id == unique.archive_id);
+    BOOST_TEST(!result.has_more);
+}
+
 BOOST_FIXTURE_TEST_CASE(overlap_and_duplicate_archives_do_not_fill_result_page, Fixture) {
     const auto text = std::string(3980, 'a') + " crossingneedle " + std::string(5000, 'b');
     archive(state(text));

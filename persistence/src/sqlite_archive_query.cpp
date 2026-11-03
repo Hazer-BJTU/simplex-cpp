@@ -319,8 +319,11 @@ public:
                 hit.start_byte = static_cast<std::uint64_t>(rows.column_int64(9));
                 hit.end_byte = static_cast<std::uint64_t>(rows.column_int64(10));
                 const auto body = rows.column_text(11);
-                if (seen.contains({hit.kind, body})) continue;
+                // Retire the source before content dedup: even when its best
+                // chunk duplicates an accepted chunk, a lower-ranked chunk of
+                // the same source must not take a later top-k slot.
                 if (!sources.emplace(hit.archive.archive_id, hit.source_id).second) continue;
+                if (seen.contains({hit.kind, body})) continue;
                 if (result.hits.size() == request.limit) {
                     result.has_more = true;
                     break;
