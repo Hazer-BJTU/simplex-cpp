@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { STUB, emit, modelResponse, open } from './harness.ts';
+import { STUB, call, emit, modelResponse, open } from './harness.ts';
 import { normalizeDisplay } from '../../src/protocol/display.ts';
 import { SessionTranscript } from '../../src/state/transcript.ts';
 
@@ -168,7 +168,6 @@ test('whole-answer omission keeps explicit display and exact page access live an
     for (let attempt = 0; attempt < 2; attempt++) {
         const answer = page.getByTestId('assistant-message');
         await expect(answer).toContainText('Response display omitted to fit the display budget.');
-        await expect(answer).not.toContainText('(no text in this response)');
         await answer.getByRole('button', { name: 'Read complete answer in pages' }).click();
         let recovered = '';
         for (let index = 0; index < 3; index++) {
@@ -239,4 +238,25 @@ test('100-entry worker batches show only real tools and accurate omission notice
         await expect(page.getByTestId('transcript')).not.toContainText('(unnamed');
         if (attempt === 0) await page.reload();
     }
+});
+
+test('a response without prose keeps its reasoning and no placeholder line', async ({ page }) => {
+    await open(page, '?session=demo');
+    const proposal = call('quiet-call', 'run_command', { command: 'echo quiet' });
+    await emit(page, 'run_started', {});
+    await emit(page, 'model_response', modelResponse('', {
+        reasoning: { type: 'text', modality: 'text', raw: 'checked the quiet path' },
+        invokes: [proposal],
+    }));
+    await emit(page, 'tool_calls', [proposal]);
+    const answer = page.getByTestId('assistant-message').last();
+    await expect(page.getByTestId('tool-card')).toHaveCount(1);
+    // Silence, not a stand-in sentence: the header is the only paragraph the response
+    // contributes, so nothing adds height above the call card.
+    await expect(answer.locator(':scope > p')).toHaveCount(1);
+    await expect(answer).toHaveText(/^assistant/);
+    // Reasoning is its own disclosure, not prose: dropping the placeholder keeps it.
+    await answer.locator('summary').filter({ hasText: 'reasoning' }).click();
+    await expect(answer.getByTestId('reasoning-text')).toHaveText('checked the quiet path');
+    await expect(page.getByTestId('transcript')).not.toContainText('no text in this response');
 });
