@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -61,6 +62,9 @@ class ManagedCommand:
         self.killed = False
         self.initial_timeout = False
         self.closing = None
+        self.loop = asyncio.get_running_loop()
+        self.readers = {}
+        self.streams_done = asyncio.Event()
         for pipe in (process.stdout, process.stderr, process.stdin):
             os.set_blocking(pipe.fileno(), False)
         self.pump = asyncio.create_task(self._pump())
@@ -72,32 +76,79 @@ class ManagedCommand:
     def finish(self, name, end):
         """Record a terminal stream reason once, then release its descriptor."""
         if self.ends[name] == "open":
+            descriptor = self.readers.pop(name, None)
+            if descriptor is not None:
+                self.loop.remove_reader(descriptor)
             self.ends[name] = end
             getattr(self.process, name).close()
+            if self.complete():
+                self.streams_done.set()
+
+    def _readable(self, name):
+        """Drain ready data without starving the other pipe or control requests.
+
+        Level-triggered readiness schedules another callback if a prolific writer
+        exhausts this callback's four-chunk allowance. Once EAGAIN is reached,
+        there are no more callbacks until new data or EOF arrives. Capture loss
+        never stops draining the child's pipe.
+        """
+        for _ in range(4):
+            if self.ends[name] != "open":
+                return
+            try:
+                chunk = os.read(self.readers[name], 65536)
+            except BlockingIOError:
+                return
+            except OSError:
+                self.finish(name, "failed")
+                return
+            if not chunk:
+                self.finish(name, "eof")
+                return
+            kept = min(self.remaining, len(chunk))
+            self.data[name].extend(chunk[:kept])
+            self.remaining -= kept
+            self.omitted[name] += len(chunk) - kept
 
     async def _pump(self):
-        """Drain both streams fairly, including after capture capacity is exhausted."""
-        while not self.complete() or self.process.poll() is None:
+        """Join pipe readiness and child exit without a periodic per-command timer.
+
+        One blocking wait thread per live child avoids event-loop polling and
+        contention with the coordinator's shared executor. The thread touches no
+        capture state; it posts completion only after wait() has reaped the child.
+        All descriptors and capture metadata remain event-loop-affine.
+        """
+        exited = self.loop.create_future()
+
+        def notify(error):
+            if exited.done():
+                return
+            if error is None:
+                exited.set_result(None)
+            else:
+                exited.set_exception(error)
+
+        def reap():
+            error = None
+            try:
+                self.process.wait()
+            except Exception as exc:
+                error = exc
+            self.loop.call_soon_threadsafe(notify, error)
+
+        try:
             for name in self.data:
-                if self.ends[name] != "open":
-                    continue
-                try:
-                    chunk = os.read(getattr(self.process, name).fileno(), 65536)
-                except BlockingIOError:
-                    continue
-                except OSError:
-                    self.finish(name, "failed")
-                    continue
-                if not chunk:
-                    self.finish(name, "eof")
-                    continue
-                kept = min(self.remaining, len(chunk))
-                self.data[name].extend(chunk[:kept])
-                self.remaining -= kept
-                self.omitted[name] += len(chunk) - kept
-            if self.process.poll() is not None and not self.process.stdin.closed:
-                self.process.stdin.close()
-            await asyncio.sleep(0.005)
+                if self.ends[name] == "open":
+                    descriptor = getattr(self.process, name).fileno()
+                    self.loop.add_reader(descriptor, self._readable, name)
+                    self.readers[name] = descriptor
+            threading.Thread(target=reap, name="ptc-command-wait", daemon=True).start()
+            await exited
+            self.process.stdin.close()
+            await self.streams_done.wait()
+        finally:
+            for name in self.ends:
+                self.finish(name, "failed")
 
     async def wait(self, seconds):
         """Wait for both exit and capture settlement without consuming output."""

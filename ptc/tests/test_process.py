@@ -53,6 +53,80 @@ async def launch(call, source, **kwargs):
     )["id"]
 
 
+def test_idle_capture_waits_for_readiness_and_removes_readers(tmp_path, monkeypatch):
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        registered = asyncio.Event()
+        output = asyncio.Event()
+        readers = set()
+        callbacks = 0
+        add_reader, remove_reader = loop.add_reader, loop.remove_reader
+
+        def add(fd, callback, *args):
+            def ready():
+                nonlocal callbacks
+                callbacks += 1
+                callback(*args)
+                output.set()
+
+            add_reader(fd, ready)
+            readers.add(fd)
+            if len(readers) == 2:
+                registered.set()
+
+        def remove(fd):
+            readers.discard(fd)
+            return remove_reader(fd)
+
+        monkeypatch.setattr(loop, "add_reader", add)
+        monkeypatch.setattr(loop, "remove_reader", remove)
+        async with manager(tmp_path) as (store, call, _):
+            identity = await launch(call, "exec cat", timeout_seconds=0)
+            item = store.records[identity]
+            await asyncio.wait_for(registered.wait(), 2)
+            assert len(item.readers) == 2
+
+            async def no_polling(*args):
+                pytest.fail("idle capture must not schedule periodic sleeps")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(impl.asyncio, "sleep", no_polling)
+                # Explicit event-loop checkpoints, without a wall-clock sleep.
+                for _ in range(5):
+                    checkpoint = loop.create_future()
+                    loop.call_soon(checkpoint.set_result, None)
+                    await checkpoint
+                assert callbacks == 0 and not item.pump.done()
+                await call(
+                    "send", id=identity, text="later\n", close_stdin=False, timeout_seconds=0
+                )
+                await asyncio.wait_for(output.wait(), 2)
+                assert (await call("read", id=identity, full=False, max_bytes=100))[
+                    "stdout"
+                ] == "later\n"
+            await call("send", id=identity, text="", close_stdin=True, timeout_seconds=0)
+            await asyncio.wait_for(asyncio.shield(item.pump), 2)
+            assert item.process.returncode == 0 and item.complete()
+            assert not readers and not item.readers
+            assert (await call("release", id=identity))["released"]
+
+    asyncio.run(scenario())
+
+
+def test_pipe_eof_before_process_exit_still_reaps_child(tmp_path):
+    async def scenario():
+        async with manager(tmp_path) as (store, call, _):
+            identity = await launch(call, "exec 1>&- 2>&-; read line", timeout_seconds=0)
+            item = store.records[identity]
+            await asyncio.wait_for(item.streams_done.wait(), 2)
+            assert item.complete() and item.process.poll() is None
+            await call("send", id=identity, text="done\n", close_stdin=True, timeout_seconds=0)
+            await asyncio.wait_for(asyncio.shield(item.pump), 2)
+            assert item.process.returncode == 0 and item.process.stdin.closed
+
+    asyncio.run(scenario())
+
+
 def test_separate_output_nonzero_exit_and_release(tmp_path):
     async def scenario():
         async with manager(tmp_path) as (_, call, created):
