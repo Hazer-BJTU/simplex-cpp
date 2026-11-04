@@ -274,6 +274,14 @@ BOOST_AUTO_TEST_CASE(subagent_schemas_validation_and_attributes_agree)
             ? model_io::InvokeType::ReadOnly : model_io::InvokeType::SerialWrite));
         for (const auto& args : cases) {
             query.arguments = args;
+            tool->write_attributes(query);
+            const bool exporting = name == "subagent_receive" && args.contains("output_path");
+            BOOST_TEST_CONTEXT(name << ": " << args.dump()) {
+                BOOST_CHECK(query.security == (exporting
+                    ? model_io::InvokeSecurity::RequireConfirm : model_io::InvokeSecurity::Trusted));
+                BOOST_CHECK(query.type == (name == "subagent_receive" && !exporting
+                    ? model_io::InvokeType::ReadOnly : model_io::InvokeType::SerialWrite));
+            }
             bool accepted = true;
             try { tool->ensure_arguments(query); }
             catch (const tools::InvokeException&) { accepted = false; }

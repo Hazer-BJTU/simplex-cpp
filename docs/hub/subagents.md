@@ -29,6 +29,9 @@ result. Compacted-away history is not restored. Reasoning and tool call details
 are excluded. Export requires managed child persistence, an existing parent
 directory and approval under the worker's confirmation policy. Existing files and
 symlinks are never overwritten. Preview/list requires no extra approval.
+The tool's runtime attributes follow its arguments: list/preview is `ReadOnly`
+and `Trusted`; export with `output_path` is `SerialWrite` and `RequireConfirm`.
+The YAML declaration documents both branches rather than assigning fixed attributes.
 
 The Markdown document has a contents list and unique ASCII markers such as
 `<!-- simplex:block:<document-id>:turn-000001-response-1:begin -->` and matching

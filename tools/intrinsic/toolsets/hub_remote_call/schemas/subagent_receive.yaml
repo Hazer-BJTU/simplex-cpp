@@ -8,8 +8,9 @@ description: >-
   parent directory and a new file path; existing files are never overwritten.
   Read or search the exported block markers with available file tools. Collect
   required results before stopping the child, which deletes its persistence.
-type: read_only
-security: trusted
+# Attributes depend on the arguments; SubagentReceiveTool::write_attributes()
+# is authoritative. Listing/preview is read_only + trusted. Supplying output_path
+# writes a new file and uses serial_write + require_confirm.
 argument_schema:
   type: object
   additionalProperties: false
