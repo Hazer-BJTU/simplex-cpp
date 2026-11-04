@@ -32,12 +32,25 @@ model_io::Content render_ptc_response(const Json& r, int code,
     const auto status = r["status"].get<std::string>();
     require(status == "completed" || status == "failed", "invalid PTC status");
     const bool unknown = r.value("commit_status", std::string{}) == "unknown";
-    if (r.contains("commit_status")) require(unknown, "invalid PTC commit_status");
-    if (unknown) {
+    const bool rejected = r.value("commit_status", std::string{}) == "none";
+    if (r.contains("commit_status")) require(unknown || rejected, "invalid PTC commit_status");
+    if (r.contains("submitted")) {
+        require(r["submitted"].is_boolean() && (rejected || r["submitted"] == true),
+            "inconsistent PTC submission status");
+    }
+    if (unknown || rejected) {
         require(!r.contains("committed"), "ambiguous PTC commit status");
         require(status == "failed" && code == 2, "inconsistent PTC boundary failure");
         if (r.contains("execution_id")) require(r["execution_id"] == id, "PTC identity mismatch");
         if (r.contains("epoch")) require(r["epoch"] == epoch, "PTC epoch mismatch");
+        if (rejected) {
+            // Only an explicit, internally consistent refusal allows metadata
+            // refresh. Never infer non-submission from an error code alone.
+            require(r.contains("submitted") && r["submitted"] == false,
+                "PTC rejection lacks non-submission guarantee");
+            require(r.contains("commands_created") && r["commands_created"].is_array()
+                && r["commands_created"].empty(), "PTC rejection reports external effects");
+        }
     } else {
         require(r.value("execution_id", std::string{}) == id, "PTC identity mismatch");
         require(string_field(r, "epoch") && !r["epoch"].get_ref<const std::string&>().empty()
@@ -59,9 +72,13 @@ model_io::Content render_ptc_response(const Json& r, int code,
             "invalid PTC error");
         out.field("error", r["error"]["code"].get<std::string>() + ": "
             + r["error"]["message"].get<std::string>());
-        out.field(unknown ? "commit_status" : "committed", unknown ? Json("unknown") : Json(false));
+        if (unknown || rejected) out.field("commit_status", r["commit_status"]);
+        else out.field("committed", false);
+        if (rejected) out.field("submitted", false);
         out.field("execution_id", id);
-        out.field("hints", "External effects may remain. Inspect before retrying; do not replay source.");
+        out.field("hints", rejected
+            ? "Source was not submitted. This call was not retried."
+            : "External effects may remain. Inspect before retrying; do not replay source.");
     }
     if (r.contains("commands_created")) {
         require(r["commands_created"].is_array(), "invalid PTC command identities");
@@ -88,7 +105,7 @@ model_io::Content render_ptc_response(const Json& r, int code,
     }
     auto content = out.render();
     Json receipt = {{"execution_id", id}};
-    for (const auto* key : {"session_id", "epoch", "revision", "committed", "commit_status"}) {
+    for (const auto* key : {"session_id", "epoch", "revision", "committed", "commit_status", "submitted"}) {
         if (r.contains(key)) receipt[key] = r[key];
     }
     content.extras = Json{{"simplex.ptc", std::move(receipt)}};
@@ -197,6 +214,12 @@ asio::awaitable<void> PtcRuntime::initialize()
     auto previous = co_await call(std::move(status_args));
     require(previous.code == 0, "PTC daemon status probe failed");
     touched_ = previous.data.contains("running") && previous.data["running"] == false;
+    co_await inspect_session();
+    initialized_ = true;
+}
+
+asio::awaitable<void> PtcRuntime::inspect_session()
+{
     std::vector<std::string> inspect_args{"session", "inspect", "--state-directory", options_.directory.string()};
     auto state = co_await call(std::move(inspect_args));
     if (state.code != 0) {
@@ -208,8 +231,7 @@ asio::awaitable<void> PtcRuntime::initialize()
         "PTC session inspection failed");
     touched_ = true;
     require(!state.data.value("recovery_required", true), "PTC session requires explicit recovery");
-    if (state.data["epoch"].is_string()) epoch_ = state.data["epoch"];
-    initialized_ = true;
+    epoch_ = state.data["epoch"].is_null() ? std::string{} : state.data["epoch"].get<std::string>();
 }
 
 asio::awaitable<model_io::Content> PtcRuntime::execute(std::string source)
@@ -230,8 +252,25 @@ asio::awaitable<model_io::Content> PtcRuntime::execute(std::string source)
         auto reply = co_await call(std::move(execute_args),
             std::move(input), stop, true);
         auto result = render_ptc_response(reply.data, reply.code, id, epoch_);
-        if (reply.code == 2) initialized_ = false;
-        else epoch_ = reply.data["epoch"].get<std::string>();
+        if (reply.code == 2) {
+            initialized_ = false;
+            if (reply.data.value("commit_status", std::string{}) == "none") {
+                // The rejected source is never replayed. Refresh only metadata
+                // so a later, separately admitted model call can use the current
+                // epoch. Failed inspection must not relabel this refusal as an
+                // uncertain execution; it leaves the runtime safely disabled.
+                try {
+                    co_await inspect_session();
+                    initialized_ = true;
+                } catch (const std::exception&) {
+                    result.raw += "\n" + ToolResult{}.field("hints",
+                        "Session inspection failed; inspect the session and restart the worker before further PTC use.")
+                        .render().raw;
+                }
+            }
+        } else {
+            epoch_ = reply.data["epoch"].get<std::string>();
+        }
         co_return result;
     } catch (const std::exception& error) {
         initialized_ = false;

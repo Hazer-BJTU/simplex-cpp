@@ -15,7 +15,7 @@ from .commands import Commands
 from .endpoint import Endpoint, check_peer
 from .extensions import ToolRegistry
 from .lifecycle import Policy, Resources
-from .protocol import PTCError, Request, encode
+from .protocol import ExecutionRejected, PTCError, Request, encode, error_response
 from .runner import Runner
 from .runtime import compatibility
 from .session import Session, digest
@@ -28,22 +28,6 @@ from .transport import (
     unpack,
     write_frame,
 )
-
-
-def error_response(exc: Exception) -> dict:
-    """Do not leak environment values or arbitrary host diagnostics across control replies."""
-    code = exc.code if isinstance(exc, PTCError) else "storage_or_interruption"
-    message = (
-        str(exc)
-        if isinstance(exc, PTCError)
-        else "inspect session before retrying; effects unknown"
-    )
-    return {
-        "protocol": 1,
-        "status": "failed",
-        "commit_status": "unknown",
-        "error": {"code": code, "message": message},
-    }
 
 
 class Daemon:
@@ -212,18 +196,27 @@ class Daemon:
 
     def admit(self, value: dict) -> dict:
         """Validate identity/context before reserving the sole execution slot."""
-        request = Request.parse(value.get("request"))
-        context = execution_context(value.get("context"))
+        try:
+            request = Request.parse(value.get("request"))
+            context = execution_context(value.get("context"))
+        except PTCError as exc:
+            raise ExecutionRejected(exc.code, str(exc)) from exc
         key = digest(encode({"source": request.source, "epoch": request.epoch, "context": context}))
         if self.state != "ready":
-            raise PTCError("stopping", "daemon is stopping; request was not admitted")
+            raise ExecutionRejected("stopping", "daemon is stopping; request was not admitted")
         if self.active:
             if self.active["request"].execution_id == request.execution_id:
                 if self.active["digest"] != key:
-                    raise PTCError("identity_conflict", "execution identity has different content")
+                    raise ExecutionRejected(
+                        "identity_conflict", "execution identity has different content"
+                    )
                 return self.query(request.execution_id, request.epoch)
-            raise PTCError("busy", "session is already executing")
-        self.refresh()
+            raise ExecutionRejected("busy", "session is already executing")
+        try:
+            self.refresh()
+        except PTCError as exc:
+            # No slot, runner or command has been acquired for this request.
+            raise ExecutionRejected(exc.code, str(exc)) from exc
         runner = Runner(self.modules, context, self.policy.cleanup_seconds)
         self.active = {"request": request, "digest": key, "created": []}
         self.runner = runner

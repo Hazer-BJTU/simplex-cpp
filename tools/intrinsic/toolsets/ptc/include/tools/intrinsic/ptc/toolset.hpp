@@ -38,6 +38,9 @@ private:
     struct Reply { nlohmann::json data; int code; };
     boost::asio::awaitable<Reply> call(std::vector<std::string> tail,
         std::string input = {}, std::stop_token stop = {}, bool execution = false);
+    /** Refresh the epoch without evaluating source or acknowledging recovery.
+     * Used at startup and after a verified refusal to admit an execution. */
+    boost::asio::awaitable<void> inspect_session();
     PtcOptions options_;
     std::shared_ptr<ProcessSessionStore> processes_;
     std::function<std::stop_token()> stop_;

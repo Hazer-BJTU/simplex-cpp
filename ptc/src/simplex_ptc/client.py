@@ -33,8 +33,11 @@ class Client:
     def check(value: dict) -> dict:
         """Raise structured boundary failures while leaving execution failures as data."""
         if "boundary_error" in value:
-            error = value["boundary_error"]["error"]
-            raise PTCError(error["code"], error["message"])
+            response = value["boundary_error"]
+            error = response["error"]
+            failure = PTCError(error["code"], error["message"])
+            failure.response = response
+            raise failure
         return value
 
     def connect(self, *, management: bool = False):

@@ -17,6 +17,7 @@ from . import runtime
 from .extensions import ToolRegistry
 from .protocol import (
     MAX_CHECKPOINT_BYTES,
+    ExecutionRejected,
     Output,
     PTCError,
     Request,
@@ -191,20 +192,24 @@ class Session:
         request_digest = digest(encode(identity))
         evaluator = evaluator or evaluate
         with self._locked():
-            checkpoint = self._load()
-            if self._pending(checkpoint) is not None:
+            try:
+                checkpoint = self._load()
+                pending = self._pending(checkpoint)
+            except PTCError as exc:
+                raise ExecutionRejected(exc.code, str(exc)) from exc
+            if pending is not None:
                 raise PTCError(
                     "recovery_required", "interrupted execution must be acknowledged first"
                 )
             if checkpoint is None:
                 if request.epoch is not None:
-                    raise PTCError("stale_epoch", "cannot resume a missing session")
+                    raise ExecutionRejected("stale_epoch", "cannot resume a missing session")
                 checkpoint = self._new()
                 self.storage.write("checkpoint", checkpoint)
             receipt = checkpoint["receipt"]
             if receipt and receipt["execution_id"] == request.execution_id:
                 if receipt["request_digest"] != request_digest:
-                    raise PTCError(
+                    raise ExecutionRejected(
                         "identity_conflict", "execution_id was used with different source"
                     )
                 # Visibility after rename is not proof that the directory
@@ -225,7 +230,7 @@ class Session:
                 and not checkpoint.get("requires_epoch", False)
             )
             if request.epoch != checkpoint["epoch"] and not initial_request:
-                raise PTCError("stale_epoch", "supply the current session epoch")
+                raise ExecutionRejected("stale_epoch", "supply the current session epoch")
             self.storage.write(
                 "execution.pending",
                 {

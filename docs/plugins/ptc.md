@@ -89,7 +89,14 @@ stopped, retention expires, or worker shutdown stops the daemon. Worker shutdown
 waits for daemon cleanup before releasing its session ownership. Never delete a
 PTC directory while its daemon is alive.
 
-A transport/storage error can leave the outcome unknown. The worker blocks further
+Definite admission refusals (for example, a stale epoch after an operator reset)
+report `submitted: false`, `commit_status: none` and an empty `commands_created`
+list. The worker re-inspects session metadata without retrying the code, so a
+later new call can proceed with the current epoch. If that inspection fails, PTC
+remains disabled until the operator resolves the state and restarts the worker.
+
+A transport/storage error or recovery-required state can leave the outcome unknown.
+These are distinct from admission refusals. The worker blocks further
 PTC execution in that instance and reports an execution ID. Inspect the session
 using the same executable, modules and state directory before restarting; never
 retry the original source merely to obtain a missing result. No automatic reset,
