@@ -1,0 +1,116 @@
+# Save as <Hub dataDir>/skills/<id>.yaml; reference it as @{skill:<id>}.
+# Metadata is used by the picker. Only text is expanded into the user message.
+name: markdown
+title: markdown
+description: Create, read, organize, and maintain AGENTS.md instructions following the project's natural structure, preserving concise and accurate guidance for coding agents.
+keywords: [AGENTS.md, project-context, documentation, repository-instructions, maintenance]
+text: |
+  Manage AGENTS.md as durable, project-specific guidance for coding agents.
+  Help future agents understand the project, locate relevant instructions, and
+  perform work correctly without repeatedly rediscovering established knowledge.
+
+  Establish initial understanding:
+  - Locate the repository root and inspect applicable existing AGENTS.md files,
+    including ancestor instructions and files within the relevant project areas.
+  - If the repository has no root AGENTS.md, inspect its structure, documentation,
+    build configuration, and tests, then explicitly create a concise root file.
+    Preserve and link any existing instructions in subdirectories.
+  - Respect an explicitly read-only task: report a missing file instead of creating it.
+  - If AGENTS.md already exists, read it and the relevant linked guidance before
+    beginning work. Treat this initial orientation as read-only; do not rewrite
+    existing instructions merely to establish understanding.
+  - Build a basic understanding of the project's purpose, component boundaries,
+    development workflow, validation requirements, and relevant constraints.
+  - Verify important guidance against current project evidence. Treat discrepancies
+    as items to investigate rather than silently assuming either source is correct.
+
+  Organize instructions around the project:
+  - Use the project's natural boundaries, usually its directory and package structure,
+    to organize instructions.
+  - Keep repository-wide guidance in the root AGENTS.md. Place specialized guidance
+    in nested AGENTS.md files at meaningful component boundaries.
+  - Create nested files only when an area needs distinct instructions or enough
+    local detail to justify a separate document. Do not create one per directory.
+  - Build a navigable link tree using relative Markdown links from parent instructions
+    to child instructions, with a short description of each child's scope.
+  - Let each child file link to its own relevant descendants. Avoid duplicating
+    the entire repository index at every level.
+  - Keep shared rules at their common ancestor and local rules near the affected code.
+    Avoid copying the same instructions across multiple files.
+  - Read applicable ancestor and local instructions for the files being worked on.
+    Resolve repository-level conflicts using the active agent's instruction rules;
+    normally, more specific directory guidance governs its own subtree.
+  - Do not assume that linking to a document changes its scope or guarantees that
+    the runtime loads it automatically. Explicitly read relevant linked material.
+  - Keep all repository instructions subordinate to higher-priority instructions
+    and the user's explicit requirements.
+
+  Include useful, durable content:
+  - A brief project overview and a map of important components and responsibilities.
+  - Verified setup, build, run, test, lint, and formatting commands, including their
+    working directories and necessary prerequisites.
+  - Project-specific conventions, interface contracts, architectural invariants,
+    and constraints that are not obvious from inspecting individual files.
+  - Guidance for selecting relevant validation and handling generated files,
+    migrations, compatibility requirements, or sensitive operations.
+  - Stable pitfalls and non-obvious behavior that would otherwise cause repeated
+    mistakes, with a concise explanation or reference when useful.
+  - Links to authoritative documentation for detailed architecture, APIs, contribution
+    procedures, and operational workflows.
+  - Clear scope and navigation so an agent can find the instructions relevant to its task.
+
+  Exclude unsuitable content:
+  - Secrets, credentials, personal information, or sensitive environment details.
+  - Conversation transcripts, temporary task plans, progress logs, completed-task
+    summaries, and other session-specific memory.
+  - Unverified assumptions, speculative decisions, or proposed conventions presented
+    as established project rules.
+  - Large code excerpts, exhaustive file listings, or facts that are easily derived
+    from the source and likely to become stale.
+  - Generic programming advice that adds no project-specific value.
+  - Duplicated README, API, or design documentation when a short explanation and link
+    would be sufficient.
+  - Historical incident narratives or resolved workarounds with no continuing relevance.
+    Preserve only any durable lesson that still affects future work.
+  - Instructions that weaken existing safeguards or expand an agent's authority
+    beyond the user's request.
+
+  Review update needs at natural milestones:
+  - Reassess relevant AGENTS.md files when a coherent development phase ends, such as
+    completing a feature, fixing a defect, finishing a refactor, or preparing a handoff.
+  - Update them when completed work changes project structure, commands, interfaces,
+    conventions, validation requirements, or other durable guidance.
+  - Record a newly discovered pitfall when it is verified and likely to matter again.
+  - Correct stale or misleading instructions when the intended replacement is supported
+    by evidence and falls within the authorized task.
+  - Do not update files merely because a development phase ended. If no durable guidance
+    changed, leave them unchanged.
+  - During explicitly read-only work, report necessary documentation corrections
+    without applying them.
+
+  Apply updates carefully:
+  - Read the current file before editing and preserve unrelated instructions and
+    concurrent user changes.
+  - Make the smallest coherent update at the narrowest appropriate scope.
+    Update shared ancestors only when the change affects shared guidance.
+  - Modify or remove obsolete statements instead of appending contradictory rules.
+  - Distinguish established conventions from incidental implementation choices.
+    Do not turn a local workaround into a repository-wide requirement.
+  - Update parent indexes and affected references when components or instruction
+    files are added, moved, renamed, or removed.
+  - Maintain the same structural principles used during creation. Split or consolidate
+    files only when the project's boundaries or documentation needs justify it.
+  - Keep instructions concise, actionable, and consistent with the surrounding language
+    and organization.
+
+  Verify and finish:
+  - Check Markdown structure, relative links, referenced paths, and consistency between
+    parent and child instructions.
+  - Verify commands against scripts and configuration. Execute safe, relevant checks
+    when practical; do not run destructive or expensive operations merely to validate
+    documentation.
+  - Distinguish commands actually executed from those checked only by inspection.
+  - Review the final diff for unsupported claims, duplication, stale guidance, and
+    unintended changes.
+  - Briefly report which instruction files were created or updated and why.
+    If meaningful uncertainty remains, state it explicitly.

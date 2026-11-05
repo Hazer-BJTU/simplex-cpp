@@ -267,8 +267,9 @@ ASCII letters, digits, `_`, or `-`, at most 128 characters. `template` is reserv
 for the template endpoint. Files must be regular files, at most 64 KiB. Aliases,
 unknown fields, and symbolic links are rejected. The library accepts up to 256
 files. Invalid files are reported individually, without preventing Hub startup.
-The packaged `code-review` example is created on first access if absent; existing
-files are never overwritten. Copy it to a new filename to create another skill.
+The examples packaged under `schemas/skills/` (currently `code-review` and
+`markdown`) are created on first access if absent; existing files are never
+overwritten. Copy one to a new filename to create another skill.
 
 For example, `Please follow @{skill:code-review} for this change.` expands the
 reference **at that position**. Whitespace around it remains unchanged. Use

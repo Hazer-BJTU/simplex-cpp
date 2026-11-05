@@ -57,6 +57,7 @@ for (const required of [
     'package/dist/schemas/local.jsonc',
     'package/dist/schemas/worker.yaml',
     'package/dist/schemas/skills/code-review.yaml',
+    'package/dist/schemas/skills/markdown.yaml',
     'package/dist/web/dist/index.html',
 ]) {
     if (!members.includes(required)) throw new Error(`Missing npm package file: ${required}`);

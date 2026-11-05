@@ -10,6 +10,13 @@ import type { SkillDocument, SkillList } from '../../ui/skills.ts';
 
 const MAX_BYTES = 64 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+const PACKAGED = join(hubRoot, 'schemas/skills');
+
+/** Filename stems in a skill directory, excluding the reserved template id. */
+function skillIds(entries: string[]): string[] {
+    return entries.filter(n => n.endsWith('.yaml') && ID.test(n.slice(0, -5)))
+        .map(n => n.slice(0, -5)).filter(id => id !== 'template').sort();
+}
 
 /** One source file, parsed without executable tags, aliases or includes. */
 export function parseSkill(id: string, bytes: Uint8Array): SkillDocument {
@@ -58,7 +65,7 @@ export class SkillStore {
     constructor(dataDir: string) { this.directory = join(dataDir, 'skills'); }
 
     async template(): Promise<string> {
-        return readFile(join(hubRoot, 'schemas/skills/code-review.yaml'), 'utf8');
+        return readFile(join(PACKAGED, 'code-review.yaml'), 'utf8');
     }
 
     /** Initialize lazily so malformed local skill files never prevent Hub startup. */
@@ -68,17 +75,22 @@ export class SkillStore {
         if (!stat.isDirectory() || stat.isSymbolicLink()) {
             throw configError('Skill directory must be a regular directory');
         }
-        // Concurrent picker/list reads share publication of the example file.
-        this.initialization ??= this.seedExample();
+        // Concurrent picker/list reads share publication of the packaged examples.
+        this.initialization ??= this.seedPackaged();
         await this.initialization;
     }
 
-    private async seedExample(): Promise<void> {
-        try {
-            await writeFile(join(this.directory, 'code-review.yaml'), await this.template(),
-                { flag: 'wx', mode: 0o600 });
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    /** Seed packaged examples without replacing operator-owned files. */
+    private async seedPackaged(): Promise<void> {
+        for (const id of skillIds(await readdir(PACKAGED))) {
+            const bytes = await readFile(join(PACKAGED, `${id}.yaml`));
+            parseSkill(id, bytes); // A corrupt installation must not seed unusable files.
+            try {
+                await writeFile(join(this.directory, `${id}.yaml`), bytes,
+                    { flag: 'wx', mode: 0o600 });
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            }
         }
     }
 
@@ -114,9 +126,7 @@ export class SkillStore {
         await this.prepare();
         const result: SkillList = { skills: [], errors: [] };
         // Bound work and response size even for a mistakenly populated directory.
-        const entries = await readdir(this.directory);
-        const ids = entries.filter(n => n.endsWith('.yaml') && ID.test(n.slice(0, -5)))
-            .map(n => n.slice(0, -5)).filter(id => id !== 'template').sort();
+        const ids = skillIds(await readdir(this.directory));
         if (ids.length > 256) throw configError('Skill library exceeds 256 files');
         for (const id of ids) {
             try {

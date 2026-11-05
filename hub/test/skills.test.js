@@ -10,13 +10,14 @@ import { createPanelStore } from '../web/src/state/store.ts';
 const source = 'name: review\ntitle: Review\ndescription: Review changes.\ntext: |\n  First instruction.\n  Second instruction.\n';
 const parsed = text => parseSkill('review', Buffer.from(text));
 
-test('skill library seeds once, reads changes, isolates errors and bounds files', async t => {
+test('skill library seeds packaged examples once, reads changes, isolates errors and bounds files', async t => {
     const dir = await mkdtemp(join(tmpdir(), 'simplex-skills-'));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const store = new SkillStore(dir);
-    assert.equal((await store.list()).skills[0].id, 'code-review');
+    assert.deepEqual((await store.list()).skills.map(skill => skill.id), ['code-review', 'markdown']);
     await writeFile(join(store.directory, 'code-review.yaml'), source);
     assert.equal((await store.read('code-review')).name, 'review');
+    assert.equal((await new SkillStore(dir).read('code-review')).name, 'review');
     const first = await store.read('code-review');
     await writeFile(join(store.directory, 'code-review.yaml'), source.replace('First', 'Changed'));
     assert.notEqual((await store.read('code-review')).revision, first.revision);
@@ -25,7 +26,7 @@ test('skill library seeds once, reads changes, isolates errors and bounds files'
     await symlink(join(store.directory, 'code-review.yaml'), join(store.directory, 'link.yaml'));
     await mkdir(join(store.directory, 'folder.yaml'));
     const result = await store.list();
-    assert.equal(result.skills.length, 1);
+    assert.deepEqual(result.skills.map(skill => skill.id), ['code-review', 'markdown']);
     assert.deepEqual(result.errors.map(e => e.id), ['broken', 'folder', 'large', 'link']);
     await assert.rejects(store.read('../review'), /Invalid skill ID/);
     await assert.rejects(store.read('missing'), /not found/);
@@ -87,7 +88,7 @@ test('skill REST routes require panel authentication and return documented snaps
         assert.equal(response.status, 200);
         const body = await response.json();
         if (path === '/api/skills') {
-            assert.equal(body.skills[0].id, 'code-review');
+            assert.deepEqual(body.skills.map(skill => skill.id), ['code-review', 'markdown']);
             assert.equal(Object.hasOwn(body.skills[0], 'text'), false);
         } else assert.equal(typeof body.text, 'string');
     }
