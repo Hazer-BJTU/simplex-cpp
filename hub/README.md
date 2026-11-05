@@ -923,6 +923,7 @@ Store predefined instruction YAML in `<dataDir>/skills/`. The panel's **Skills**
 picker replaces the former attachment control and inserts `@{skill:ID}` at the
 caret. References support keyboard completion, preview, direct editing, and
 explicit snapshot refresh. Send expands them in place into ordinary user text;
-worker changes are unnecessary. The packaged example/template lives in
-`schemas/skills/code-review.yaml`. See the [deployment guide](../docs/deployment/hub.md#predefined-skills-in-messages)
+worker changes are unnecessary. The packaged examples live in `schemas/skills/`,
+where `code-review.yaml` also serves as the authoring template. See the
+[deployment guide](../docs/deployment/hub.md#predefined-skills-in-messages)
 for the format, limits, and recovery semantics.
