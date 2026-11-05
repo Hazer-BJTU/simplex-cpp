@@ -33,6 +33,10 @@ one JSON object; sandbox prints are captured in `output`, while interpreter and
 extension diagnostics go to stderr. Exit codes: 0 success, 1 recorded execution
 failure, 2 request/storage/recovery/interpreter failure. A successful OS exit is
 not a substitute for checking the response contract.
+Definite pre-evaluation refusals report `submitted: false`, `commit_status: "none"`
+and an empty `commands_created`; uncertain failures report `commit_status: "unknown"`.
+Both use exit 2. A matching error code alone does not prove non-submission, and
+pending executions still require explicit recovery. Neither response replays code.
 
 The CLI takes a single UTF-8 JSON request (execution_id, source, and epoch) on stdin.
 Omit epoch only for the first execution; subsequent calls use the returned epoch.

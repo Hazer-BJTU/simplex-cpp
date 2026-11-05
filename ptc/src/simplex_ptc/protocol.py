@@ -18,6 +18,34 @@ class PTCError(Exception):
         self.code = code
 
 
+class ExecutionRejected(PTCError):
+    """A refusal proven to precede evaluation of this execution request.
+
+    Use only at admission/validation sites, never infer this guarantee from an
+    error code caught after runner entry. An earlier pending execution still
+    requires recovery and must retain its unknown-outcome classification.
+    """
+
+
+def error_response(exc: Exception) -> dict:
+    """Preserve definite rejection without claiming rollback for other failures."""
+    rejected = isinstance(exc, ExecutionRejected)
+    response = {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "none" if rejected else "unknown",
+        "error": {
+            "code": exc.code if isinstance(exc, PTCError) else "storage_or_interruption",
+            "message": str(exc)
+            if isinstance(exc, PTCError)
+            else "inspect session before retrying; effects unknown",
+        },
+    }
+    if rejected:
+        response.update(submitted=False, commands_created=[])
+    return response
+
+
 def encode(value: object) -> bytes:
     """Encode strict JSON, rejecting non-finite numbers and unsupported objects."""
 
@@ -61,22 +89,22 @@ class Request:
             or not {"execution_id", "source"} <= set(value)
             or set(value) - {"execution_id", "source", "epoch"}
         ):
-            raise PTCError("invalid_request", "expected execution_id and source")
+            raise ExecutionRejected("invalid_request", "expected execution_id and source")
         identity, source = value["execution_id"], value["source"]
         if not isinstance(identity, str) or not 1 <= len(identity) <= 128:
-            raise PTCError("invalid_request", "execution_id must contain 1–128 characters")
+            raise ExecutionRejected("invalid_request", "execution_id must contain 1–128 characters")
         if not isinstance(source, str):
-            raise PTCError("invalid_request", "source must be a string")
+            raise ExecutionRejected("invalid_request", "source must be a string")
         epoch = value.get("epoch")
         if epoch is not None and (not isinstance(epoch, str) or len(epoch) != 36):
-            raise PTCError("invalid_request", "epoch must be a session UUID")
+            raise ExecutionRejected("invalid_request", "epoch must be a session UUID")
         try:
             source.encode("utf-8")
         except UnicodeError as exc:
-            raise PTCError("invalid_request", "source must be valid UTF-8") from exc
+            raise ExecutionRejected("invalid_request", "source must be valid UTF-8") from exc
         request = cls(identity, source, epoch)
         if len(encode(value)) > MAX_REQUEST_BYTES:
-            raise PTCError("invalid_request", "request exceeds byte limit")
+            raise ExecutionRejected("invalid_request", "request exceeds byte limit")
         return request
 
 

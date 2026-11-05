@@ -19,7 +19,7 @@ from simplex_ptc.client import Client
 from simplex_ptc.daemon import Daemon
 from simplex_ptc.endpoint import Endpoint
 from simplex_ptc.lifecycle import Policy, Resources
-from simplex_ptc.protocol import encode
+from simplex_ptc.protocol import ExecutionRejected, encode, error_response
 from simplex_ptc.transport import MAX_FRAME_BYTES, caller_umask, execution_context, pack, receive
 
 
@@ -167,6 +167,14 @@ def test_slow_callback_busy_query_cancel_and_stop_are_responsive(clients, tmp_pa
     with pytest.raises(PTCError) as error:
         client.call("execute", request=asdict(Request("another", "1")), context=context(tmp_path))
     assert error.value.code == "busy"
+    assert error.value.response == {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "none",
+        "submitted": False,
+        "commands_created": [],
+        "error": {"code": "busy", "message": "session is already executing"},
+    }
     assert (
         client.call("execute", request=asdict(request), context=context(tmp_path))["status"]
         == "running"
@@ -568,9 +576,33 @@ def test_lifetime_lock_symlink_rejected_without_modifying_target(tmp_path):
     assert target.read_text() == "keep"
 
 
-def test_boundary_error_cli_keeps_exit_two(clients):
+@pytest.mark.parametrize(
+    "case", ["missing_epoch", "reset_epoch", "identity_conflict", "recovery_required"]
+)
+def test_boundary_error_cli_keeps_exit_two(clients, case):
     client = clients()
     result = client.execute(Request("one", "1"))
+    request = {"execution_id": "bad", "source": "2"}
+    if case == "reset_epoch":
+        client.reset(result["epoch"])
+        request["epoch"] = result["epoch"]
+    elif case == "identity_conflict":
+        request["execution_id"] = "one"
+    elif case == "recovery_required":
+        client.stop()
+        from simplex_ptc.storage import Storage
+
+        storage = Storage(client.endpoint.directory)
+        with storage.locked():
+            storage.write(
+                "execution.pending",
+                {
+                    "execution_id": "interrupted",
+                    "epoch": result["epoch"],
+                    "base_revision": result["revision"],
+                    "request_digest": "interrupted-digest",
+                },
+            )
     process = subprocess.run(
         [
             sys.executable,
@@ -580,14 +612,87 @@ def test_boundary_error_cli_keeps_exit_two(clients):
             "--state-directory",
             str(client.endpoint.directory),
         ],
-        input=json.dumps({"execution_id": "bad", "source": "1", "epoch": "0" * 36}),
+        input=json.dumps(request),
         text=True,
         capture_output=True,
         timeout=10,
     )
     assert process.returncode == 2
-    assert json.loads(process.stdout)["error"]["code"] == "stale_epoch"
-    assert client.inspect()["revision"] == result["revision"]
+    messages = {
+        "missing_epoch": ("stale_epoch", "supply the current session epoch"),
+        "reset_epoch": ("stale_epoch", "supply the current session epoch"),
+        "identity_conflict": ("identity_conflict", "execution_id was used with different source"),
+        "recovery_required": (
+            "recovery_required",
+            "interrupted execution must be acknowledged first",
+        ),
+    }
+    code, message = messages[case]
+    expected = {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "unknown" if case == "recovery_required" else "none",
+        "boundary_failure": True,
+        "execution_id": request["execution_id"],
+        "commands_created": [],
+        "error": {"code": code, "message": message},
+    }
+    if case != "recovery_required":
+        expected["submitted"] = False
+    if "epoch" in request:
+        expected["epoch"] = request["epoch"]
+    assert json.loads(process.stdout) == expected
+    assert client.inspect()["revision"] == (0 if case == "reset_epoch" else result["revision"])
+
+
+def test_rejection_classification_requires_pre_evaluation_proof():
+    # A matching code raised at an unknown stage cannot establish non-submission.
+    unknown = error_response(PTCError("stale_epoch", "not admission"))
+    assert unknown["commit_status"] == "unknown" and "submitted" not in unknown
+    rejected = error_response(ExecutionRejected("stale_epoch", "before admission"))
+    assert rejected["commit_status"] == "none" and rejected["submitted"] is False
+
+
+@pytest.mark.parametrize("payload", ["not-json", '{"execution_id":"one","source":false}'])
+def test_invalid_cli_request_is_not_submitted(tmp_path, payload):
+    directory = tmp_path / "not-created"
+    result = subprocess.run(
+        [sys.executable, "-m", "simplex_ptc", "execute", "--state-directory", str(directory)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    response = json.loads(result.stdout)
+    assert response["error"]["code"] == "invalid_request"
+    assert response["commit_status"] == "none" and response["submitted"] is False
+    assert response["commands_created"] == []
+    assert not directory.exists()
+
+
+def test_corrupt_checkpoint_rejection_preserves_envelope(clients):
+    client = clients()
+    client.execute(Request("one", "1"))
+    client.stop()
+    from simplex_ptc.storage import Storage
+
+    storage = Storage(client.endpoint.directory)
+    with storage.locked():
+        checkpoint = storage.read("checkpoint")
+        checkpoint["dump_sha256"] = "invalid"
+        storage.write("checkpoint", checkpoint)
+    with pytest.raises(PTCError) as raised:
+        client.execute(Request("rejected", "2"))
+    assert raised.value.response == {
+        "protocol": 1,
+        "status": "failed",
+        "commit_status": "none",
+        "submitted": False,
+        "commands_created": [],
+        "error": {"code": "corrupt_state", "message": "invalid checkpoint metadata or dump"},
+    }
+    assert not (client.endpoint.directory / "execution.pending").exists()
 
 
 def test_deleted_first_cwd_does_not_break_later_execution(clients, tmp_path, monkeypatch):

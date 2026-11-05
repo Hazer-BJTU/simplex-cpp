@@ -10,7 +10,15 @@ from pathlib import Path
 from .client import Client
 from .extensions import ToolRegistry
 from .lifecycle import Policy
-from .protocol import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PTCError, Request, encode
+from .protocol import (
+    MAX_REQUEST_BYTES,
+    MAX_RESPONSE_BYTES,
+    ExecutionRejected,
+    PTCError,
+    Request,
+    encode,
+    error_response,
+)
 from .runtime import LIMITS, compatibility
 
 
@@ -101,11 +109,13 @@ def dispatch(args: argparse.Namespace) -> dict:
     if args.command == "execute":
         raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
         if len(raw) > MAX_REQUEST_BYTES:
-            raise PTCError("invalid_request", "request exceeds byte limit")
+            raise ExecutionRejected("invalid_request", "request exceeds byte limit")
         try:
             value = json.loads(raw)
         except (ValueError, UnicodeError, RecursionError) as exc:
-            raise PTCError("invalid_request", "stdin must contain one JSON request") from exc
+            raise ExecutionRejected(
+                "invalid_request", "stdin must contain one JSON request"
+            ) from exc
         return session.execute(Request.parse(value))
     if args.operation == "recover":
         session.recover(args.epoch, args.execution_id)
@@ -115,7 +125,7 @@ def dispatch(args: argparse.Namespace) -> dict:
 
 
 def main() -> int:
-    """Return 0 for success, 1 for execution failure, 2 for boundary failure.
+    """Return 0 for success, 1 for execution failure, 2 for rejection/boundary failure.
 
     SIGTERM uses the same unwinding path as Ctrl-C. SIGKILL cannot be handled;
     an unmatched pending marker then requires explicit recovery. Storage errors
@@ -146,12 +156,7 @@ def main() -> int:
                 response = dispatch(args)
             code = 1 if response.get("status") == "failed" else 0
         except PTCError as exc:
-            response = {
-                "protocol": 1,
-                "status": "failed",
-                "commit_status": "unknown",
-                "error": {"code": exc.code, "message": str(exc)},
-            }
+            response = error_response(exc)
             response.update(getattr(exc, "response", {}))
             code = 2
         except (OSError, KeyboardInterrupt):
