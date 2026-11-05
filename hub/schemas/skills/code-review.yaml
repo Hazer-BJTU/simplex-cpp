@@ -1,11 +1,94 @@
 # Save as <Hub dataDir>/skills/<id>.yaml; reference it as @{skill:<id>}.
 # Metadata is used by the picker. Only text is expanded into the user message.
 name: code-review
-title: Code review
-description: Review changes for correctness, regressions, and missing validation.
-keywords: [review, correctness, testing]
+title: code-review
+description: Review code changes against requirements, identify actionable defects and regressions, and assess validation with clear evidence and priorities.
+keywords: [review, correctness, regressions, testing, security, compatibility]
 text: |
-  Review the changes against the user's requirements.
-  Prioritize correctness, regressions, and missing validation.
-  Explain each actionable finding with its location and impact.
-  Distinguish verified findings from questions that need more evidence.
+  Review the changes against the user's requirements and the project's established behavior.
+  Prioritize actionable findings supported by evidence. Keep the review focused on risks
+  introduced, exposed, or materially worsened by the changes.
+
+  Establish scope and intent:
+  - Identify the review target and comparison baseline, such as working-tree changes,
+    a commit, a pull request, or specified files.
+  - Read applicable project instructions and relevant requirements, documentation,
+    and tests to understand the intended behavior.
+  - Resolve routine uncertainty from available context. Ask for clarification when
+    an unresolved ambiguity materially affects the review.
+  - State significant assumptions and scope limitations.
+
+  Trace the affected behavior:
+  - Read surrounding code, relevant callers, dependencies, interfaces, and tests.
+    Do not assess correctness from the diff alone.
+  - Trace inputs, state changes, outputs, and error propagation across affected boundaries.
+  - Check whether the changes preserve existing contracts and supported use cases.
+  - Expand inspection where necessary to establish impact, while keeping it tied
+    to the review scope.
+
+  Prioritize relevant risks:
+  - Check requirement fulfillment, functional correctness, and behavioral regressions.
+  - Examine boundary conditions, error handling, resource ownership and cleanup,
+    concurrency, security, and compatibility where relevant.
+  - Report performance or maintainability concerns when they have a concrete,
+    explainable impact.
+  - Do not treat personal style preferences, speculative abstractions, or unrelated
+    refactoring opportunities as defects.
+
+  Use independent reviews when available:
+  - When subagents are available, delegate independent reviews with clear scopes
+    and access to the relevant requirements, changes, and project context.
+  - For small changes, request independent reviews of the same scope. For larger
+    changes, divide coverage by component or risk while retaining overlap at
+    important interfaces.
+  - Let subagents form their own conclusions before sharing tentative findings,
+    reducing the risk of anchoring their reviews.
+  - Consolidate their findings, merge duplicates, and investigate disagreements.
+  - Recheck each candidate finding against the code and available evidence before
+    including it in the final review. Agreement between reviewers is not proof.
+  - Retain only findings that meet the same evidence and actionability standards
+    as your own. Keep unresolved questions clearly identified.
+  - Remain responsible for review coverage, final priorities, and the consolidated
+    report. If subagents are unavailable, complete the review directly.
+
+  Verify potential findings:
+  - Establish the triggering conditions, the responsible code path, the resulting
+    behavior, and the requirement or contract it violates.
+  - Check for existing safeguards, upstream validation, framework guarantees,
+    and intentional behavior before reporting a defect.
+  - Distinguish issues reproduced through execution from those established through
+    code analysis. Keep unresolved suspicions separate from confirmed findings.
+  - Do not invent execution results or present assumptions as facts.
+  - Separate pre-existing issues from problems introduced or worsened by the changes.
+
+  Validate proportionately:
+  - Use relevant existing tests, builds, and static checks when available and practical.
+    Add a minimal isolated reproduction when it would resolve an important uncertainty.
+  - Select checks based on the affected behavior and risk; avoid redundant validation.
+  - Assess whether tests exercise meaningful outcomes, including relevant failure paths.
+    Passing tests do not replace inspection of the implementation.
+  - When validation is missing, identify the specific behavior at risk and the check
+    needed to cover it. Do not request tests solely to increase coverage.
+  - Record what was actually checked, the results, and any limitations.
+
+  Report actionable findings:
+  - Lead with findings, ordered by severity and likelihood under supported conditions.
+    Keep severity separate from confidence in the evidence.
+  - For each finding, provide a priority, a concise title, an accurate file location
+    with the smallest useful line range, and an explanation of the trigger and impact.
+  - Include enough evidence for another developer to verify the issue. Offer a brief
+    correction direction when useful, without prescribing an unnecessary redesign.
+  - Use consistent priorities: P0 for immediate critical failures; P1 for serious
+    issues requiring prompt correction; P2 for ordinary actionable defects; and P3
+    for minor defects with limited impact.
+  - Consolidate findings that share a root cause unless they require distinct fixes.
+    Do not inflate severity or produce findings to meet a quota.
+
+  Finish clearly:
+  - Follow findings with material open questions and a concise validation summary.
+    Omit empty sections.
+  - If no actionable issues are found, say so explicitly and note any meaningful
+    gaps in coverage. Do not imply that the changes are guaranteed correct.
+  - Treat review as inspection by default. Do not modify project files, commit changes,
+    or publish review comments unless authorized by the user's request.
+  - Write the review in the user's language unless they request otherwise.
