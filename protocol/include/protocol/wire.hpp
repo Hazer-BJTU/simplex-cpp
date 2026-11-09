@@ -1347,6 +1347,8 @@ struct FailureData {
 
 /** Data of `run_finished`. */
 struct RunOutcomeData {
+    /// Research accounting, present only when experimental controls are enabled.
+    std::optional<Json> experimental;
     RunStatus status = RunStatus::completed;
     std::string error;
     std::uint64_t exchanges = 0;
@@ -1376,6 +1378,8 @@ struct RunOutcomeData {
             integer("task_exchanges", &RunOutcomeData::task_exchanges, "Committed task responses."),
             integer("compact_exchanges", &RunOutcomeData::compact_exchanges,
                     "Committed summary responses."),
+            opaque("experimental", &RunOutcomeData::experimental,
+                "Cumulative research budget: policy, steps, tokens, terminal reason and accounting error."),
             record<AutoCompact>("auto_compact", &RunOutcomeData::auto_compact,
                                 "Automatic-compaction counters and policy."),
             boolean("durable", &RunOutcomeData::durable,

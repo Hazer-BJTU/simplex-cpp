@@ -191,6 +191,9 @@ void validate_state_edit(const State& state, const State& before) {
         throw std::logic_error("state hook changed pending tool results");
     }
 
+    if (experimental_report(state) != experimental_report(before)) {
+        throw std::logic_error("state hook changed experimental accounting");
+    }
     validate_state_structure(state);
     if (previous.phase != LoopPhase::Ready) {
         if (nlohmann::json(state.turns) != nlohmann::json(before.turns)) {
@@ -333,6 +336,7 @@ boost::asio::awaitable<Item> converse_interruptibly(
 /** Maps a terminal return status to the persisted invocation lifecycle. */
 LoopStatus progress_status(RunStatus status) {
     switch (status) {
+        case RunStatus::ExperimentalLimit:
         case RunStatus::Completed:
             return LoopStatus::Completed;
         case RunStatus::Cancelled:
@@ -440,6 +444,9 @@ boost::asio::awaitable<RunResult> run(
             }
             if (!stop.stop_requested()) {
                 integrate(model, state, message);
+                if (options.reset_experimental
+                    && (options.experimental.enabled() || experimental_report(state)))
+                    reset_experimental(state, options.experimental);
                 events.publish(InputCommitted{state});
             }
         }
@@ -452,6 +459,11 @@ boost::asio::awaitable<RunResult> run(
                 break;
             }
 
+            if (const auto reason = experimental_boundary(state, options.experimental); !reason.empty()) {
+                result.status = RunStatus::ExperimentalLimit;
+                result.experimental_reason = reason;
+                break;
+            }
             ModelContext context{state.system_prompt, state.tools, state.extras};
             events.publish(BeforeModel{state, context});
             // Validate prompt structure before committing writable hook changes.
@@ -465,6 +477,8 @@ boost::asio::awaitable<RunResult> run(
             draft.system_prompt = std::move(context.system_prompt);
             draft.tools = std::move(context.tools);
             draft.extras = std::move(context.extras);
+            // Model context edits do not own cumulative research accounting.
+            retain_experimental(draft, state);
             state = std::move(draft);
 
             // Commit a complete model response before considering its calls.
@@ -503,6 +517,7 @@ boost::asio::awaitable<RunResult> run(
                 std::numeric_limits<std::uint64_t>::max() - response.cost->prompt) {
                 result.last_exchange_tokens = response.cost->prompt + response.cost->generated;
             }
+            account_experimental(state, options.experimental, response);
             const bool has_calls = response.invokes && !response.invokes->empty();
             std::string hook_error;
             try {
@@ -547,6 +562,14 @@ boost::asio::awaitable<RunResult> run(
                 throw std::runtime_error(hook_error);
             }
 
+            if (!options.defer_experimental_boundary && !stop.stop_requested()) {
+                const auto reason = experimental_boundary(state, options.experimental);
+                if (!reason.empty()) {
+                    result.status = RunStatus::ExperimentalLimit;
+                    result.experimental_reason = reason;
+                    break;
+                }
+            }
             if (!has_calls) {
                 result.status = RunStatus::Completed;
                 break;

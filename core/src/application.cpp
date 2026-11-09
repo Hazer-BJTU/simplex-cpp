@@ -150,6 +150,7 @@ bool channel_shutdown(std::exception_ptr failure) {
 
 std::string run_status(loop::RunStatus status) {
     switch (status) {
+        case loop::RunStatus::ExperimentalLimit: return "completed";
         case loop::RunStatus::Completed: return "completed";
         case loop::RunStatus::Cancelled: return "cancelled";
         case loop::RunStatus::ExchangeLimit: return "exchange_limit";
@@ -165,6 +166,7 @@ std::string run_status(loop::RunStatus status) {
 
 protocol::RunStatus wire_status(loop::RunStatus status) {
     switch (status) {
+        case loop::RunStatus::ExperimentalLimit: return protocol::RunStatus::completed;
         case loop::RunStatus::Completed: return protocol::RunStatus::completed;
         case loop::RunStatus::Cancelled: return protocol::RunStatus::cancelled;
         case loop::RunStatus::ExchangeLimit: return protocol::RunStatus::exchange_limit;
@@ -1199,7 +1201,9 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         instruction.content.push_back(std::move(content));
         auto result = co_await loop::run(
             *driver_model, no_tools, compact_events, strand, draft, true,
-            std::move(instruction), {std::nullopt, 0}, stop);
+            std::move(instruction), {std::nullopt, 0, {}, config.experimental, false, true}, stop);
+        loop::retain_experimental(state, draft);
+        if (config.experimental.enabled()) run_saved = false;
         add_exchanges(compact_exchanges, result.completed_exchanges);
         if (result.status != loop::RunStatus::Completed) {
             if (result.status != loop::RunStatus::Cancelled
@@ -1406,6 +1410,17 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 
+    /** Apply a research stop only after compact publication/tool settlement. */
+    bool finish_experiment(loop::RunResult& result) {
+        const auto reason = loop::experimental_boundary(state, config.experimental);
+        if (reason.empty()) return false;
+        result.status = loop::RunStatus::ExperimentalLimit;
+        result.experimental_reason = reason;
+        if (state.loop) state.loop->status = model_io::LoopStatus::Completed;
+        run_saved = false;
+        return true;
+    }
+
     /**
      * One logical request owns every segment, summary and private continuation.
      * Cancellation is never reset. Guards run only after tools have settled;
@@ -1413,7 +1428,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
      */
     asio::awaitable<loop::RunResult> run_with_auto_compact(
         bool has_message, model_io::MessageItem message) {
+        bool reset_budget = has_message;
         if (!has_message && can_continue_memory()) {
+            loop::RunResult exhausted;
+            if (finish_experiment(exhausted)) co_return exhausted;
             has_message = true;
             message = continuation();
         }
@@ -1450,7 +1468,8 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                                 }
                                 break;
                         }
-                    }}, run_stop.get_token());
+                    }, config.experimental, reset_budget}, run_stop.get_token());
+            reset_budget = false;
             add_exchanges(task_exchanges, result.completed_exchanges);
             if (result.status != loop::RunStatus::AutoCompactRequired) co_return result;
             if (storage_failed) {
@@ -1524,6 +1543,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 finish_controller(result);
                 co_return result;
             }
+            if (finish_experiment(result)) co_return result;
             has_message = true;
             message = continuation();
         }
@@ -1643,7 +1663,10 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             loop::RunResult result;
             try {
                 if (input->operation == InputOperation::Compact) {
-                    result = co_await compact(CompactMode::Manual);
+                    if (!finish_experiment(result)) {
+                        result = co_await compact(CompactMode::Manual);
+                        if (result.status == loop::RunStatus::Completed) finish_experiment(result);
+                    }
                 } else {
                     result = co_await run_with_auto_compact(
                         input->has_message, std::move(input->message));
@@ -1659,10 +1682,11 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             // Early exits may not reach the loop's terminal durability barrier.
             // Save the settled state before reporting completion/admitting input,
             // including cancellation when ordinary run saves are disabled.
-            if (input->operation != InputOperation::Compact && !storage_failed && !run_saved
-                && (config.save_run || result.status == loop::RunStatus::Cancelled)) {
+            if ((input->operation != InputOperation::Compact || config.experimental.enabled())
+                && !storage_failed && !run_saved
+                && (config.save_run || config.experimental.enabled() || result.status == loop::RunStatus::Cancelled)) {
                 try {
-                    co_await save(config.save_run
+                    co_await save((config.save_run || config.experimental.enabled())
                         ? persistence::Boundary::RunFinished
                         : persistence::Boundary::Cancelled);
                 } catch (const persistence::StoreError&) {
@@ -1699,6 +1723,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 finished.task_exchanges = task_exchanges;
                 finished.compact_exchanges = compact_exchanges;
                 finished.auto_compact = compact_counters();
+                if (config.experimental.enabled()) finished.experimental = loop::experimental_report(state);
                 finished.durable = run_saved;
                 if (result.status == loop::RunStatus::Failed) {
                     finished.failure = protocol::FailureData{

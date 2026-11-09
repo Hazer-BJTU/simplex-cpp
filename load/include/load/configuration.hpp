@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include "loop/experimental.hpp"
 #include <optional>
 #include <memory>
 #include "fileio/session_lock.hpp"
@@ -93,6 +94,8 @@ struct Configuration {
     bool save_step = true;
     bool save_run = true;
     bool save_shutdown = true;
+    /// Opt-in controlled research budgets.
+    loop::ExperimentalControl experimental;
     /**
      * Accepted legacy `persistence.readable` setting.
      *

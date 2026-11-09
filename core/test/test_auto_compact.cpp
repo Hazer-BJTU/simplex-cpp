@@ -175,7 +175,7 @@ struct Model : llm::LLMModel {
 };
 
 void exercise(Mode mode, bool save_run, bool sqlite = false,
-              CleanupFault cleanup_fault = CleanupFault::None, bool oversized_summary = false) {
+              CleanupFault cleanup_fault = CleanupFault::None, bool oversized_summary = false, bool research = false) {
     const auto root = std::filesystem::temp_directory_path() / ("simplex-auto-" + core::new_identity());
     struct Cleanup {
         std::filesystem::path path;
@@ -205,6 +205,7 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
     config.auto_compact_threshold = 100;
     config.max_exchanges = mode == Mode::Frequent ? 1 : 10;
     config.max_auto_compactions = 2;
+    if (research) config.experimental.steps = 2;
     config.save_run = save_run;
     config.save_step = config.save_shutdown = false;
     auto model = std::make_shared<Model>(io.get_executor(), mode);
@@ -279,12 +280,15 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
                 co_await send("payload", {{"operation", "history"}, {"request_id", "inspect"}});
             } else if (name == "history") {
                 BOOST_TEST(event.dump().find("PRIVATE RESUME") == std::string::npos);
-                if (mode == Mode::Success || mode == Mode::LastBudgetSuccess || mode == Mode::MemoryContinue) {
+                if (!research && (mode == Mode::Success || mode == Mode::LastBudgetSuccess || mode == Mode::MemoryContinue)) {
                     BOOST_TEST(event.at("data").at("turns").at(0).at("user").empty());
                     BOOST_TEST(event.at("data").at("turns").at(0).at("internal_input") == "auto_compact_continue");
                     BOOST_TEST(event.at("data").at("turns").at(0).at("source").at("request_id") == "original");
                 }
-                if (resumed && ++histories == 1) {
+                if (research && mode == Mode::Success && ++histories == 1) {
+                    BOOST_TEST(event.at("data").at("turns").empty());
+                    co_await send("payload", {{"operation", "continue"}, {"request_id", "budget-continue"}});
+                } else if (resumed && ++histories == 1) {
                     co_await send("payload", {{"operation", "continue"}, {"request_id", "explicit-continue"}});
                 } else {
                     co_await send("signal", {{"operation", "shutdown"}});
@@ -420,7 +424,10 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
         if (name == "input_admitted") run = event.at("run_id").get<std::string>();
         if (name == "run_started") ++starts;
         if (name == "input_committed") ++inputs;
-        if (name == "run_finished") { ++finishes; finished = event.at("data"); }
+        if (name == "run_finished") {
+            ++finishes;
+            if (!research || finished.is_null()) finished = event.at("data");
+        }
         if (name == "tool_calls" && event.at("data").at(0).at("name") == "auto_compact") {
             ++calls;
             BOOST_TEST(event.at("data").at(0).at("security") == "trusted");
@@ -439,14 +446,30 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
         }
         if (name != "ready" && name != "history") BOOST_TEST(event.at("run_id") == run);
     }
-    BOOST_TEST(starts == 1);
-    BOOST_TEST(finishes == 1);
+    BOOST_TEST(starts == (research && mode == Mode::Success ? 2 : 1));
+    BOOST_TEST(finishes == (research && mode == Mode::Success ? 2 : 1));
     BOOST_TEST(inputs == (mode == Mode::MemoryContinue ? 0 : 1));
     BOOST_TEST(calls == model->summaries);
     BOOST_TEST(results == calls);
     BOOST_TEST(finished.at("task_exchanges") == model->ordinary - (mode == Mode::CancelResume ? 1 : 0));
     BOOST_TEST(finished.at("compact_exchanges") ==
         ((mode == Mode::SummaryFailure || mode == Mode::Cancel) ? 0 : model->summaries));
+    if (research) {
+        BOOST_TEST(model->ordinary == 2);
+        BOOST_TEST(model->summaries == 1);
+        BOOST_TEST(finished.at("experimental").at("steps") == 3);
+        const auto restored = store->load_current()->state;
+        BOOST_TEST(loop::experimental_report(restored)->at("steps") == 3);
+        if (mode == Mode::SummaryEmpty) {
+            BOOST_TEST(finished.at("status") == "failed");
+            BOOST_TEST(!restored.turns.empty());
+        } else {
+            BOOST_TEST(finished.at("status") == "completed");
+            BOOST_TEST(restored.turns.empty());
+            BOOST_TEST(finished.at("experimental").at("reason") == "cumulative_step_control");
+        }
+        return;
+    }
     if (mode == Mode::Success || mode == Mode::LastBudgetSuccess || mode == Mode::MemoryContinue) {
         BOOST_TEST(finished.at("status") == "completed");
         BOOST_TEST(model->summaries == (mode == Mode::MemoryContinue ? 0 : 2));
@@ -520,4 +543,11 @@ BOOST_AUTO_TEST_CASE(uncertain_optional_archive_mutation_emits_terminal_and_stop
 BOOST_AUTO_TEST_CASE(oversized_automatic_summary_continues_with_bounded_preview) {
     exercise(Mode::Success, true, false, CleanupFault::None, true);
     exercise(Mode::Success, true, true, CleanupFault::None, true);
+}
+
+BOOST_AUTO_TEST_CASE(research_budget_stops_after_compact_and_retains_failed_summary_cost) {
+    for (const bool sqlite : {false, true}) {
+        exercise(Mode::Success, true, sqlite, CleanupFault::None, false, true);
+        exercise(Mode::SummaryEmpty, true, sqlite, CleanupFault::None, false, true);
+    }
 }

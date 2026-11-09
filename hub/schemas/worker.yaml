@@ -231,3 +231,12 @@ persistence:
 # ptc:
 #   executable: /absolute/path/to/ptc/.venv/bin/simplex-ptc
 #   arguments: [--module, simplex_ptc.tools.process, --module, simplex_ptc.tools.files]
+
+# Controlled AI research budgets, disabled unless explicitly configured.
+# Counts driver exchanges and compact; resets only on a new accepted user message.
+# Limits stop AFTER the first strict exceedance and current tool settlement.
+# experimental:
+#   cumulative_step_control: 100
+#   cumulative_token_control:
+#     type: total  # prompt | generated | total | cache_hit
+#     threshold: 1000000

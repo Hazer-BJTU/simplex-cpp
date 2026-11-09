@@ -156,6 +156,7 @@ struct Fixture {
     tools::ToolRegistry registry;
     eventbus::EventBus bus;
     State state;
+    loop::ExperimentalControl experimental;
     std::shared_ptr<Set> set = std::make_shared<Set>();
 
     /// Registers the fixture tool before any model exchange is attempted.
@@ -178,7 +179,7 @@ struct Fixture {
             state,
             has_message,
             std::move(message),
-            {budget, threshold},
+            {budget, threshold, {}, experimental, has_message},
             stop);
         auto future = asio::co_spawn(io, std::move(task), asio::use_future);
         io.restart();
@@ -1126,4 +1127,140 @@ BOOST_AUTO_TEST_CASE(sqlite_recovery_projects_saved_results_without_reexecuting_
         BOOST_CHECK_THROW(blocked.run(false), loop::RecoveryRequired);
         BOOST_TEST(blocked.set->tool->count == 0);
     }
+}
+
+BOOST_AUTO_TEST_CASE(research_budget_counts_across_continue_and_resets_on_new_input) {
+    Fixture f;
+    f.experimental.steps = 1;
+    f.model.cost = model_io::TokenCost{10, 2, 0};
+    auto first = f.run(true, input(), 1);
+    BOOST_CHECK(first.status == loop::RunStatus::ExchangeLimit);
+    BOOST_TEST(f.set->tool->count == 1);
+    auto second = f.run(false);
+    BOOST_CHECK(second.status == loop::RunStatus::ExperimentalLimit);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 2);
+    const auto count = f.model.exchanges;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::ExperimentalLimit);
+    BOOST_TEST(f.model.exchanges == count);
+    BOOST_CHECK(f.run().status == loop::RunStatus::Completed);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
+}
+
+BOOST_AUTO_TEST_CASE(research_token_limit_settles_tools_before_stopping_and_preempts_compact) {
+    Fixture f;
+    f.experimental.tokens = 11;
+    f.model.cost = model_io::TokenCost{10, 2, 10};
+    auto result = f.run(true, input(), 5, {}, 1);
+    BOOST_CHECK(result.status == loop::RunStatus::ExperimentalLimit);
+    BOOST_TEST(f.set->tool->count == 1);
+    BOOST_TEST(f.state.loop->pending_results.empty());
+    BOOST_TEST(loop::experimental_report(f.state)->at("tokens") == 12);
+    BOOST_TEST(f.model.exchanges == 1);
+}
+
+BOOST_AUTO_TEST_CASE(research_missing_usage_fails_only_after_tool_settlement) {
+    Fixture f;
+    f.experimental.tokens = 100;
+    auto result = f.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Failed);
+    BOOST_TEST(result.error.find("usage unavailable") != std::string::npos);
+    BOOST_TEST(f.set->tool->count == 1);
+    BOOST_TEST(f.state.loop->pending_results.empty());
+    const auto count = f.model.exchanges;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Failed);
+    BOOST_TEST(f.model.exchanges == count);
+}
+
+BOOST_AUTO_TEST_CASE(research_accounting_serialization_compaction_and_token_types) {
+    using Type = loop::ExperimentalControl::TokenType;
+    for (const auto [type, expected] : std::vector<std::pair<Type, std::uint64_t>>{
+            {Type::Prompt, 10}, {Type::Generated, 2}, {Type::Total, 12}, {Type::CacheHit, 7}}) {
+        State state;
+        loop::ExperimentalControl control{0, expected, type};
+        loop::reset_experimental(state, control);
+        Item response;
+        response.cost = model_io::TokenCost{10, 2, 7};
+        response.extras = nlohmann::json::parse(R"({"usage":{"prompt_tokens_details":{"cached_tokens":7}}})");
+        loop::account_experimental(state, control, response);
+        BOOST_TEST(loop::experimental_boundary(state, control).empty());
+        auto draft = nlohmann::json(state).get<State>();
+        loop::account_experimental(draft, control, response);
+        loop::retain_experimental(state, draft);
+        state.turns.clear();
+        BOOST_TEST(loop::experimental_report(state)->at("tokens") == expected * 2);
+        BOOST_TEST(loop::experimental_boundary(state, control) == "cumulative_token_control");
+    }
+}
+
+BOOST_AUTO_TEST_CASE(research_overflow_and_unreported_cache_are_errors) {
+    State state;
+    loop::ExperimentalControl control{0, 100};
+    loop::reset_experimental(state, control);
+    Item response;
+    response.cost = model_io::TokenCost{std::numeric_limits<std::uint64_t>::max(), 1, 0};
+    loop::account_experimental(state, control, response);
+    BOOST_CHECK_THROW(loop::experimental_boundary(state, control), std::runtime_error);
+    control.token_type = loop::ExperimentalControl::TokenType::CacheHit;
+    loop::reset_experimental(state, control);
+    response.cost = model_io::TokenCost{1, 1, 0};
+    loop::account_experimental(state, control, response);
+    BOOST_CHECK_THROW(loop::experimental_boundary(state, control), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(research_projection_recovery_does_not_count_old_response_twice) {
+    Fixture f;
+    f.experimental.steps = 1;
+    f.model.fail_projection = true;
+    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
+    f.state = nlohmann::json(f.state).get<State>();
+    f.model.fail_projection = false;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::ExperimentalLimit);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 2);
+    BOOST_TEST(f.set->tool->count == 1);
+}
+
+BOOST_AUTO_TEST_CASE(research_cancel_preserves_accounting_for_continue) {
+    Fixture f;
+    f.experimental.steps = 1;
+    std::stop_source stop;
+    f.set->tool->after_effect = [&] { stop.request_stop(); };
+    BOOST_CHECK(f.run(true, input(), 5, stop.get_token()).status == loop::RunStatus::Cancelled);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::ExperimentalLimit);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 2);
+}
+
+BOOST_AUTO_TEST_CASE(research_accounting_is_not_mutable_hook_context) {
+    Fixture f;
+    f.experimental.steps = 1;
+    auto context = f.bus.subscribe<loop::BeforeModel>([](const auto& event) {
+        event.context.extras = nlohmann::json::object();
+    });
+    auto edit = f.bus.subscribe<loop::EditOnStepFinished>([](const auto& event) {
+        event.state.extras->erase("simplex.experimental");
+    });
+    BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
+    BOOST_TEST(f.set->tool->count == 1);
+}
+
+BOOST_AUTO_TEST_CASE(research_rejected_input_and_changed_policy_cannot_reset_counters) {
+    Fixture f;
+    f.experimental.steps = 1;
+    BOOST_CHECK(f.run().status == loop::RunStatus::ExperimentalLimit);
+    {
+        auto reject = f.bus.subscribe<loop::BeforeInput>([](const auto&) {
+            throw std::runtime_error("input rejected by hook");
+        });
+        BOOST_CHECK(f.run().status == loop::RunStatus::Failed);
+        BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 2);
+        reject.disconnect();
+    }
+    f.experimental.steps = 5;
+    const auto count = f.model.exchanges;
+    BOOST_CHECK(f.run(false).status == loop::RunStatus::Failed);
+    BOOST_TEST(f.model.exchanges == count);
+    BOOST_CHECK(f.run().status == loop::RunStatus::Completed);
+    BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
 }
