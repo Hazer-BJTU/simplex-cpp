@@ -2160,3 +2160,20 @@ their backend; selecting SQLite is not a conversion operation.
 
 Persistence backend selection and managed SQLite inspection follow
 [state and persistence](../architecture/state-and-persistence.md).
+
+### Controlled research budget outcomes
+
+When the optional worker `experimental` controls are enabled, `run_finished` also
+includes `experimental`: an object with `policy` (`step_limit`, `token_limit`,
+`token_type`), cumulative `steps` and `tokens`, `reason`, and `error`. A budget
+termination has status `completed` and reason `cumulative_step_control` or
+`cumulative_token_control`. Missing required usage/overflow is a `failed` outcome
+with an accounting diagnostic. The field is omitted when controls are disabled.
+
+The counters span explicit continue, automatic continuation and compact; only a
+new committed external message resets them. Unlike per-invocation compaction
+limits, these research budgets include summary requests. A valid compact is
+published before applying its research stop, and no automatic continuation or
+intermediate `run_finished` is emitted. See [configuration](../getting-started/configuration.md#controlled-research-budgets)
+for exact counting and persistence rules. Consumers may preserve this optional
+metadata without adding a new terminal-status vocabulary.

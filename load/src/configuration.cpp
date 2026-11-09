@@ -312,6 +312,28 @@ Configuration parse_configuration(
         result.hub_remote_call = websocket_endpoint(text(tools, "endpoint"));
         result.hub_remote_call_timeout = std::chrono::milliseconds(number(tools, "timeout_ms", 120000));
     }
+    const auto& experiment = object(document, "experimental");
+    const auto research_limit = [](const Json& object, const char* key) -> std::uint64_t {
+        if (!object.contains(key)) return 0;
+        const auto& value = object.at(key);
+        if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<std::int64_t>() < 0))
+            throw std::invalid_argument(std::string("experimental ") + key + " must be a nonnegative integer");
+        return value.get<std::uint64_t>();
+    };
+    result.experimental.steps = research_limit(experiment, "cumulative_step_control");
+    static const Json disabled_control = Json::object();
+    const auto token_entry = experiment.find("cumulative_token_control");
+    const auto& token_control = token_entry != experiment.end()
+        && token_entry->is_number_integer() && *token_entry == 0
+        ? disabled_control : object(experiment, "cumulative_token_control");
+    result.experimental.tokens = research_limit(token_control, "threshold");
+    const auto token_type = text(token_control, "type", "total");
+    using TokenType = loop::ExperimentalControl::TokenType;
+    if (token_type == "total") result.experimental.token_type = TokenType::Total;
+    else if (token_type == "prompt") result.experimental.token_type = TokenType::Prompt;
+    else if (token_type == "generated") result.experimental.token_type = TokenType::Generated;
+    else if (token_type == "cache_hit") result.experimental.token_type = TokenType::CacheHit;
+    else throw std::invalid_argument("experimental token type must be prompt, generated, total or cache_hit");
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);

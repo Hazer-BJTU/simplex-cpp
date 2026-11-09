@@ -296,3 +296,50 @@ For PTC-based file/process operations, use
 [interpreter](../plugins/ptc.md). Native tools are not removed implicitly.
 Only registered tools contribute their skills. Loop hooks and explicitly enabled
 dynamic toolsets are unaffected.
+
+## Controlled research budgets
+
+`experimental` means settings for controlled AI research, not an unstable-feature
+switch. The shipped example is entirely commented out. Omitted or zero limits
+disable the corresponding control:
+
+```yaml
+experimental:
+  cumulative_step_control: 100
+  cumulative_token_control:
+    type: total
+    threshold: 1000000
+```
+
+One step is one committed driver-model exchange, including final answers and
+compact summaries. Each exchange adds its reported usage again; this is cumulative
+request cost, not the size of the current context. Types are `prompt`, `generated`,
+`total` (prompt + generated), and `cache_hit`. Cached tokens are included in
+prompt/total without deduction or double counting. Cache-hit accounting requires
+an explicit reported cache count in the preserved standard usage metadata;
+missing/unsupported usage is an accounting error, not measured zero. Reasoning
+cannot be selected separately with the current usage representation. Assistant
+models and subagents are not part of this budget.
+
+The first **strict exceedance** ends the conversation after the current tool
+batch has settled. Equality does not stop execution, and a single exchange can
+overshoot the limit. This budget does not predict provider context capacity or
+limit the cost of incomplete/failed HTTP attempts for which no response usage is
+available. Missing required usage or counter overflow ends with an explicit error.
+
+Only committing a new external user message resets the budget. Continue, internal
+continuation, auto compact and history pruning preserve it. Budget exhaustion
+prevents another continue from issuing model requests; send a new message instead.
+Compact costs count even if its summary later fails validation. A valid compact
+replacement is published before applying its budget, without starting an automatic
+continuation afterwards. Cancellation remains cancellation and does not reset counts.
+
+Counters and terminal reasons live in the host-owned `simplex.experimental` state
+metadata. Enabled persistence retains them across restarts; without persistence
+they last only for this worker process. Enabling or changing an enabled research policy requires a
+new user message, rather than reinterpreting old measurements. With controls
+enabled, settled accounting is saved even if ordinary `save_run` is disabled.
+`run_finished.experimental` reports policy, steps, selected tokens, reason and
+accounting error. Budget exhaustion uses terminal status `completed`; actual
+accounting failures use `failed`. This takes precedence over per-run
+`max_exchanges` / `auto_compact_threshold` continuation behavior.

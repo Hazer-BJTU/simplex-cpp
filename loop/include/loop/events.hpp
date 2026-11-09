@@ -108,6 +108,9 @@ struct StepFinished {
  * skipped batch and at the exchange limit, but not for entry-time recovery or
  * a response without tool calls. An earlier observer failure prevents this event.
  *
+ * Research accounting in extras["simplex.experimental"] is host-owned and
+ * must be preserved, like loop progress, by every full-state edit.
+ *
  * Full-state edit contract (also applies to EditOnRunFinished):
  * - state is the caller's actual object, not a copied event payload. All slots
  *   run synchronously in order and see earlier edits. No references may escape,

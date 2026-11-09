@@ -251,3 +251,23 @@ Persisted `auto_compact_required` records a past boundary, not a pending command
 Old snapshots remain readable; older workers may reject this new status.
 The expanded `RunResult` changes the dynamic loop-hook contract: ABI **3** is
 required. Existing enum values and the dataclass layout remain unchanged.
+
+## Controlled research accounting
+
+`Options::experimental` enables cumulative step/selected-token budgets. Set
+`reset_experimental` only for the first external user message; the reset occurs
+only after input integration succeeds. It must remain false for internal compact
+instructions and continuation. Accounting is stored in the reserved
+`state.extras["simplex.experimental"]` record, which writable hooks cannot alter.
+Each committed response is accounted before tool dispatch, with strict-exceedance
+checks after settlement. `ExperimentalLimit` carries `experimental_reason` and
+persists as a completed loop; missing usage/overflow returns `Failed`.
+
+A compact host may set `defer_experimental_boundary` to let a valid summary finish
+before replacing history. It must transfer accounting with `retain_experimental`
+even on a failed replacement, then call `experimental_boundary` before issuing
+another request. The worker application implements this lifecycle. Ordinary
+callers should leave deferral false. These controls do not replace invocation
+limits or cancellation; see the [worker configuration guide](../docs/getting-started/configuration.md#controlled-research-budgets).
+Dynamic loop hooks must be rebuilt for hook ABI v4 because `RunResult` has a new
+research termination-reason member. The model and toolset plugin ABIs are unchanged.

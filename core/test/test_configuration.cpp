@@ -334,3 +334,27 @@ BOOST_AUTO_TEST_CASE(intrinsic_selection_is_explicit_ordered_and_validated)
     value["ptc"] = {{"executable", ""}};
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(research_configuration_is_disabled_by_default_and_validates_controls) {
+    BOOST_TEST(!load::parse_configuration(configuration(), "/tmp").experimental.enabled());
+    auto disabled = configuration();
+    disabled["experimental"] = {{"cumulative_step_control", 0}, {"cumulative_token_control", 0}};
+    BOOST_TEST(!load::parse_configuration(disabled, "/tmp").experimental.enabled());
+    auto value = configuration();
+    value["experimental"] = {{"cumulative_step_control", 100},
+        {"cumulative_token_control", {{"type", "generated"}, {"threshold", 1000000}}}};
+    auto configured = load::parse_configuration(value, "/tmp").experimental;
+    BOOST_TEST(configured.steps == 100u);
+    BOOST_TEST(configured.tokens == 1000000u);
+    BOOST_CHECK(configured.token_type == loop::ExperimentalControl::TokenType::Generated);
+    for (const Json bad : {Json(-1), Json(true), Json(1.5), Json("100")}) {
+        auto invalid = value;
+        invalid["experimental"]["cumulative_step_control"] = bad;
+        BOOST_CHECK_THROW(load::parse_configuration(invalid, "/tmp"), std::invalid_argument);
+        invalid = value;
+        invalid["experimental"]["cumulative_token_control"]["threshold"] = bad;
+        BOOST_CHECK_THROW(load::parse_configuration(invalid, "/tmp"), std::invalid_argument);
+    }
+    value["experimental"]["cumulative_token_control"]["type"] = "reasoning";
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+}

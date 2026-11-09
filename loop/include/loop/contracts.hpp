@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dataclass/model_io.hpp"
+#include "loop/experimental.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -32,7 +33,8 @@ enum class RunStatus {
     Cancelled, // A stop request was observed and required results were committed.
     ExchangeLimit, // The exchange budget ended after settling the last tool batch.
     Failed,    // Inspect error and state.loop before deciding how to continue.
-    AutoCompactRequired // Settled boundary; the host may compact before continuing.
+    AutoCompactRequired, // Settled boundary; the host may compact before continuing.
+    ExperimentalLimit // Research budget ended at a settled boundary.
 };
 
 /** Where a failed invocation originated; not a claim that retry will succeed. */
@@ -86,6 +88,7 @@ struct RunResult {
 
     /// ModelRequest only when converse() raised before committing its response.
     RunFailureStage failure_stage = RunFailureStage::Other;
+    std::string experimental_reason;
 };
 
 /** Awaited durability boundaries; these do not replace synchronous events. */
@@ -106,6 +109,12 @@ struct Options {
      * Failure follows the same recovery path as a checkpoint observer failure.
      */
     std::function<boost::asio::awaitable<void>(Checkpoint)> checkpoint;
+
+    ExperimentalControl experimental;
+    /// Only the first externally supplied message, never a compact instruction.
+    bool reset_experimental = false;
+    /// Compact finishes its replacement before the host applies the budget.
+    bool defer_experimental_boundary = false;
 
 };
 

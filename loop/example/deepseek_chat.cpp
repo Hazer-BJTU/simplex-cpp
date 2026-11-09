@@ -266,6 +266,7 @@ asio::awaitable<void> sessions(tools::intrinsic::ProcessSessionStore& store) {
 /** Maps the non-persistent run summary to a short terminal label. */
 const char* status_name(loop::RunStatus status) {
     switch (status) {
+        case loop::RunStatus::ExperimentalLimit: return "research budget exhausted";
         case loop::RunStatus::Completed: return "completed";
         case loop::RunStatus::Cancelled: return "cancelled";
         case loop::RunStatus::ExchangeLimit: return "exchange limit";
