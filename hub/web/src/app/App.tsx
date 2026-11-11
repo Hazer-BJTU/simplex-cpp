@@ -26,6 +26,7 @@ import { ConversationPanels } from './ConversationPanels.tsx';
 import { Approvals } from './Approvals.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
 import { Composer } from './Composer.tsx';
+import { OperatorQuestions } from './OperatorQuestions.tsx';
 import { Inspector } from './Inspector.tsx';
 import { SessionHeader } from './SessionHeader.tsx';
 import { SessionList } from './SessionList.tsx';
@@ -76,7 +77,7 @@ export function App() {
                         >
                             {!headless && <SessionHeader />}
                             <Approvals />
-                            {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><Composer /></>}
+                            {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><OperatorQuestions /><Composer /></>}
                         </main>
                         {!headless && <Inspector />}
                     </div>

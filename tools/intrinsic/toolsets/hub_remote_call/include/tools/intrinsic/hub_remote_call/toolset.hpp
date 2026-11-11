@@ -19,7 +19,8 @@ public:
     HubRemoteCallToolSet(
         endpoint::ResolvedEndpoint endpoint,
         std::chrono::milliseconds timeout,
-        HubRemoteCallIdentityProvider identity);
+        HubRemoteCallIdentityProvider identity,
+        std::chrono::milliseconds question_timeout = default_question_timeout);
 
     std::string_view name() const noexcept override;
 

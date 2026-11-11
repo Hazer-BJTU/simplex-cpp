@@ -1,0 +1,171 @@
+import assert from 'node:assert/strict';
+import { it, afterEach } from 'node:test';
+import { QuestionStore, validOptions, validQuestion } from '../src/state/questions.ts';
+import { startTestHub } from './helpers/hub.js';
+import { connectWorker, workerEvent, until } from './helpers/worker.js';
+
+const cleanup = [];
+
+/** Wait for a message that arrived after `from`, so a stale frame cannot match. */
+async function waitAfter(peer, from, predicate, timeout = 3000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        const found = peer.messages.slice(from).find(predicate);
+        if (found !== undefined) return found;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`timed out waiting for a new message; saw ${JSON.stringify(peer.messages.slice(from))}`);
+}
+afterEach(async () => {
+    for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+it('validates questions and options before anything is published', () => {
+    assert.equal(validQuestion('Which branch?'), true);
+    assert.equal(validQuestion('   '), false);
+    assert.equal(validQuestion('q'.repeat(8 * 1024 + 1)), false);
+    assert.equal(validOptions(['A', 'B']), true);
+    assert.equal(validOptions(['A']), false);
+    assert.equal(validOptions(['A', 'A']), false);
+    assert.equal(validOptions(['A', '']), false);
+    assert.equal(validOptions(['A', 'x'.repeat(201)]), false);
+});
+
+it('settles one answer, refuses the next, and bounds pending work', async () => {
+    const questions = new QuestionStore(1, 2);
+    const pending = questions.open({
+        session: 'demo', questionId: 'q-1', question: 'Which?', options: ['A', 'B'], timeoutMs: 5000,
+    });
+    assert.equal(questions.count('demo'), 1);
+    assert.throws(() => questions.open({
+        session: 'demo', questionId: 'q-2', question: 'Other?', options: [], timeoutMs: 5000,
+    }), /too many pending questions for this session/);
+    assert.deepEqual(questions.answer('other', 'q-1', { text: 'x' }), {
+        ok: false, code: 'unknown_question', message: 'that question is no longer open',
+    });
+    assert.equal(questions.answer('demo', 'q-1', { text: 'A', option_index: 0 }).ok, false);
+    assert.equal(questions.answer('demo', 'q-1', { option_index: 5 }).ok, false);
+    assert.equal(questions.answer('demo', 'q-1', { option_index: 1 }).ok, true);
+    assert.deepEqual(await pending, {
+        outcome: 'answered', reply: { option_index: 1, option: 'B' },
+    });
+    assert.equal(questions.count('demo'), 0);
+    assert.equal(questions.answer('demo', 'q-1', { text: 'late' }).code, 'unknown_question');
+});
+
+it('times out without an operator and cancels on demand', async () => {
+    const questions = new QuestionStore();
+    const timeout = await questions.open({
+        session: 'demo', questionId: 'q-t', question: 'Anyone?', options: [], timeoutMs: 20,
+    });
+    assert.deepEqual(timeout, { outcome: 'timeout' });
+    const cancelled = questions.open({
+        session: 'demo', questionId: 'q-c', question: 'Still there?', options: [], timeoutMs: 5000,
+    });
+    questions.cancel('demo', 'run_cancelled');
+    assert.deepEqual(await cancelled, { outcome: 'cancelled', reason: 'run_cancelled' });
+});
+
+async function setup() {
+    const ctx = await startTestHub({ limits: { confirmIdentityHoldMs: 120 } });
+    cleanup.push(() => ctx.hub.http.server.listening ? ctx.hub.stop() : undefined);
+    const session = ctx.hub.registry.create('demo', {});
+    const endpoints = ctx.hub.supervisor.endpointsFor(session.id, session.token);
+    const event = await connectWorker(endpoints.events);
+    cleanup.push(() => event.close());
+    let sequence = 0;
+    const emit = (name, run = 'run-1', data = {}) => event.send(workerEvent({
+        session: 'demo', worker: 'worker-1', sequence: ++sequence, event: name, runId: run, data,
+    }));
+    const panel = await connectWorker(`${ctx.wsBase}/panel/ws`);
+    cleanup.push(() => panel.close());
+    await panel.waitFor((message) => message.type === 'welcome');
+    panel.send({ type: 'subscribe', session: 'demo' });
+    await panel.waitFor((message) => message.type === 'subscribed');
+    // One admitted run is enough; every call below reuses run-1.
+    emit('input_admitted');
+    const call = async (arguments_, requestId) => {
+        const url = new URL(endpoints.tools);
+        url.pathname += '/ask_user/ask';
+        const peer = await connectWorker(url.href);
+        peer.send({ type: 'tool_request', data: {
+            worker_id: 'worker-1', session_id: 'demo', run_id: 'run-1',
+            request_id: requestId, arguments: arguments_,
+        } });
+        const response = await peer.waitFor((value) => value.type === 'tool_response');
+        await peer.waitForClose();
+        return response.data;
+    };
+    return { ...ctx, session, endpoints, event, emit, panel, call };
+}
+
+it('publishes the question, accepts an option, and clears the panel set', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Which branch?', options: ['main', 'next'], timeout_ms: 5000 },
+        'question-1');
+    const opened = await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 1);
+    assert.equal(opened.questions[0].question_id, 'question-1');
+    assert.equal(opened.questions[0].question, 'Which branch?');
+    assert.deepEqual(opened.questions[0].options, ['main', 'next']);
+    assert.ok(opened.questions[0].deadline_at > opened.questions[0].asked_at);
+
+    ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'question-1',
+        answer: { option_index: 1 } });
+    await ctx.panel.waitFor((message) => message.type === 'accepted'
+        && message.action === 'question_answer');
+    const response = await pending;
+    assert.equal(response.status, 'succeeded');
+    assert.equal(response.result.outcome, 'answered');
+    assert.deepEqual(response.result.reply, { option_index: 1, option: 'next' });
+    await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 0);
+});
+
+it('accepts free text even when options were offered, and rejects stale answers', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Pick one', options: ['A', 'B'], timeout_ms: 5000 },
+        'question-2');
+    await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 1);
+    ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'question-2',
+        answer: { text: 'neither, use C' } });
+    const response = await pending;
+    assert.deepEqual(response.result.reply, { text: 'neither, use C' });
+    ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'question-2',
+        answer: { text: 'again' } });
+    const refused = await ctx.panel.waitFor((message) => message.type === 'error'
+        && message.error === 'unknown_question');
+    assert.equal(refused.question_id, 'question-2');
+});
+
+it('times out as a normal result and withdraws on a cancelled run', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Anyone?', timeout_ms: 1000 }, 'question-3');
+    const response = await pending;
+    assert.equal(response.status, 'succeeded');
+    assert.equal(response.result.outcome, 'timeout');
+    assert.ok(response.result.elapsed_ms >= 1000);
+    await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 0);
+
+    const mark = ctx.panel.messages.length;
+    const waiting = ctx.call({ question: 'Still needed?', timeout_ms: 5000 }, 'question-4');
+    await waitAfter(ctx.panel, mark, (message) => message.type === 'questions'
+        && message.questions.length === 1);
+    ctx.panel.send({ type: 'signal', session: 'demo', operation: 'cancel', run_id: 'run-1' });
+    await ctx.panel.waitFor((message) => message.type === 'accepted' && message.action === 'signal');
+    const cancelled = await waiting;
+    assert.equal(cancelled.result.outcome, 'cancelled');
+    assert.equal(cancelled.result.reason, 'run_cancelled');
+});
+
+it('rejects oversized or malformed requests without publishing them', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: '  ', timeout_ms: 5000 }, 'question-5');
+    const response = await pending;
+    assert.equal(response.status, 'rejected');
+    assert.equal(response.error.code, 'invalid_arguments');
+    const tooLong = await ctx.call({ question: 'Why?', timeout_ms: 2000000 }, 'question-6');
+    assert.equal(tooLong.error.code, 'invalid_arguments');
+});

@@ -19,5 +19,8 @@
     },
 
     // Independent plan/subagent tool listener; an empty host inherits listen.host.
-    "toolRequests": { "host": "", "port": 8801, "timeoutMs": 120000, "maxConnections": 128 }
+    "toolRequests": {
+        "host": "", "port": 8801, "timeoutMs": 120000,
+        "questionTimeoutMs": 1800000, "maxConnections": 128
+    }
 }

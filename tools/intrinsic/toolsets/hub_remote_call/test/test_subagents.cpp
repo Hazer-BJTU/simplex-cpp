@@ -419,7 +419,7 @@ BOOST_AUTO_TEST_CASE(subagent_declaration_failure_preserves_plan_and_reports_par
     std::ofstream(root / "subagent_send.yaml") << "[invalid declaration";
     setenv("SIMPLEX_HUB_REMOTE_CALL_SCHEMA_DIR", root.c_str(), 1);
     HubRemoteCallToolSet set(endpoint_for(), std::chrono::milliseconds(100), identity);
-    BOOST_TEST(set.tool_count() == 2u);
+    BOOST_TEST(set.tool_count() == 3u);
     BOOST_TEST(set.capability_groups().at(0).registered.size() == 1u);
     BOOST_TEST(set.capability_groups().at(1).missing.size() == 2u);
     BOOST_TEST(set.capability_groups().at(1).registered.at(0) == "subagent_receive");

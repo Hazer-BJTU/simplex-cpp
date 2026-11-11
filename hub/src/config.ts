@@ -53,7 +53,10 @@ export interface ProviderProfile {
 export interface HubConfig {
     listen: { host: string; port: number };
     /** Dedicated worker tool-request listener; empty host inherits listen.host. */
-    toolRequests: { host: string; port: number; timeoutMs: number; maxConnections: number };
+    toolRequests: {
+        host: string; port: number; timeoutMs: number; questionTimeoutMs: number;
+        maxConnections: number;
+    };
     dataDir: string;
     /** Resource bounds for Hub-managed headless worker families. */
     subagents: {
@@ -146,7 +149,10 @@ export interface HubConfig {
 export function defaultConfig(): HubConfig {
     return {
         listen: { host: '127.0.0.1', port: 8800 },
-        toolRequests: { host: '', port: 8801, timeoutMs: 120000, maxConnections: 128 },
+        toolRequests: {
+            host: '', port: 8801, timeoutMs: 120000, questionTimeoutMs: 1800000,
+            maxConnections: 128,
+        },
         dataDir: resolve(homedir(), '.simplex', 'hub'),
         subagents: {
             maxLive: 16, maxChildren: 4, maxDepth: 3,
@@ -513,6 +519,9 @@ export function validateConfig(config: HubConfig): HubConfig {
         'toolRequests.port must be an integer between 0 and 65535');
     check(Number.isInteger(tools?.timeoutMs) && tools.timeoutMs > 0 && tools.timeoutMs <= 2147483647,
         'toolRequests.timeoutMs must be an integer between 1 and 2147483647');
+    check(Number.isInteger(tools?.questionTimeoutMs) && tools.questionTimeoutMs >= 60000
+        && tools.questionTimeoutMs <= 2147483647,
+        'toolRequests.questionTimeoutMs must be an integer between 60000 and 2147483647');
     check(Number.isInteger(tools?.maxConnections) && tools.maxConnections > 0,
         'toolRequests.maxConnections must be a positive integer');
     check(port === 0 || tools.port === 0 || port !== tools.port,

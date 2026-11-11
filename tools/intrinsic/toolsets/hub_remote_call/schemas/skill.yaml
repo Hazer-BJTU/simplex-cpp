@@ -1,7 +1,7 @@
 name: hub_remote_call
-title: Plans and subagents
-description: Maintain the session plan and delegate independent work through the Hub.
-keywords: [plan, progress, subagent, delegation]
+title: Plans, questions and subagents
+description: Maintain the session plan, ask the operator, and delegate independent work through the Hub.
+keywords: [plan, progress, question, operator, subagent, delegation]
 text: |
   Use `plan` for multi-step work: write a short checklist at the start. Update it
   at every key milestone to reflect completed work and next steps.
@@ -11,6 +11,14 @@ text: |
   hides the plan tab. Plans survive new runs, cancellation, compaction and restarts.
   A successful replacement is saved by the hub and is not rolled back by cancellation.
   After a timeout or disconnect, read to confirm the outcome before replacing again.
+
+  Ask the operator with `ask_user({question, options?})` when the plan is
+  ambiguous or required information is missing and a wrong guess would be
+  costly. The call waits inside the run (5 minutes by default); the operator may
+  choose an option or type free text, so options are suggestions. A timeout or a
+  lost hub returns a normal "no user reply" result, not an error: state your
+  assumption and continue, or ask again later. Do not use it for trivial
+  confirmations or routine progress updates.
 
   Delegate independent work with `subagent_fork({})`, then receive the returned ID
   until ready and connected. Send a self-contained task with constraints and a

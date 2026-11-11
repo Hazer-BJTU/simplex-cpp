@@ -1,5 +1,5 @@
 add_library(tools_intrinsic_hub_remote_call SHARED
-    src/receive.cpp src/tools.cpp src/plan.cpp src/subagents.cpp src/schemas.cpp)
+    src/receive.cpp src/tools.cpp src/plan.cpp src/ask_user.cpp src/subagents.cpp src/schemas.cpp)
 target_include_directories(tools_intrinsic_hub_remote_call PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(tools_intrinsic_hub_remote_call PUBLIC

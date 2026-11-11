@@ -643,7 +643,7 @@ settings cause core to register an `HubRemoteCallToolSet` with the `plan` tool, 
 tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
 The plan tool and skill are registered; construction opens no connection. The hub
 accepts authenticated one-shot requests on its dedicated listener and rejects
-unknown routes with `not_implemented`; plan/read and plan/replace are implemented. The envelope and lifecycle contract
+unknown routes with `not_implemented`; plan/read, plan/replace and ask_user/ask are implemented. The envelope and lifecycle contract
 are specified in [the worker protocol](../docs/core/worker-protocol.md#remote-tool-requests).
 
 ### Automatic compaction startup settings

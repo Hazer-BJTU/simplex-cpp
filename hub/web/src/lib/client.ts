@@ -100,6 +100,12 @@ export interface PanelClient {
         decision: 'approved' | 'denied',
         reason?: string,
     ): boolean;
+    /** Answer one pending ask_user question; false when the panel socket is closed. */
+    answerQuestion(
+        sessionId: SessionId,
+        questionId: string,
+        answer: { text?: string; option_index?: number },
+    ): boolean;
     workerAction(sessionId: SessionId, action: WorkerAction, spec?: SessionSpec): Promise<void>;
     createSession(sessionId: SessionId, spec?: SessionSpec): Promise<boolean>;
     deleteSession(sessionId: SessionId): Promise<boolean>;
@@ -407,6 +413,9 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             case 'plan':
                 if (subscribedSessions.has(message.session)) store.getState().setPlan(message.session, message.plan);
                 return;
+            case 'questions':
+                store.getState().setQuestions(message.session, message.questions);
+                return;
             case 'subscribed': {
                 const sessionId = message.session.session_id;
                 if (message.request_id !== undefined
@@ -433,6 +442,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 }
                 store.getState().setPlan(message.session.session_id,
                     message.plan ?? { markdown: '', revision: 0, updated_at: null }, true);
+                store.getState().setQuestions(message.session.session_id, message.questions ?? []);
                 const effects = store.getState().applySubscribed(message, confirmedReplacement);
                 if (effects.resubscribe) {
                     subscribe(effects.resubscribe.session, effects.resubscribe.since);
@@ -850,6 +860,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
 
         sendConfirmation(sessionId, confirmationId, decision, reason) {
             return confirmations.submit(sessionId, confirmationId, decision, reason);
+        },
+
+        answerQuestion(sessionId, questionId, answer) {
+            return socket.send({
+                type: 'question_answer', session: sessionId, question_id: questionId, answer,
+            });
         },
 
         refreshLogs(sessionId, limit) {

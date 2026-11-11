@@ -1,5 +1,5 @@
 add_executable(test_hub_remote_call_tools
-    test_tools.cpp test_subagents.cpp test_subagent_loop.cpp)
+    test_tools.cpp test_subagents.cpp test_subagent_loop.cpp test_questions.cpp)
 target_link_libraries(test_hub_remote_call_tools PRIVATE
     tools_intrinsic_hub_remote_call loop_lib Boost::unit_test_framework)
 target_compile_definitions(test_hub_remote_call_tools PRIVATE

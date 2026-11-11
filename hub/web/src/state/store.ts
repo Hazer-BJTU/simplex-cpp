@@ -1,7 +1,7 @@
 import type { SkillRecovery } from '../app/skillInput.ts';
 import { displayBytes } from './view.ts';
 import { indexViewChanges, viewProjection } from './viewProjection.ts';
-import type { SessionPlan } from '../../../ui/index.ts';
+import type { OperatorQuestion, SessionPlan } from '../../../ui/index.ts';
 /**
  * @file the panel's store.
  *
@@ -191,6 +191,8 @@ export interface PanelState {
     /** Shared by composer, recovery actions and palette; not a delivery receipt. */
     pendingExecutions: ReadonlyMap<SessionId, PendingExecution>;
     plans: ReadonlyMap<SessionId, SessionPlan>;
+    /** Pending ask_user questions per session; Hub memory only, never restored. */
+    questions: ReadonlyMap<SessionId, readonly OperatorQuestion[]>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
     epoch: TranscriptEpoch | null;
@@ -235,6 +237,8 @@ export interface PanelState {
 /** Everything the store can be asked to do. */
 export interface PanelActions {
     setPlan(session: SessionId, plan: SessionPlan, snapshot?: boolean): void;
+    /** Replace the pending-question set for one session. */
+    setQuestions(session: SessionId, questions: readonly OperatorQuestion[]): void;
     // -------------------------------------------------------------- reads --
     /** Sessions ordered for display: newest first. */
     sessionList(): SessionDescription[];
@@ -384,6 +388,7 @@ const INITIAL: PanelState = {
     authRequired: false,
     pendingExecutions: new Map(),
     plans: new Map(),
+    questions: new Map(),
     sessions: new Map(),
     views: new Map(),
     selected: null,
@@ -858,6 +863,13 @@ export function createPanelStore() {
             }
             if (sessions) set({ sessions });
         },
+        setQuestions(session, questions) {
+            if (!Array.isArray(questions)) return;
+            const next = new Map(get().questions);
+            if (questions.length === 0) next.delete(session);
+            else next.set(session, questions);
+            set({ questions: next });
+        },
         setPlan(session, plan, snapshot = false) {
             if (!plan || typeof plan.markdown !== 'string' || !Number.isSafeInteger(plan.revision)
                 || plan.revision < 0 || new TextEncoder().encode(plan.markdown).length > 65536) return;
@@ -872,7 +884,7 @@ export function createPanelStore() {
             set({ sessions: upserted(get(), session) });
         },
         applyWelcome(message) {
-            set({ plans: new Map() });
+            set({ plans: new Map(), questions: new Map() });
             const state = get();
             const patch: Partial<PanelState> = {};
             if (message.hub) {
@@ -921,7 +933,9 @@ export function createPanelStore() {
             indexViewChanges(get().views, views, [sessionId]);
             const plans = new Map(get().plans);
             plans.delete(sessionId);
-            const patch: Partial<PanelState> = { sessions, views, plans };
+            const questions = new Map(get().questions);
+            questions.delete(sessionId);
+            const patch: Partial<PanelState> = { sessions, views, plans, questions };
             if (get().selected === sessionId) patch.selected = null;
             set(patch);
         },

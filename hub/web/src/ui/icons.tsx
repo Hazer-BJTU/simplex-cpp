@@ -35,6 +35,7 @@ import {
     List,
     LoaderCircle,
     MessageSquare,
+    MessageCircleQuestion,
     Monitor,
     Moon,
     PanelRight,
@@ -95,6 +96,9 @@ export const GLYPHS = {
     // approvals
     approval: ShieldAlert,
     unverified: ShieldQuestion,
+
+    // operator questions
+    question: MessageCircleQuestion,
 
     // feedback
     ok: CircleCheck,
