@@ -1798,17 +1798,18 @@ The `ask_user` tool selects `ask_user/ask` and sends
 `question` is nonblank UTF-8 of at most 8 KiB. `options` is optional and, when
 present, must contain 2 to 8 distinct nonblank strings of at most 200 bytes.
 `timeout_ms` is host policy injected by the tool, not a model argument; it must
-be an integer in `1000..toolRequests.questionTimeoutMs`. The tool is `read_only`
+be an integer of at least 1000. A larger value is clamped to
+`toolRequests.questionTimeoutMs`. The tool is `read_only`
 and `trusted`: it changes no local state and never requires confirmation.
 
 The hub publishes the question to the panel and waits for the operator. Every
 outcome is a successful response; the four result shapes are:
 
 ```json
-{"outcome":"answered","elapsed_ms":12000,"reply":{"text":"Use option B"}}
-{"outcome":"answered","elapsed_ms":12000,"reply":{"option_index":1,"option":"next"}}
-{"outcome":"timeout","elapsed_ms":300001}
-{"outcome":"cancelled","reason":"run_cancelled","elapsed_ms":4000}
+{"outcome":"answered","timeout_ms":300000,"elapsed_ms":12000,"reply":{"text":"Use option B"}}
+{"outcome":"answered","timeout_ms":300000,"elapsed_ms":12000,"reply":{"option_index":1,"option":"next"}}
+{"outcome":"timeout","timeout_ms":300000,"elapsed_ms":300001}
+{"outcome":"cancelled","reason":"run_cancelled","timeout_ms":300000,"elapsed_ms":4000}
 ```
 
 `timeout` means the operator did not answer before the deadline; it is a normal
@@ -1819,14 +1820,14 @@ restart drops its record without a reply (the waiting tool sees the socket close
 and reports no reply). Only a session shown in the operator panel can answer: a
 headless subagent caller is rejected with `not_implemented` immediately instead
 of waiting. A `timeout_ms` above the hub ceiling is clamped to it, and the
-result reports the granted `timeout_ms`. The hub overrides the generic socket deadline
-for this route with `timeout_ms + 5 s`; the worker waits `timeout_ms + 10 s`, so
-a timeout is reported as a result rather than a transport failure. The panel
-always accepts free text in addition to the offered options, and the first
-accepted answer wins. Rejections use `unauthorized`, `invalid_arguments`,
-`too_many_questions` (four pending per session, 64 per hub), `request_conflict`
-for a reused request id, and `not_implemented` (unknown route or a headless
-caller).
+result reports the granted `timeout_ms`. The hub replaces the generic socket
+deadline for this route with the granted budget plus 5 s; the worker waits its
+own requested budget plus 10 s, so a timeout is reported as a result rather than
+a transport failure. The panel always accepts free text in addition to the
+offered options, and the first accepted answer wins. Rejections use
+`unauthorized`, `invalid_arguments`, `too_many_questions` (four pending per
+session, 64 per hub), `request_conflict` for a reused request id, and
+`not_implemented` (unknown route or a headless caller).
 The worker turns a rejection, a lost connection or an unexpected reply into a
 normal tool result whose text starts with "No user reply", so a transport
 problem never fails the run.

@@ -186,6 +186,11 @@ export interface PendingExecution {
     readonly operation: string;
 }
 
+/** One Hub refusal for a pending question; identity changes on every refusal. */
+export interface QuestionFailure {
+    message: string;
+}
+
 /** The state held by the store. */
 export interface PanelState {
     /** Shared by composer, recovery actions and palette; not a delivery receipt. */
@@ -193,8 +198,8 @@ export interface PanelState {
     plans: ReadonlyMap<SessionId, SessionPlan>;
     /** Pending ask_user questions per session; Hub memory only, never restored. */
     questions: ReadonlyMap<SessionId, readonly OperatorQuestion[]>;
-    /** Refusal text per question id, so the card can explain and re-enable itself. */
-    questionFailures: ReadonlyMap<string, string>;
+    /** Refusal state per question id; a new object marks a new refusal. */
+    questionFailures: ReadonlyMap<string, QuestionFailure>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
     epoch: TranscriptEpoch | null;
@@ -243,6 +248,8 @@ export interface PanelActions {
     setQuestions(session: SessionId, questions: readonly OperatorQuestion[]): void;
     /** Record why the hub refused an answer; the card resets to editable. */
     noteQuestionFailure(questionId: string, message: string): void;
+    /** Dismiss a recorded refusal, e.g. before retrying an answer. */
+    clearQuestionFailure(questionId: string): void;
     // -------------------------------------------------------------- reads --
     /** Sessions ordered for display: newest first. */
     sessionList(): SessionDescription[];
@@ -870,13 +877,21 @@ export function createPanelStore() {
         },
         noteQuestionFailure(questionId, message) {
             const failures = new Map(get().questionFailures);
-            failures.set(questionId, message);
+            // A fresh object per refusal makes the card's selector change even
+            // when the hub repeats the same message, so it can leave "sending".
+            failures.set(questionId, { message });
             // Bounded: an unanswered card is short-lived, and a stale entry is
             // only ever read by the id it belongs to.
             if (failures.size > 32) {
                 const oldest = failures.keys().next().value;
                 if (oldest !== undefined) failures.delete(oldest);
             }
+            set({ questionFailures: failures });
+        },
+        clearQuestionFailure(questionId) {
+            if (!get().questionFailures.has(questionId)) return;
+            const failures = new Map(get().questionFailures);
+            failures.delete(questionId);
             set({ questionFailures: failures });
         },
         setQuestions(session, questions) {

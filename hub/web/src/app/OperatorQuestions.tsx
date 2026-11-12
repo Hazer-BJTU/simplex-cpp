@@ -15,6 +15,9 @@ import { useClient } from './ClientContext.tsx';
 
 const EMPTY: readonly OperatorQuestion[] = [];
 
+/** Mirrors the Hub's answer limit; the wire limit is UTF-8 bytes. */
+const MAX_ANSWER_BYTES = 8 * 1024;
+
 function countdown(deadline: number, now: number): string {
     const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -24,6 +27,7 @@ function countdown(deadline: number, now: number): string {
 function QuestionCard({ session, question }: { session: string; question: OperatorQuestion }) {
     const client = useClient();
     const failure = usePanel(state => state.questionFailures.get(question.question_id));
+    const clearFailure = usePanel(state => state.clearQuestionFailure);
     const [text, setText] = useState('');
     const [sending, setSending] = useState(false);
     const [now, setNow] = useState(() => Date.now());
@@ -37,20 +41,21 @@ function QuestionCard({ session, question }: { session: string; question: Operat
         if (failure !== undefined) setSending(false);
     }, [failure]);
 
+    const value = text.trim();
+    const tooLong = new TextEncoder().encode(value).length > MAX_ANSWER_BYTES;
+    const canSend = value.length > 0 && !tooLong && !sending;
+
     function submit(answer: { text?: string; option_index?: number }): void {
         if (sending) return;
+        clearFailure(question.question_id);
         if (client.answerQuestion(session, question.question_id, answer)) setSending(true);
     }
 
     function submitText(): void {
-        const value = text.trim();
-        if (!value || sending) return;
-        // Mirror the hub's 8 KiB limit so an oversized paste fails visibly here.
-        if (new TextEncoder().encode(value).length > 8 * 1024) return;
+        if (!canSend) return;
         submit({ text: value });
     }
 
-    const canSend = text.trim().length > 0 && !sending;
     return (
         <article
             aria-label="Operator question"
@@ -104,9 +109,15 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     Answer
                 </Button>
             </div>
+            {tooLong && (
+                <p role="status" className="mt-1 text-xs text-danger">
+                    The answer is longer than {MAX_ANSWER_BYTES / 1024} KiB.
+                    Shorten it before sending.
+                </p>
+            )}
             {failure !== undefined && (
                 <p role="status" className="mt-1 text-xs text-danger">
-                    {failure}. Edit the answer and try again.
+                    {failure.message} Edit the answer and try again.
                 </p>
             )}
             <p className="mt-1 text-xs text-ink-faint">

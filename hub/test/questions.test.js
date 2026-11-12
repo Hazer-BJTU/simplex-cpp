@@ -74,7 +74,13 @@ it('tracks pending questions and refusals in the panel store', () => {
     store.getState().setQuestions('demo', [question]);
     assert.equal(store.getState().questions.get('demo').length, 1);
     store.getState().noteQuestionFailure('q-store', 'answer is too long');
-    assert.equal(store.getState().questionFailures.get('q-store'), 'answer is too long');
+    const first = store.getState().questionFailures.get('q-store');
+    assert.equal(first.message, 'answer is too long');
+    // A repeated refusal must still be a new object, so the card re-renders.
+    store.getState().noteQuestionFailure('q-store', 'answer is too long');
+    assert.notEqual(store.getState().questionFailures.get('q-store'), first);
+    store.getState().clearQuestionFailure('q-store');
+    assert.equal(store.getState().questionFailures.has('q-store'), false);
     store.getState().setQuestions('demo', []);
     assert.equal(store.getState().questions.has('demo'), false);
 });
@@ -205,8 +211,10 @@ it('refuses headless callers instead of waiting for an operator', async () => {
     assert.equal(ctx.panel.messages.slice(mark).some((message) => message.type === 'questions'), false);
 });
 
-it('clamps a longer request to the hub ceiling and reports the granted wait', async () => {
-    const ctx = await setup({ toolRequests: { port: 0, questionTimeoutMs: 1500 } });
+it('clamps a longer request and keeps the socket open for the granted wait', async () => {
+    const ctx = await setup({ toolRequests: {
+        port: 0, timeoutMs: 1000, questionTimeoutMs: 1500,
+    } });
     const started = Date.now();
     const response = await ctx.call({ question: 'Anyone?', timeout_ms: 60000 }, 'question-clamp');
     assert.equal(response.result.outcome, 'timeout');

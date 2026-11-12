@@ -22,6 +22,9 @@ import { isValidSessionId } from '../state/session-id.ts';
 /** Lowercase literal path segments; no decoding, wildcards, or argument routing. */
 const TOOL_ROUTE = /^\/agent\/([^/]+)\/tools\/([a-z][a-z0-9_-]*(?:\/[a-z][a-z0-9_-]*)*)$/;
 
+/** Node's largest timer delay; larger delays fire immediately. */
+const MAX_TIMER_MS = 2147483647;
+
 export interface ToolRouteOptions {
     registry: SessionRegistry;
     config: HubConfig;
@@ -56,7 +59,7 @@ export function createWorkerToolRoute({ registry, config, log, plans, questions,
         const fire = (): void => { abort.abort(); ws.terminate(); };
         let timer = setTimeout(fire, config.toolRequests.timeoutMs);
         timer.unref();
-        /** A waiting question replaces the generic deadline with its own budget. */
+        /** A waiting question replaces the generic deadline with its granted budget. */
         const arm = (ms: number): void => {
             clearTimeout(timer);
             timer = setTimeout(fire, ms);
@@ -96,13 +99,14 @@ export function createWorkerToolRoute({ registry, config, log, plans, questions,
                 return;
             }
             // A question waits for an operator, which legitimately outlives the
-            // generic request deadline. The Hub settles it first; the socket
-            // fence only covers the reply write.
+            // generic request deadline. The route grants min(requested, ceiling),
+            // so the fence must cover that granted wait, not the requested one.
             if (route === 'ask_user/ask') {
                 const asked = request.arguments.timeout_ms;
-                if (Number.isSafeInteger(asked) && (asked as number) >= 1000
-                    && (asked as number) <= config.toolRequests.questionTimeoutMs) {
-                    arm((asked as number) + 5000);
+                if (Number.isSafeInteger(asked) && (asked as number) >= 1000) {
+                    const granted = Math.min(asked as number,
+                        config.toolRequests.questionTimeoutMs);
+                    arm(Math.min(granted + 5000, MAX_TIMER_MS));
                 }
             }
             const dispatch = async (): Promise<void> => {
