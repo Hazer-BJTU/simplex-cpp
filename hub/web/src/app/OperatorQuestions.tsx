@@ -17,6 +17,15 @@ const EMPTY: readonly OperatorQuestion[] = [];
 /** Mirrors the Hub's answer limit; the wire limit is UTF-8 bytes. */
 const MAX_ANSWER_BYTES = 8 * 1024;
 
+/** Matches the composer's cap: long answers scroll instead of filling the pane. */
+const MAX_ANSWER_HEIGHT = 160;
+
+/** Grow the one-line field with its content, up to the cap. */
+function growAnswer(input: HTMLTextAreaElement): void {
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(MAX_ANSWER_HEIGHT, Math.max(32, input.scrollHeight))}px`;
+}
+
 function countdown(deadline: number, now: number): string {
     const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -78,7 +87,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                             onClick={() => submit({ option_index: index })}
                             className="group flex items-start gap-2 rounded-md px-2 py-1 text-left
                                 text-sm text-ink hover:bg-subtle focus-visible:bg-subtle
-                                focus-visible:outline-none disabled:opacity-60">
+                                disabled:pointer-events-none disabled:opacity-60">
                             <span aria-hidden className="mt-[0.45rem] size-1.5 shrink-0
                                 rounded-full bg-line-strong transition-colors
                                 group-hover:bg-accent" />
@@ -91,7 +100,10 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                 focus-within:border-ink-muted">
                 <textarea
                     value={text}
-                    onChange={(event) => setText(event.target.value)}
+                    onChange={(event) => {
+                        setText(event.target.value);
+                        growAnswer(event.currentTarget);
+                    }}
                     onKeyDown={(event) => {
                         // An IME candidate is confirmed with Enter; that keystroke
                         // belongs to the composition, not to the answer.
@@ -106,8 +118,8 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     placeholder={question.options.length > 0
                         ? 'Or type a different answer…' : 'Type your answer…'}
                     aria-label="Answer"
-                    className="min-h-8 flex-1 resize-none bg-transparent py-1 text-sm
-                        placeholder:text-ink-faint focus:outline-none"
+                    className="question-answer min-h-8 max-h-40 flex-1 resize-none overflow-y-auto
+                        bg-transparent py-1 text-sm placeholder:text-ink-faint"
                 />
                 <button type="button" disabled={!canSend} onClick={submitText}
                     className="shrink-0 px-1 py-1 text-sm font-medium text-accent

@@ -268,9 +268,11 @@ body {
 }
 
 /* These text fields show focus through their neutral border instead. A second
-   blue outline around the composer or creation dialog competes with the text. */
+   blue outline around the composer or creation dialog competes with the text.
+   The answer field follows the same rule: its underline is the visible cue. */
 .composer-input:focus-visible,
-.session-id-input:focus-visible {
+.session-id-input:focus-visible,
+.question-answer:focus-visible {
     outline: none;
 }
 
@@ -595,6 +597,8 @@ select option:checked {
 }
 .questions-shell {
     flex-shrink: 0;
+    max-height: 45dvh;
+    overflow-y: auto;
     padding: 0.25rem var(--reading-gutter) 0;
     padding-right: calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px));
     background: var(--surface);
