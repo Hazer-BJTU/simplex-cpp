@@ -593,6 +593,12 @@ select option:checked {
     font-size: var(--conversation-font-size);
     line-height: var(--conversation-line-height);
 }
+.questions-shell {
+    flex-shrink: 0;
+    padding: 0.25rem var(--reading-gutter) 0;
+    padding-right: calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px));
+    background: var(--surface);
+}
 .composer-shell {
     flex-shrink: 0;
     padding: 0.5rem var(--reading-gutter) max(0.75rem, env(safe-area-inset-bottom));

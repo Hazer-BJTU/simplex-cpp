@@ -97,7 +97,8 @@ export async function dispatchQuestion(
                 outcome: result.outcome,
                 // The wait the hub actually granted, which a ceiling may lower.
                 timeout_ms: budget,
-                elapsed_ms: Date.now() - askedAt,
+                // Clamped: a wall-clock step must not make a wait look negative.
+                elapsed_ms: Math.max(0, Date.now() - askedAt),
                 ...(result.outcome === 'answered' ? { reply: result.reply } : {}),
                 ...(result.outcome === 'cancelled' ? { reason: result.reason } : {}),
             },
