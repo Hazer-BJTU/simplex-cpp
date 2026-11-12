@@ -1,16 +1,13 @@
 /** Session identity, worker lifecycle controls, and the independent Inspector.
  * Request activity and cancellation belong to the conversation and composer.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel, useSession, useView } from '../state/usePanel.ts';
 import { Badge, Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Status } from '../ui/Status.tsx';
 import {
-    Dialog,
-    DialogButton,
-    DialogContent,
     Menu,
     MenuContent,
     MenuItem,
@@ -94,7 +91,7 @@ function describe(action: Pending['action'], options: { processGroup: boolean })
                         + ' configured to kill the whole process group, so any process the worker'
                         + ' started is killed with it.'
                     : 'The worker is signalled immediately, skipping the protocol. This hub is'
-                        + ' **not** configured to kill the process group, so a process the worker'
+                        + ' not configured to kill the process group, so a process the worker'
                         + ' started may outlive it.',
                 confirm: 'Force kill',
                 danger: true,
@@ -132,6 +129,38 @@ export function SessionHeader() {
     const inspectorOpen = usePanel((state) => state.inspectorOpen);
     const setInspectorOpen = usePanel((state) => state.setInspectorOpen);
     const [pending, setPending] = useState<Pending | null>(null);
+    const cancelRef = useRef<HTMLButtonElement>(null);
+    // What the open menu asked for, readable from the menu's close handler: the
+    // state update has not rendered there yet, and the ref is the only way to
+    // know whether the close is a confirmation or a plain dismissal.
+    const asked = useRef<Pending | null>(null);
+    const moreRef = useRef<HTMLButtonElement>(null);
+    const confirmRef = useRef<HTMLDivElement>(null);
+    // Closing without deciding is always available and never remembers state.
+    function dismiss(): void {
+        asked.current = null;
+        // Focus is on Cancel while the question is open; closing it must not
+        // drop a keyboard user at the top of the document.
+        if (confirmRef.current?.contains(document.activeElement)) moreRef.current?.focus();
+        setPending(null);
+    }
+    useEffect(() => {
+        if (!pending) return;
+        function onKeyDown(event: KeyboardEvent): void {
+            if (event.key !== 'Escape') return;
+            dismiss();
+            // The panel's drawers listen on document too; this one is answered.
+            event.stopPropagation();
+        }
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+    }, [pending]);
+    // A confirmation belongs to the session that asked for it. Switching
+    // sessions drops it rather than leaving another session's process on offer.
+    useEffect(() => {
+        asked.current = null;
+        setPending(null);
+    }, [selected]);
 
     if (!selected || !session) return null;
 
@@ -151,11 +180,13 @@ export function SessionHeader() {
         : session.connected ? 'the worker is still attached' : undefined;
 
     function ask(action: Pending['action']): void {
-        setPending(describe(action, { processGroup }));
+        const next = describe(action, { processGroup });
+        asked.current = next;
+        setPending(next);
     }
 
     function run(action: Pending['action']): void {
-        setPending(null);
+        dismiss();
         if (action === 'delete') {
             void client.deleteSession(sessionId);
             return;
@@ -221,11 +252,20 @@ export function SessionHeader() {
 
                 <Menu>
                     <MenuTrigger asChild>
-                        <IconButton label="More actions">
+                        <IconButton ref={moreRef} label="More actions">
                             <Glyph name="more" />
                         </IconButton>
                     </MenuTrigger>
-                    <MenuContent>
+                    <MenuContent onCloseAutoFocus={(event) => {
+                        // A menu item that asks a question hands focus to that
+                        // question's safe answer instead of back to the trigger,
+                        // so Enter on the trigger cannot re-open the menu over a
+                        // confirmation the operator has not read.
+                        const next = asked.current;
+                        if (!next) return;
+                        event.preventDefault();
+                        cancelRef.current?.focus();
+                    }}>
                         <MenuLabel>process</MenuLabel>
                         <MenuItem
                             disabled={!state.running}
@@ -277,29 +317,48 @@ export function SessionHeader() {
             </div>
 
             {pending && (
-                <Dialog open onOpenChange={(open) => { if (!open) setPending(null); }}>
-                    <DialogContent
-                        title={pending.title}
-                        description={`session ${sessionId}`}
-                        footer={
-                            <>
-                                {/* Cancel is first in the DOM, which is where
-                                    Radix puts focus — so Enter cancels rather
-                                    than confirming a destructive action the
-                                    operator has not read yet. */}
-                                <DialogButton onClick={() => setPending(null)}>Cancel</DialogButton>
-                                <DialogButton
-                                    variant={pending.danger ? 'danger' : 'primary'}
+                // The question is answered in place, where it was asked: the
+                // header is already the operator's, and a scrim over the
+                // conversation hides the very context the description talks
+                // about. Escape and the focused Cancel are the way out.
+                <div
+                    ref={confirmRef}
+                    role="group"
+                    aria-label={pending.title}
+                    data-testid="session-confirm"
+                    className="mt-2 animate-enter"
+                >
+                    <div className="reading-width border-t border-line pt-2">
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                            <p className="max-w-prose text-xs text-ink">
+                                <span className="font-medium">{pending.title}</span>{' '}
+                                <span id="session-confirm-body" className="text-ink-muted">
+                                    {pending.body}
+                                </span>
+                            </p>
+                            <span className="ml-auto flex items-center gap-3">
+                                <button
+                                    ref={cancelRef}
+                                    type="button"
+                                    aria-describedby="session-confirm-body"
+                                    onClick={() => dismiss()}
+                                    className="px-1 py-1 text-sm text-ink-muted underline-offset-2
+                                        hover:underline"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
                                     onClick={() => run(pending.action)}
+                                    className={`px-1 py-1 text-sm font-medium underline-offset-2
+                                        hover:underline ${pending.danger ? 'text-danger' : 'text-ink'}`}
                                 >
                                     {pending.confirm}
-                                </DialogButton>
-                            </>
-                        }
-                    >
-                        <p className="whitespace-pre-wrap">{pending.body}</p>
-                    </DialogContent>
-                </Dialog>
+                                </button>
+                            </span>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

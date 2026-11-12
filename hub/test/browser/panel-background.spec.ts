@@ -101,12 +101,13 @@ test('the conversation and composer show the image while the frame stays solid',
     await expect(page.getByTestId('tool-card')).toBeVisible();
     expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.6, 2);
 
-    // Approvals are a decision surface and keep their opaque strip.
+    // Approvals are part of the conversation surface, so they let the image
+    // through exactly as a question or the composer does.
     await page.request.post(`${STUB}/__stub/confirm`, { data: { session: 'demo',
         confirmation_id: 'bg-approval',
         call: { name: 'run_command', arguments: { command: 'echo hi' } } } });
-    await expect(page.getByTestId('approval-banner')).toBeVisible();
-    expect(await backgroundAlpha(page, '.approval-list')).toBe(1);
+    await expect(page.getByTestId('approval-block')).toBeVisible();
+    expect(await backgroundAlpha(page, '.approvals-shell')).toBe(0);
 });
 
 test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {

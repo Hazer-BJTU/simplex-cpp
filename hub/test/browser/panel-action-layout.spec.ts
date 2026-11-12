@@ -36,7 +36,7 @@ for (const width of [360, 768, 1440]) {
         expect(await pending.boundingBox()).toEqual(send);
     });
 
-    test(`deferred approval rows keep long content and actions inside ${width}px`, async ({ page }, testInfo) => {
+    test(`approval blocks keep long content and actions inside ${width}px`, async ({ page }, testInfo) => {
         await page.setViewportSize({ width, height: 900 });
         await open(page, '?session=demo');
         for (let index = 0; index < 3; index++) {
@@ -44,24 +44,29 @@ for (const width of [360, 768, 1440]) {
                 session: 'demo', confirmation_id: `layout-${index}`,
                 call: { name: 'run_command', arguments: { command: 'long-command/'.repeat(100) } },
             } });
-            await expect(page.getByRole('dialog')).toBeVisible();
-            await page.keyboard.press('Escape');
-            await expect(page.getByRole('dialog')).toHaveCount(0);
         }
         const list = page.getByTestId('approvals');
-        await expect(page.getByTestId('approval-banner')).toHaveCount(3);
+        await expect(page.getByTestId('approval-block')).toHaveCount(3);
         expect(await list.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-        for (const row of await page.getByTestId('approval-banner').all()) {
+        for (const row of await page.getByTestId('approval-block').all()) {
             const bounds = (await row.boundingBox())!;
-            for (const name of ['Review', 'Approve', 'Deny']) {
+            for (const name of ['Approve', 'Deny']) {
                 const button = (await row.getByRole('button', { name, exact: true }).boundingBox())!;
                 expect(button.x).toBeGreaterThanOrEqual(bounds.x);
                 expect(button.x + button.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
             }
         }
-        await page.screenshot({ path: testInfo.outputPath('approval-rows.png'), animations: 'disabled' });
-        await page.getByTestId('approval-banner').last().getByRole('button', { name: 'Review' }).click();
-        await expect(page.getByRole('dialog')).toContainText('long-command/');
+        await page.screenshot({ path: testInfo.outputPath('approval-blocks.png'), animations: 'disabled' });
+        // The long command is in the block, bounded, and its full text is one
+        // disclosure away — the decision is taken on the whole call, not on the
+        // part that happens to fit.
+        const last = page.getByTestId('approval-block').last();
+        await expect(last.locator('pre').first()).toContainText('long-command/');
+        await last.getByTestId('approval-disclosure').click();
+        await expect(last.getByTestId('approval-arguments')).toContainText('long-command/');
+        // `max-h-32` keeps the preview from growing the block without bound.
+        const preview = (await last.locator('pre').first().boundingBox())!;
+        expect(preview.height).toBeLessThanOrEqual(130);
     });
 }
 
@@ -73,7 +78,7 @@ test.describe('classic scrollbar alignment', () => {
             await open(page, '?session=demo');
             await page.addStyleTag({ content: `
                 .reading-scroll { overflow-y: scroll !important; }
-                .reading-scroll::-webkit-scrollbar, .approval-list::-webkit-scrollbar { width: 16px; }
+                .reading-scroll::-webkit-scrollbar, .approvals-shell::-webkit-scrollbar { width: 16px; }
             ` });
             await emit(page, 'model_response', modelResponse('Long transcript.\n\n'.repeat(100)));
             const list = page.getByTestId('approvals');
@@ -92,26 +97,28 @@ test.describe('classic scrollbar alignment', () => {
                     session: 'demo', confirmation_id: `alignment-${index}`,
                     call: { name: 'run_command', arguments: { command: 'echo review' } },
                 } });
-                await expect(page.getByRole('dialog')).toBeVisible();
-                await page.keyboard.press('Escape');
-                await expect(page.getByRole('dialog')).toHaveCount(0);
+                await expect(page.getByTestId('approval-block')).toHaveCount(index + 1);
                 if (index === 0) {
                     expect(await list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
                     await expectAligned();
-                    const row = page.getByTestId('approval-banner').first();
-                    const review = row.getByRole('button', { name: 'Review', exact: true });
+                    const row = page.getByTestId('approval-block').first();
                     const approve = row.getByRole('button', { name: 'Approve', exact: true });
                     const deny = row.getByRole('button', { name: 'Deny', exact: true });
-                    const background = (button: Locator) => button.evaluate(node => getComputedStyle(node).backgroundColor);
-                    const color = (button: Locator) => button.evaluate(node => getComputedStyle(node).color);
-                    expect(await background(approve)).not.toBe(await background(review));
-                    expect(await color(deny)).not.toBe(await color(review));
+                    const disclosure = row.getByTestId('approval-disclosure');
+                    const color = (target: Locator) => target.evaluate(node => getComputedStyle(node).color);
+                    const background = (target: Locator) => target.evaluate(node => getComputedStyle(node).backgroundColor);
+                    // Two text actions, told apart by colour rather than by a
+                    // filled shape, on the page's own surface.
+                    expect(await color(approve)).not.toBe(await color(deny));
+                    expect(await color(approve)).not.toBe(await color(disclosure));
+                    expect(await background(deny)).toBe('rgba(0, 0, 0, 0)');
+                    expect(await background(approve)).toBe('rgba(0, 0, 0, 0)');
                 }
             }
             await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(16);
             await expectAligned();
             // Re-measure after the independent scrollbar disappears again.
-            await page.addStyleTag({ content: '.approval-list { max-height: none; }' });
+            await page.addStyleTag({ content: '.approvals-shell { max-height: none; }' });
             await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
             await expectAligned();
         });

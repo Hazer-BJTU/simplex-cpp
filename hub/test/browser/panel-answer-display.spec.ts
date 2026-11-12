@@ -115,8 +115,7 @@ test('complex tool previews keep proposal, confirmation and result cards correla
     await emit(page, 'tool_calls', normalizeDisplay('tool_calls', calls));
     await expect(page.getByTestId('tool-card')).toHaveCount(2);
     await page.request.post(`${STUB}/__stub/confirm`, { data: { confirmation_id: 'structured-approval', call: calls[0] } });
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('approval-block')).toBeVisible();
     const first = page.locator('[data-testid="tool-card"][data-tool="structured_tool"]');
     const later = page.locator('[data-testid="tool-card"][data-tool="later_tool"]');
     await expect(first).toHaveAttribute('data-status', 'pending');

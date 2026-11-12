@@ -12,14 +12,12 @@ async function counters(page: Page, reset = false): Promise<Counters> {
 }
 async function approval(page: Page, id = 'first', session = 'demo') {
     await page.request.post(`${STUB}/__stub/confirm`, { data: { session, confirmation_id: id } });
-    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.locator(`[data-confirmation="${id}"]`)).toBeVisible();
 }
 
 test('output and logs reuse approval projections while new prompts and settlements remain immediate', async ({ page }) => {
     await open(page, '?session=demo&panel_profile=1');
     await approval(page);
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
     await counters(page, true);
     await page.request.post(`${STUB}/__stub/emit-batch`, { data: {
         events: Array.from({ length: 80 }, (_, index) => ({ event: 'model_response',
@@ -36,11 +34,11 @@ test('output and logs reuse approval projections while new prompts and settlemen
     expect(report.approvals?.count ?? 0).toBe(0);
 
     await approval(page, 'second');
-    await expect(page.getByRole('dialog').getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await expect(page.locator('[data-confirmation="second"]').getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     expect((await counters(page)).approvalProjection?.count).toBe(1);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'second' } });
-    await expect(page.getByRole('dialog')).toHaveCount(0);
-    await expect(page.getByTestId('approval-banner')).toHaveCount(1);
+    await expect(page.locator('[data-confirmation="second"]')).toHaveCount(0);
+    await expect(page.getByTestId('approval-block')).toHaveCount(1);
     expect((await counters(page)).approvalProjection?.count).toBe(2);
 });
 
@@ -52,17 +50,15 @@ test('unchanged Markdown and completed rounds do not render for unrelated activi
     await expect(page.getByTestId('round')).toContainText('Answer');
     await counters(page, true);
     await approval(page);
-    await page.keyboard.press('Escape');
     await page.request.post(`${STUB}/__stub/message`, { data: { type: 'logs', session: 'demo', lines: ['unrelated log'], dropped: 0 } });
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByTestId('approval-block')).toBeVisible();
     const report = await counters(page);
     expect(report.markdown?.count ?? 0).toBe(0);
     expect(report.roundBody?.count ?? 0).toBe(0);
-    await page.getByTestId('approval-banner').getByRole('button', { name: 'Review' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page.getByRole('dialog').locator('details pre')).toBeEmpty();
-    await page.getByRole('dialog').locator('details summary').click();
-    await expect(page.getByRole('dialog').locator('details pre')).toContainText('ls');
+    const block = page.getByTestId('approval-block');
+    await expect(block.getByTestId('approval-arguments')).toHaveCount(0);
+    await block.getByTestId('approval-disclosure').click();
+    await expect(block.getByTestId('approval-arguments')).toContainText('ls');
 });
 
 test('hidden conversation skips visual derivation, preserves disclosures and shows current output on return', async ({ page }) => {
@@ -98,24 +94,27 @@ test('a running tool keeps the same mounted spinner through subsequent responses
     expect(await spinner.evaluate(node => node === (window as unknown as { __spinner: Element }).__spinner)).toBe(true);
 });
 
-test('submission feedback keeps dialog geometry, locks one prompt and survives Later/Review', async ({ page }) => {
+test('submission feedback keeps the action geometry and locks only its own prompt', async ({ page }) => {
     await open(page, '?session=demo');
     await approval(page);
-    const dialog = page.getByRole('dialog');
-    await dialog.evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished)); });
-    const before = await dialog.boundingBox();
-    await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
-    expect(await dialog.boundingBox()).toEqual(before);
-    await expect(dialog).not.toContainText('sent — waiting');
-    await dialog.getByRole('button', { name: 'Later', exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    await page.getByTestId('approval-banner').getByRole('button', { name: 'Review' }).click();
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
+    const block = page.getByTestId('approval-block');
+    await block.evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished)); });
+    const approve = block.getByRole('button', { name: 'Approve', exact: true });
+    const deny = block.getByRole('button', { name: 'Deny', exact: true });
+    const before = await approve.boundingBox();
+    await approve.click();
+    await expect(approve).toBeDisabled();
+    await expect(deny).toBeDisabled();
+    // The label is replaced by a spinner inside the same box: an approval that
+    // jumps while it is being sent is harder to read than one that waits.
+    expect(await approve.boundingBox()).toEqual(before);
+    await expect(block).not.toContainText('sent — waiting');
+    // Its own attempt locks its own prompt, not the strip.
+    await approval(page, 'second');
+    await expect(page.locator('[data-confirmation="second"]').getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'first' } });
-    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('[data-confirmation="first"]')).toHaveCount(0);
 });
 
 test('a correlated rejection restores only its prompt while another session waits independently', async ({ page }) => {
@@ -124,15 +123,13 @@ test('a correlated rejection restores only its prompt while another session wait
     await page.request.post(`${STUB}/__stub/message`, { data: { type: 'sessions',
         sessions: (await (await page.request.get(`${STUB}/api/sessions`)).json()).sessions } });
     await approval(page, 'first');
-    await page.getByRole('dialog').getByRole('button', { name: 'Approve', exact: true }).click();
-    await page.keyboard.press('Escape');
+    await page.locator('[data-confirmation="first"]').getByRole('button', { name: 'Approve', exact: true }).click();
     await approval(page, 'second', 'other');
-    await page.getByRole('dialog').getByRole('button', { name: 'Deny', exact: true }).click();
+    await page.locator('[data-confirmation="second"]').getByRole('button', { name: 'Deny', exact: true }).click();
     const decisions = (await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions;
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'error', error: 'confirmation_rejected', message: 'first refused', request: decisions[0],
     } });
-    await page.keyboard.press('Escape');
     // Select scoped rows directly: sibling prompts cannot share in-flight state.
     await expect(page.locator('[data-confirmation="first"]').getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     await expect(page.locator('[data-confirmation="second"]').getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
@@ -183,22 +180,22 @@ test('burst publication preserves all responses and urgent terminal state withou
 test('worker disconnect recovers an in-flight approval while the panel socket stays connected', async ({ page }) => {
     await open(page, '?session=demo');
     await approval(page);
-    const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+    const block = page.getByTestId('approval-block');
+    await block.getByRole('button', { name: 'Approve', exact: true }).click();
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
-    await expect(dialog).toContainText('decision outcome is unknown');
-    await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+    await expect(block).toContainText('decision outcome is unknown');
+    await expect(block.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
     await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-    await expect(dialog).toContainText('still lists this prompt as open');
+    await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await expect(block).toContainText('still lists this prompt as open');
     expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
 });
 
-test('an unknown approval outcome can be checked in the open dialog without sending another decision', async ({ page }) => {
+test('an unknown approval outcome can be checked in the block without sending another decision', async ({ page }) => {
     await open(page, '?session=demo');
     await approval(page);
-    const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+    const block = page.getByTestId('approval-block');
+    await block.getByRole('button', { name: 'Approve', exact: true }).click();
     await page.route('**/api/sessions/demo', route => route.abort());
     // A legacy rejection lacks attempt correlation, so check the authoritative
     // snapshot instead of treating it as permission to submit another decision.
@@ -206,13 +203,13 @@ test('an unknown approval outcome can be checked in the open dialog without send
         type: 'error', error: 'confirmation_rejected', message: 'unknown outcome',
         request: { type: 'confirmation', session: 'demo', confirmation_id: 'first' },
     } });
-    await expect(dialog).toContainText('Could not check the decision outcome');
-    await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Check outcome', exact: true })).toBeEnabled();
+    await expect(block).toContainText('Could not check the decision outcome');
+    await expect(block.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+    await expect(block.getByRole('button', { name: 'Check outcome', exact: true })).toBeEnabled();
     await page.unroute('**/api/sessions/demo');
-    await dialog.getByRole('button', { name: 'Check outcome', exact: true }).click();
-    await expect(dialog).toContainText('still lists this prompt as open');
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await block.getByRole('button', { name: 'Check outcome', exact: true }).click();
+    await expect(block).toContainText('still lists this prompt as open');
+    await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
 });
 
@@ -233,8 +230,8 @@ test('a reader retains their anchor and offset across Plan and approval-region r
     await expect(scroller).toContainText('Arrived in Plan');
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await approval(page);
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    // The strip appears above the composer, not over the transcript, so the
+    // reader's anchor must survive it arriving and leaving.
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'first' } });
     await expect(page.getByTestId('approvals')).toHaveCount(0);
@@ -245,30 +242,30 @@ for (const link of ['panel', 'worker']) {
     test(`a retryable approval loses permission on ${link} disconnect until a fresh check finishes`, async ({ page }) => {
         await open(page, '?session=demo');
         await approval(page);
-        const dialog = page.getByRole('dialog');
-        await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+        const block = page.getByTestId('approval-block');
+        await block.getByRole('button', { name: 'Approve', exact: true }).click();
         const decisions = (await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions;
         await page.request.post(`${STUB}/__stub/message`, { data: {
             type: 'error', error: 'confirmation_rejected', message: 'retry permitted', request: decisions[0],
         } });
-        await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+        await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
         let held: import('@playwright/test').Route | undefined;
         await page.route('**/api/sessions/demo', route => { held = route; });
         if (link === 'panel') {
             await page.request.post(`${STUB}/__stub/down`);
             await expect(page.getByText('connected', { exact: true })).not.toBeVisible();
         } else await page.request.post(`${STUB}/__stub/connection`, { data: { connected: false } });
-        await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+        await expect(block.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
         if (link === 'panel') await page.request.post(`${STUB}/__stub/up`);
         else await page.request.post(`${STUB}/__stub/connection`, { data: { connected: true } });
         await expect.poll(() => held !== undefined).toBe(true);
-        await expect(dialog.getByRole('button', { name: 'Check outcome', exact: true })).toBeDisabled();
-        await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+        await expect(block.getByRole('button', { name: 'Check outcome', exact: true })).toBeDisabled();
+        await expect(block.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
         expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
         const snapshot = await (await page.request.get(`${STUB}/api/sessions/demo`)).json();
         await held!.fulfill({ json: snapshot });
-        await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-        await expect(dialog).toContainText('still lists this prompt as open');
+        await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+        await expect(block).toContainText('still lists this prompt as open');
         expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
     });
 }

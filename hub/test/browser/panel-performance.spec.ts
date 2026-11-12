@@ -75,8 +75,7 @@ test('large transcript, output burst, approvals and local pane switching', async
         await page.request.post(`${STUB}/__stub/confirm`, { data: {
             confirmation_id: `perf-${index}`, call: { name: 'run_command', arguments: { command: 'echo approve' } },
         } });
-        await expect(page.getByRole('dialog')).toBeVisible();
-        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('approval-block')).toHaveCount(index + 1);
     }
     const localPaint: number[] = [];
     for (let index = 0; index < 8; index++) {
@@ -122,7 +121,7 @@ test('large transcript, output burst, approvals and local pane switching', async
     }
     await expect(page.getByTestId('transcript')).toContainText('Stream response 119');
 
-    await page.getByTestId('approval-banner').first().getByRole('button', { name: 'Approve', exact: true }).click();
+    await page.getByTestId('approval-block').first().getByRole('button', { name: 'Approve', exact: true }).click();
     await page.waitForTimeout(2000);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'perf-0' } });
     const report = await page.evaluate(() => {

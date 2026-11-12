@@ -45,16 +45,21 @@ test('a destructive action says what it will actually do (D27)', async ({ page }
     await page.getByRole('button', { name: 'More actions' }).click();
     await page.getByRole('menuitem', { name: /Force kill/ }).click();
 
-    // The hub is not configured to kill the process group, and the dialog says
-    // so. The old panel's `window.confirm` claimed it unconditionally, which is
-    // how a confirmation teaches an operator to stop reading them.
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toContainText('not');
-    await expect(dialog).toContainText('process group');
+    // The hub is not configured to kill the process group, and the question
+    // says so in place. The old panel's `window.confirm` claimed it
+    // unconditionally, which is how a confirmation teaches an operator to stop
+    // reading them.
+    const confirm = page.getByTestId('session-confirm');
+    await expect(confirm).toContainText('not');
+    await expect(confirm).toContainText('process group');
+    // It is answered in the page: no overlay, and focus is on the safe answer.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused();
 
     await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirm).toHaveCount(0);
 
-    // Configured the other way, the same dialog says the opposite.
+    // Configured the other way, the same question says the opposite.
     await page.request.post(`${STUB}/__stub/settings`, {
         data: { force_kill_process_group: true },
     });
@@ -62,12 +67,12 @@ test('a destructive action says what it will actually do (D27)', async ({ page }
     await page.getByTestId('session-row').click();
     await page.getByRole('button', { name: 'More actions' }).click();
     await page.getByRole('menuitem', { name: /Force kill/ }).click();
-    await expect(page.getByRole('dialog')).toContainText(
+    await expect(page.getByTestId('session-confirm')).toContainText(
         'kill the whole process group',
     );
 });
 
-test('a dangerous action asks in a dialog, not a browser prompt (D27)', async ({ page }) => {
+test('a dangerous action asks in the page, not a browser prompt (D27)', async ({ page }) => {
     const dialogs: string[] = [];
     page.on('dialog', (dialog) => { dialogs.push(dialog.message()); void dialog.dismiss(); });
 
@@ -79,7 +84,8 @@ test('a dangerous action asks in a dialog, not a browser prompt (D27)', async ({
     await page.getByRole('button', { name: 'More actions' }).click();
     await page.getByRole('menuitem', { name: /Delete session/ }).click();
 
-    await expect(page.getByRole('dialog')).toContainText('cannot be undone');
+    await expect(page.getByTestId('session-confirm')).toContainText('cannot be undone');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(dialogs).toEqual([]);
 });
 
@@ -123,45 +129,44 @@ test('an action that cannot run says why (D11)', async ({ page }) => {
     await expect(page.getByText('no process is running')).toHaveCount(2);
 });
 
-test('an approval arrives, opens itself, and is not decided by pressing Enter (D16)', async ({ page }) => {
+test('an approval arrives without taking focus, and Enter decides nothing (D16)', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
+    const trigger = page.locator('[data-testid="session-row"][data-session="demo"]');
+    await trigger.focus();
 
     await page.request.post(`${STUB}/__stub/confirm`, {
         data: { session: 'demo', confirmation_id: 'c-1' },
     });
 
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.press('Enter');
-    await expect(dialog).toBeVisible();
-
-    // Nothing was decided: the old modal focused its own "hide" button, so
-    // Enter dismissed an approval silently.
+    const block = page.getByTestId('approval-block');
+    await expect(block).toBeVisible();
+    // The old panel's modal focused its own "hide" button, so a keystroke
+    // dismissed an approval that had not been decided. The block asks in the
+    // page and leaves focus exactly where the operator left it.
+    await expect(trigger).toBeFocused();
+    await page.keyboard.press('Enter');
     const decisions = await page.request.get(`${STUB}/__stub/decisions`);
     expect((await decisions.json()).decisions).toEqual([]);
+    await expect(block).toBeVisible();
 });
 
-test('a deferred approval does not put itself back, and is still answerable (D17)', async ({ page }) => {
+test('an unanswered approval stays in place and stays answerable (D17)', async ({ page }) => {
     await open(page);
     await page.getByTestId('session-row').click();
     await page.request.post(`${STUB}/__stub/confirm`, {
         data: { session: 'demo', confirmation_id: 'c-1' },
     });
 
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await page.getByRole('button', { name: 'Later' }).click();
-    await expect(page.getByRole('dialog')).toHaveCount(0);
-
-    // A re-render used to be enough to bring it back. Traffic is exactly that.
+    const block = page.getByTestId('approval-block');
+    await expect(block).toBeVisible();
+    // A re-render used to be enough to bring a hidden dialog back; a block
+    // cannot come back because it never leaves. Traffic proves both halves.
     await emit(page, 'model_response', modelResponse('something else happened'));
-    await expect(page.getByRole('dialog')).toHaveCount(0);
-
-    // Still visible, still answerable, one click away.
-    const banner = page.getByTestId('approval-banner');
-    await expect(banner).toBeVisible();
-    await banner.getByRole('button', { name: 'Review' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByTestId('transcript')).toContainText('something else happened');
+    await expect(block).toBeVisible();
+    await block.getByRole('button', { name: 'Approve', exact: true }).click();
+    expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
 });
 
 test('a lost decision is reconciled before retry access is restored (D18)', async ({ page }) => {
@@ -171,17 +176,17 @@ test('a lost decision is reconciled before retry access is restored (D18)', asyn
         data: { session: 'demo', confirmation_id: 'c-1' },
     });
 
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Approve' }).click();
+    const block = page.getByTestId('approval-block');
+    await expect(block).toBeVisible();
+    await block.getByRole('button', { name: 'Approve' }).click();
 
     // Suppress duplicate/opposite decisions while in flight. After a bounded
     // timeout, check the Hub's open prompts before restoring explicit retry.
-    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Deny' })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeEnabled({ timeout: 12_000 });
-    await expect(dialog).toContainText('still lists this prompt as open');
-    await dialog.getByRole('button', { name: 'Approve' }).click();
+    await expect(block.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    await expect(block.getByRole('button', { name: 'Deny' })).toBeDisabled();
+    await expect(block.getByRole('button', { name: 'Approve' })).toBeEnabled({ timeout: 12_000 });
+    await expect(block).toContainText('still lists this prompt as open');
+    await block.getByRole('button', { name: 'Approve' }).click();
 
     const decisions = await page.request.get(`${STUB}/__stub/decisions`);
     expect((await decisions.json()).decisions).toHaveLength(2);
@@ -203,14 +208,14 @@ for (const [kind, args] of [
             },
         });
 
-        const dialog = page.getByRole('dialog');
-        await expect(dialog).toBeVisible();
+        const block = page.getByTestId('approval-block');
+        await expect(block).toBeVisible();
         if (kind === 'edit') {
-            await dialog.getByText('arguments as the worker sent them').click();
+            await block.getByTestId('approval-disclosure').click();
         }
-        const bounds = await dialog.evaluate((node) => {
+        const bounds = await block.evaluate((node) => {
             const box = node.getBoundingClientRect();
-            const summary = (node.querySelector('details[open] pre')
+            const summary = (node.querySelector('[data-testid="approval-arguments"]')
                 ?? node.querySelector('pre')) as HTMLElement;
             return {
                 top: box.top, bottom: box.bottom,
@@ -218,12 +223,12 @@ for (const [kind, args] of [
                 summaryScrolls: summary.scrollHeight > summary.clientHeight,
             };
         });
+        // The strip is bounded and scrolls internally; the block itself still
+        // fits, and the decision stays reachable without scrolling the page.
         expect(bounds.top).toBeGreaterThanOrEqual(0);
         expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
         expect(bounds.summaryScrolls).toBe(true);
-        await expect(dialog.getByRole('button', { name: 'Approve' })).toBeInViewport();
-        await dialog.getByRole('button', { name: 'Later' }).click();
-        await expect(dialog).toHaveCount(0);
+        await expect(block.getByRole('button', { name: 'Approve' })).toBeInViewport();
     });
 }
 

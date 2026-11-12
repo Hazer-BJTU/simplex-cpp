@@ -8,7 +8,8 @@
  * appears directly under it rather than as a toast that expires.
  */
 import type { ReactNode } from 'react';
-import { usePanel } from '../state/usePanel.ts';
+import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
+import { viewProjection } from '../state/viewProjection.ts';
 import { IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Status, type StatusTone } from '../ui/Status.tsx';
@@ -66,6 +67,10 @@ export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions 
     const described = describeConnection(
         connection.state, connection.attempt, connection.nextDelayMs,
     );
+    // An approval is the one message that fails if it is missed, so its count
+    // belongs in the one place that is always on screen. The block itself is
+    // where the decision is taken; this is only the reminder that it is there.
+    const pendingApprovals = useVisiblePanel(true, state => viewProjection(state.views).prompts.length);
 
     return (
         <header className="border-b border-line bg-surface">
@@ -95,6 +100,11 @@ export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions 
                 </Tooltip>
                 <h1 className="hidden text-sm font-semibold text-ink sm:inline">Simplex</h1>
                 <Status tone={described.tone} pulse={described.pulse}>{described.label}</Status>
+                {pendingApprovals > 0 && (
+                    <Status tone="warn">
+                        {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'} waiting
+                    </Status>
+                )}
                 <span className="flex-1" />
                 {connection.ignoredFrames > 0 && (
                     <span className="hidden text-xs text-ink-muted sm:inline">

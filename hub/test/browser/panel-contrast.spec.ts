@@ -122,13 +122,19 @@ test.describe('contrast', () => {
                 call: { name: 'run_command', arguments: { command: 'ls' } },
             },
         });
-        await page.getByTestId('approval-banner').waitFor();
-        const measured = await ratio(page, '[data-testid="approval-banner"]');
+        const block = page.getByTestId('approval-block');
+        await block.waitFor();
+        // The arrival tint is part of the surface for its first second; the
+        // colours a reader ends up with are the settled ones.
+        await block.evaluate(async node => {
+            await Promise.all(node.getAnimations().map(animation => animation.finished));
+        });
+        const measured = await ratio(page, '[data-testid="approval-block"]');
         expect(measured.ratio).toBeGreaterThanOrEqual(4.5);
     });
 
     for (const theme of ['light', 'dark'] as const) {
-        test(`the solid danger fill is readable in the ${theme} theme`, async ({ page }) => {
+        test(`the danger text action is readable in the ${theme} theme`, async ({ page }) => {
             await page.emulateMedia({ colorScheme: theme });
             await open(page);
             await page.locator('[data-testid="session-row"][data-session="demo"]').click();
@@ -139,15 +145,18 @@ test.describe('contrast', () => {
                     call: { name: 'run_command', arguments: { command: 'ls' } },
                 },
             });
-            await page.getByTestId('approval-banner').waitFor();
+            const block = page.getByTestId('approval-block');
+            await block.waitFor();
+            await block.evaluate(async node => {
+                await Promise.all(node.getAnimations().map(animation => animation.finished));
+            });
             await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-            // The Deny button is the danger variant's solid fill: its own
-            // background is the red, and its label has to sit on it readably
-            // in both themes — light ink on the deep red, dark ink on the
-            // bright one.
+            // Deny is a text action, not a filled button: the red label sits on
+            // the page's own surface, so the token has to carry 4.5:1 by itself
+            // in both themes.
             const measured = await ratio(
                 page,
-                '[data-testid="approval-banner"] button[aria-label="Deny"]',
+                '[data-testid="approval-block"] button[aria-label="Deny"]',
             );
             expect(measured.ratio).toBeGreaterThanOrEqual(4.5);
         });

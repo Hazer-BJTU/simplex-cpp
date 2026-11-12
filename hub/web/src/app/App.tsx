@@ -76,8 +76,23 @@ export function App() {
                             className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
                         >
                             {!headless && <SessionHeader />}
-                            <Approvals />
-                            {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><OperatorQuestions /><Composer /></>}
+                            {/* Approvals belong to the composer region: they are
+                                decisions the operator takes while reading, and
+                                a headless session has no composer to sit above,
+                                so it gets them under its own panel. */}
+                            {headless && session ? (
+                                <>
+                                    <HeadlessPanel session={session} />
+                                    <Approvals />
+                                </>
+                            ) : (
+                                <>
+                                    <ConversationPanels />
+                                    <Approvals />
+                                    <OperatorQuestions />
+                                    <Composer />
+                                </>
+                            )}
                         </main>
                         {!headless && <Inspector />}
                     </div>
