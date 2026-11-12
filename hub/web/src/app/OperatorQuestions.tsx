@@ -10,13 +10,21 @@
 import { useEffect, useState } from 'react';
 import type { OperatorQuestion } from '../../../ui/index.ts';
 import { usePanel } from '../state/usePanel.ts';
-import { Button } from '../ui/Button.tsx';
 import { useClient } from './ClientContext.tsx';
 
 const EMPTY: readonly OperatorQuestion[] = [];
 
 /** Mirrors the Hub's answer limit; the wire limit is UTF-8 bytes. */
 const MAX_ANSWER_BYTES = 8 * 1024;
+
+/** Matches the composer's cap: long answers scroll instead of filling the pane. */
+const MAX_ANSWER_HEIGHT = 160;
+
+/** Grow the one-line field with its content, up to the cap. */
+function growAnswer(input: HTMLTextAreaElement): void {
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(MAX_ANSWER_HEIGHT, Math.max(32, input.scrollHeight))}px`;
+}
 
 function countdown(deadline: number, now: number): string {
     const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
@@ -59,35 +67,43 @@ function QuestionCard({ session, question }: { session: string; question: Operat
     return (
         <article
             aria-label="Operator question"
-            className="rounded-lg border border-line bg-raised p-3 shadow-sm"
+            className="border-t border-line pt-3 first:border-t-0 first:pt-0"
         >
-            <div className="mb-2 flex items-center justify-between gap-2 text-xs text-ink-muted">
-                <span className="flex items-center gap-1.5 font-medium text-ink">
-                    <span aria-hidden className="size-1.5 rounded-full bg-accent" />
-                    Question from the agent
-                </span>
-                <span className="tabular-nums">
+            <div className="flex items-center gap-2 text-xs text-ink-muted">
+                <span aria-hidden className="size-1.5 rounded-full bg-accent" />
+                <span className="font-medium text-ink">Question from the agent</span>
+                <span className="ml-auto tabular-nums">
                     {sending ? 'sending…' : `${countdown(question.deadline_at, now)} left`}
                 </span>
             </div>
-            <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm text-ink">
+            <p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap text-base
+                leading-relaxed text-ink">
                 {question.question}
             </p>
             {question.options.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="-mx-2 mt-1 flex flex-col">
                     {question.options.map((option, index) => (
-                        <Button key={option} variant="secondary"
-                            disabled={sending}
-                            onClick={() => submit({ option_index: index })}>
-                            {option}
-                        </Button>
+                        <button key={option} type="button" disabled={sending}
+                            onClick={() => submit({ option_index: index })}
+                            className="group flex items-start gap-2 rounded-md px-2 py-1 text-left
+                                text-sm text-ink hover:bg-subtle focus-visible:bg-subtle
+                                disabled:pointer-events-none disabled:opacity-60">
+                            <span aria-hidden className="mt-[0.45rem] size-1.5 shrink-0
+                                rounded-full bg-line-strong transition-colors
+                                group-hover:bg-accent" />
+                            <span>{option}</span>
+                        </button>
                     ))}
                 </div>
             )}
-            <div className="mt-2 flex items-end gap-2">
+            <div className="mt-1 flex items-end gap-2 border-b border-line
+                focus-within:border-ink-muted">
                 <textarea
                     value={text}
-                    onChange={(event) => setText(event.target.value)}
+                    onChange={(event) => {
+                        setText(event.target.value);
+                        growAnswer(event.currentTarget);
+                    }}
                     onKeyDown={(event) => {
                         // An IME candidate is confirmed with Enter; that keystroke
                         // belongs to the composition, not to the answer.
@@ -97,17 +113,19 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                             if (canSend) submitText();
                         }
                     }}
-                    rows={2}
+                    rows={1}
                     disabled={sending}
                     placeholder={question.options.length > 0
                         ? 'Or type a different answer…' : 'Type your answer…'}
                     aria-label="Answer"
-                    className="min-h-9 flex-1 resize-y rounded border border-line bg-surface p-2 text-sm
-                        focus:outline-none focus-visible:outline-2 focus-visible:outline-interactive"
+                    className="question-answer min-h-8 max-h-40 flex-1 resize-none overflow-y-auto
+                        bg-transparent py-1 text-sm placeholder:text-ink-faint"
                 />
-                <Button variant="primary" disabled={!canSend} onClick={submitText}>
+                <button type="button" disabled={!canSend} onClick={submitText}
+                    className="shrink-0 px-1 py-1 text-sm font-medium text-accent
+                        disabled:text-ink-faint">
                     Answer
-                </Button>
+                </button>
             </div>
             {tooLong && (
                 <p role="status" className="mt-1 text-xs text-danger">
@@ -135,11 +153,12 @@ export function OperatorQuestions() {
         ? state.questions.get(state.selected) ?? EMPTY : EMPTY));
     if (!selected || questions.length === 0) return null;
     return (
-        <section aria-label="Pending operator questions"
-            className="flex flex-col gap-2 border-t border-line bg-subtle px-3 py-2">
-            {questions.map(question => (
-                <QuestionCard key={question.question_id} session={selected} question={question} />
-            ))}
+        <section aria-label="Pending operator questions" className="questions-shell">
+            <div className="reading-width flex flex-col gap-3">
+                {questions.map(question => (
+                    <QuestionCard key={question.question_id} session={selected} question={question} />
+                ))}
+            </div>
         </section>
     );
 }
