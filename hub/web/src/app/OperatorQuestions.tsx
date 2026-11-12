@@ -23,6 +23,7 @@ function countdown(deadline: number, now: number): string {
 /** One question, one answer. Answering or timing out removes the card. */
 function QuestionCard({ session, question }: { session: string; question: OperatorQuestion }) {
     const client = useClient();
+    const failure = usePanel(state => state.questionFailures.get(question.question_id));
     const [text, setText] = useState('');
     const [sending, setSending] = useState(false);
     const [now, setNow] = useState(() => Date.now());
@@ -30,10 +31,23 @@ function QuestionCard({ session, question }: { session: string; question: Operat
         const timer = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(timer);
     }, []);
+    // A refusal is per question; the card becomes editable again instead of
+    // staying in "sending" until the deadline removes it.
+    useEffect(() => {
+        if (failure !== undefined) setSending(false);
+    }, [failure]);
 
     function submit(answer: { text?: string; option_index?: number }): void {
         if (sending) return;
         if (client.answerQuestion(session, question.question_id, answer)) setSending(true);
+    }
+
+    function submitText(): void {
+        const value = text.trim();
+        if (!value || sending) return;
+        // Mirror the hub's 8 KiB limit so an oversized paste fails visibly here.
+        if (new TextEncoder().encode(value).length > 8 * 1024) return;
+        submit({ text: value });
     }
 
     const canSend = text.trim().length > 0 && !sending;
@@ -51,7 +65,9 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     {sending ? 'sending…' : `${countdown(question.deadline_at, now)} left`}
                 </span>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-ink">{question.question}</p>
+            <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm text-ink">
+                {question.question}
+            </p>
             {question.options.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                     {question.options.map((option, index) => (
@@ -68,9 +84,12 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     value={text}
                     onChange={(event) => setText(event.target.value)}
                     onKeyDown={(event) => {
+                        // An IME candidate is confirmed with Enter; that keystroke
+                        // belongs to the composition, not to the answer.
+                        if (event.nativeEvent.isComposing) return;
                         if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
-                            if (canSend) submit({ text: text.trim() });
+                            if (canSend) submitText();
                         }
                     }}
                     rows={2}
@@ -81,11 +100,15 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     className="min-h-9 flex-1 resize-y rounded border border-line bg-surface p-2 text-sm
                         focus:outline-none focus-visible:outline-2 focus-visible:outline-interactive"
                 />
-                <Button variant="primary" disabled={!canSend}
-                    onClick={() => submit({ text: text.trim() })}>
+                <Button variant="primary" disabled={!canSend} onClick={submitText}>
                     Answer
                 </Button>
             </div>
+            {failure !== undefined && (
+                <p role="status" className="mt-1 text-xs text-danger">
+                    {failure}. Edit the answer and try again.
+                </p>
+            )}
             <p className="mt-1 text-xs text-ink-faint">
                 The run is waiting for you. If you do not answer, it continues on its own and the
                 agent is told there was no reply.

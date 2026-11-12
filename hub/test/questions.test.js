@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { it, afterEach } from 'node:test';
-import { QuestionStore, validOptions, validQuestion } from '../src/state/questions.ts';
+import {
+    QuestionConflictError, QuestionStore, validOptions, validQuestion,
+} from '../src/state/questions.ts';
 import { startTestHub } from './helpers/hub.js';
+import { createPanelStore } from '../web/src/state/store.ts';
 import { connectWorker, workerEvent, until } from './helpers/worker.js';
 
 const cleanup = [];
@@ -51,6 +54,29 @@ it('settles one answer, refuses the next, and bounds pending work', async () => 
     });
     assert.equal(questions.count('demo'), 0);
     assert.equal(questions.answer('demo', 'q-1', { text: 'late' }).code, 'unknown_question');
+
+    const duplicate = new QuestionStore();
+    const first = duplicate.open({
+        session: 'demo', questionId: 'q-dup', question: 'First?', options: [], timeoutMs: 5000,
+    });
+    assert.throws(() => duplicate.open({
+        session: 'demo', questionId: 'q-dup', question: 'Second?', options: [], timeoutMs: 5000,
+    }), QuestionConflictError);
+    duplicate.cancelAll('test');
+    assert.deepEqual(await first, { outcome: 'cancelled', reason: 'test' });
+});
+
+it('tracks pending questions and refusals in the panel store', () => {
+    const store = createPanelStore();
+    const question = {
+        question_id: 'q-store', question: 'Which?', options: [], asked_at: 1, deadline_at: 2,
+    };
+    store.getState().setQuestions('demo', [question]);
+    assert.equal(store.getState().questions.get('demo').length, 1);
+    store.getState().noteQuestionFailure('q-store', 'answer is too long');
+    assert.equal(store.getState().questionFailures.get('q-store'), 'answer is too long');
+    store.getState().setQuestions('demo', []);
+    assert.equal(store.getState().questions.has('demo'), false);
 });
 
 it('times out without an operator and cancels on demand', async () => {
@@ -66,8 +92,8 @@ it('times out without an operator and cancels on demand', async () => {
     assert.deepEqual(await cancelled, { outcome: 'cancelled', reason: 'run_cancelled' });
 });
 
-async function setup() {
-    const ctx = await startTestHub({ limits: { confirmIdentityHoldMs: 120 } });
+async function setup(overrides = {}) {
+    const ctx = await startTestHub({ limits: { confirmIdentityHoldMs: 120 }, ...overrides });
     cleanup.push(() => ctx.hub.http.server.listening ? ctx.hub.stop() : undefined);
     const session = ctx.hub.registry.create('demo', {});
     const endpoints = ctx.hub.supervisor.endpointsFor(session.id, session.token);
@@ -96,7 +122,15 @@ async function setup() {
         await peer.waitForClose();
         return response.data;
     };
-    return { ...ctx, session, endpoints, event, emit, panel, call };
+    const subscribe = async () => {
+        const peer = await connectWorker(`${ctx.wsBase}/panel/ws`);
+        cleanup.push(() => peer.close());
+        await peer.waitFor((message) => message.type === 'welcome');
+        peer.send({ type: 'subscribe', session: 'demo' });
+        await peer.waitFor((message) => message.type === 'subscribed');
+        return peer;
+    };
+    return { ...ctx, session, endpoints, event, emit, panel, call, subscribe };
 }
 
 it('publishes the question, accepts an option, and clears the panel set', async () => {
@@ -160,12 +194,60 @@ it('times out as a normal result and withdraws on a cancelled run', async () => 
     assert.equal(cancelled.result.reason, 'run_cancelled');
 });
 
+it('refuses headless callers instead of waiting for an operator', async () => {
+    const ctx = await setup();
+    ctx.session.kind = 'headless';
+    const mark = ctx.panel.messages.length;
+    const response = await ctx.call({ question: 'Anyone?', timeout_ms: 5000 }, 'question-headless');
+    assert.equal(response.status, 'rejected');
+    assert.equal(response.error.code, 'not_implemented');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(ctx.panel.messages.slice(mark).some((message) => message.type === 'questions'), false);
+});
+
+it('clamps a longer request to the hub ceiling and reports the granted wait', async () => {
+    const ctx = await setup({ toolRequests: { port: 0, questionTimeoutMs: 1500 } });
+    const started = Date.now();
+    const response = await ctx.call({ question: 'Anyone?', timeout_ms: 60000 }, 'question-clamp');
+    assert.equal(response.result.outcome, 'timeout');
+    assert.equal(response.result.timeout_ms, 1500);
+    assert.ok(Date.now() - started >= 1500);
+});
+
+it('includes pending counts in subscriptions and session lists', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Which?', timeout_ms: 5000 }, 'question-count');
+    await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 1);
+    const peer = await ctx.subscribe();
+    const snapshot = await peer.waitFor((message) => message.type === 'subscribed'
+        && message.session.pending_questions === 1);
+    assert.equal(snapshot.questions.length, 1);
+    peer.send({ type: 'list_sessions' });
+    const listed = await peer.waitFor((message) => message.type === 'sessions');
+    assert.equal(listed.sessions.find((session) => session.session_id === 'demo')
+        .pending_questions, 1);
+    peer.send({ type: 'status_snapshot', session: 'demo' });
+    const state = await peer.waitFor((message) => message.type === 'snapshot');
+    assert.equal(state.session.pending_questions, 1);
+    ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'question-count',
+        answer: { text: 'this one' } });
+    await pending;
+});
+
+it('rejects an explicit empty options array', async () => {
+    const ctx = await setup();
+    const response = await ctx.call({ question: 'Which?', options: [], timeout_ms: 5000 },
+        'question-empty-options');
+    assert.equal(response.error.code, 'invalid_arguments');
+});
+
 it('rejects oversized or malformed requests without publishing them', async () => {
     const ctx = await setup();
     const pending = ctx.call({ question: '  ', timeout_ms: 5000 }, 'question-5');
     const response = await pending;
     assert.equal(response.status, 'rejected');
     assert.equal(response.error.code, 'invalid_arguments');
-    const tooLong = await ctx.call({ question: 'Why?', timeout_ms: 2000000 }, 'question-6');
-    assert.equal(tooLong.error.code, 'invalid_arguments');
+    const tooShort = await ctx.call({ question: 'Why?', timeout_ms: 0 }, 'question-6');
+    assert.equal(tooShort.error.code, 'invalid_arguments');
 });

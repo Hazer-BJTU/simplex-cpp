@@ -170,6 +170,20 @@ BOOST_AUTO_TEST_CASE(ask_user_timeout_is_a_normal_result)
     BOOST_TEST(content.raw.find("timed out after 300 s") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(ask_user_reports_the_granted_wait)
+{
+    // The hub may clamp the budget; the text must name the wait it granted.
+    const auto content = round_trip(Json{{"question", "Anyone there?"}},
+        [](const Json&, const std::string& id) {
+            Json data{{"worker_id", "worker"}, {"session_id", "session"}, {"run_id", "run"},
+                {"request_id", id}, {"route", "ask_user/ask"}, {"status", "succeeded"},
+                {"result", Json{{"outcome", "timeout"}, {"timeout_ms", 120000},
+                    {"elapsed_ms", 120001}}}};
+            return Json{{"type", "tool_response"}, {"data", data}};
+        });
+    BOOST_TEST(content.raw.find("timed out after 120 s") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(ask_user_cancelled_is_a_normal_result)
 {
     const auto content = round_trip(Json{{"question", "Still needed?"}},

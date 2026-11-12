@@ -45,6 +45,9 @@ export type AnswerResult =
 /** A capacity refusal the caller turns into a tool rejection. */
 export class QuestionLimitError extends Error {}
 
+/** A reused request id; the caller turns this into a distinct rejection. */
+export class QuestionConflictError extends Error {}
+
 const utf8 = (value: string): boolean =>
     Buffer.from(value, 'utf8').toString('utf8') === value;
 
@@ -108,7 +111,7 @@ export class QuestionStore {
             throw new QuestionLimitError('too many pending questions for this session');
         }
         if (this.entries.has(input.questionId)) {
-            throw new QuestionLimitError('question request id is already pending');
+            throw new QuestionConflictError('question request id is already pending');
         }
         const asked = Date.now();
         const doc: PendingQuestion = {
@@ -126,9 +129,10 @@ export class QuestionStore {
                 this.entries.delete(doc.question_id);
                 resolve(result);
             };
+            // Deliberately referenced: a pending question must still time out
+            // when it is the only thing left on the event loop.
             const timer = setTimeout(() => settle({ outcome: 'timeout' }),
                 Math.max(0, doc.deadline_at - Date.now()));
-            timer.unref();
             this.entries.set(doc.question_id, {
                 session: input.session,
                 doc,

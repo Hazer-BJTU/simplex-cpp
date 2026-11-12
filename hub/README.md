@@ -318,7 +318,7 @@ their base prompts.
 | --- | --- | --- |
 | `toolRequests.host`, `toolRequests.port` | inherits `listen.host`, `8801` | independent worker tool-request listener |
 | `toolRequests.timeoutMs`, `toolRequests.maxConnections` | `120000`, `128` | hard per-connection deadline and global upgraded-connection limit |
-| `toolRequests.questionTimeoutMs` | `1800000` | ceiling for an `ask_user` wait; the route uses the worker's declared budget instead of `timeoutMs` |
+| `toolRequests.questionTimeoutMs` | `1800000` | ceiling for an `ask_user` wait (at least `1000`); the route uses the worker's declared budget, clamped to this value, instead of `timeoutMs` |
 | `listen.host`, `listen.port` | `127.0.0.1`, `8800` | panel and API listener |
 | `dataDir` | `~/.simplex/hub` | Hub records, config sources, logs and event history; managed worker allocations are separate |
 | `panel.token` | `""` | shared panel token; required for a non-loopback listener |
@@ -879,8 +879,9 @@ connection, sends one `tool_request`, and receives one `tool_response`. The `pla
 after verifying the live worker and active run. The `ask_user/ask` route
 publishes one question to the panel and holds the request open until an
 answer, the declared deadline, or a cancellation; a timeout is returned as a
-normal result, and pending questions live only in Hub memory. Unknown routes
-receive `not_implemented`. Plans are saved atomically in the session root and pushed to
+normal result, and pending questions live only in Hub memory. A headless
+worker has no panel to answer it, so its `ask_user` call is rejected with
+`not_implemented` immediately. Unknown routes receive `not_implemented`. Plans are saved atomically in the session root and pushed to
 the panel, which offers a Plan tab beside Conversation only when the plan is nonempty. See the complete
 [worker protocol](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/core/worker-protocol.md#remote-tool-requests).
 

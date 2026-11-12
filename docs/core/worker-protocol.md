@@ -1637,8 +1637,9 @@ preserve the distinctions documented here.
 
 This transport is independent of events and confirmation. The hub implements
 the listener and rejection protocol. When configured, the worker constructs an
-`HubRemoteCallToolSet` with the `plan` tool and an abstract request base.
-Omission leaves the set unloaded. The set registers the plan tool and skill; construction opens no connection.
+`HubRemoteCallToolSet` with the plan, question and subagent tools and an
+abstract request base. Omission leaves the set unloaded. The set registers those
+tools and their skill; construction opens no connection.
 
 ```yaml
 hub_remote_call:
@@ -1814,12 +1815,18 @@ outcome is a successful response; the four result shapes are:
 result and the worker continues with no answer. `cancelled` covers a cancelled
 run, a deleted session, a hub shutdown and a closed worker connection. A pending
 question exists only in hub memory: nothing is persisted or replayed, and a hub
-restart settles it as cancelled. The hub overrides the generic socket deadline
+restart drops its record without a reply (the waiting tool sees the socket close
+and reports no reply). Only a session shown in the operator panel can answer: a
+headless subagent caller is rejected with `not_implemented` immediately instead
+of waiting. A `timeout_ms` above the hub ceiling is clamped to it, and the
+result reports the granted `timeout_ms`. The hub overrides the generic socket deadline
 for this route with `timeout_ms + 5 s`; the worker waits `timeout_ms + 10 s`, so
 a timeout is reported as a result rather than a transport failure. The panel
 always accepts free text in addition to the offered options, and the first
 accepted answer wins. Rejections use `unauthorized`, `invalid_arguments`,
-`too_many_questions` (four pending per session, 64 per hub) and `not_implemented`.
+`too_many_questions` (four pending per session, 64 per hub), `request_conflict`
+for a reused request id, and `not_implemented` (unknown route or a headless
+caller).
 The worker turns a rejection, a lost connection or an unexpected reply into a
 normal tool result whose text starts with "No user reply", so a transport
 problem never fails the run.

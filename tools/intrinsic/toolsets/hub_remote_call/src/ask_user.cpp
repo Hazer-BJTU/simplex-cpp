@@ -57,6 +57,11 @@ model_io::Content render_result(const Json& result, std::chrono::milliseconds bu
         throw std::runtime_error("invalid ask_user result");
     }
     const auto outcome = result.at("outcome").get<std::string>();
+    // The hub may lower the requested wait to its own ceiling; report the wait
+    // that was actually granted, not the one this worker asked for.
+    if (result.contains("timeout_ms") && result.at("timeout_ms").is_number_unsigned()) {
+        budget = std::chrono::milliseconds(result.at("timeout_ms").get<std::int64_t>());
+    }
     ToolResult output;
     output.field("outcome", outcome);
     if (result.contains("elapsed_ms") && result.at("elapsed_ms").is_number_unsigned()) {

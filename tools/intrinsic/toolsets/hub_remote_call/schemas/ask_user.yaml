@@ -3,7 +3,9 @@ description: >-
   Ask the operator one question and wait for the answer during the current run.
   Use it when the plan is ambiguous or essential information is missing and a
   wrong guess would be expensive. The panel shows the question inline; the
-  operator can choose one of the options or type any free text. The call waits
+  operator can choose one of the options or type any free text. Only sessions
+  shown in the operator panel can answer: a headless subagent gets an immediate
+  "no operator" result instead of waiting. The call waits
   for a host-configured budget (5 minutes by default) and then returns a normal
   "no user reply" result: a timeout is not an error and does not end the run,
   so continue with a stated assumption or ask again later. Do not use it for

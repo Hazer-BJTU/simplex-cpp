@@ -567,10 +567,16 @@ for the Worker contract, including Continue and compact boundaries.
 
 `subscribed.questions` and the `questions` message carry the pending `ask_user`
 questions as `{question_id, question, options, asked_at, deadline_at}` objects.
-They exist only in Hub memory: a Hub restart, a cancelled run, a deleted session
-or a closed worker connection settles every pending question as cancelled, so
-the waiting tool continues instead of hanging. Answers are first-wins, and a
-free-text answer is always accepted even when the model offered options.
+`SessionDescription.pending_questions` counts them, and that count is part of
+every description this Hub sends (`welcome`, `sessions`, `session`, `created`,
+`subscribed` and `snapshot`), so a sidebar badge does not disappear when a
+client re-subscribes. They exist only in Hub memory: a cancelled run, a deleted
+session, a closed worker connection or a Hub shutdown drops the record as
+`cancelled`, and a Hub restart drops it without a reply, leaving the waiting
+tool to report a closed connection. Answers are first-wins, and a free-text
+answer is always accepted even when the model offered options. Headless
+subagents have no panel to answer them, so the Hub rejects their `ask_user`
+calls with `not_implemented`.
 
 `subscribed.plan` and the `plan` message carry
 `{markdown: string, revision: number, updated_at: string | null}`. The initial

@@ -18,7 +18,9 @@ text: |
   choose an option or type free text, so options are suggestions. A timeout or a
   lost hub returns a normal "no user reply" result, not an error: state your
   assumption and continue, or ask again later. Do not use it for trivial
-  confirmations or routine progress updates.
+  confirmations or routine progress updates. Headless subagents have no
+  operator: there the tool returns "no operator" immediately, so do not depend
+  on it in delegated work.
 
   Delegate independent work with `subagent_fork({})`, then receive the returned ID
   until ready and connected. Send a self-contained task with constraints and a

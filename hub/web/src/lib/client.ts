@@ -623,6 +623,10 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             case 'error':
                 confirmations.rejected(message);
                 store.getState().applyError(message);
+                if (typeof message.question_id === 'string') {
+                    store.getState().noteQuestionFailure(message.question_id,
+                        message.message || 'the hub refused that answer');
+                }
                 const refusedInput = message.request as {
                     type?: unknown; session?: unknown; request_id?: unknown;
                 } | undefined;

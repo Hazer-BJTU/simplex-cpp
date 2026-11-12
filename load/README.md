@@ -631,15 +631,16 @@ The old session-ID-appending layout is not migrated or read automatically. See t
 ## Remote tool transport configuration
 
 The optional `hub_remote_call` mapping accepts `endpoint`, a complete `ws://` or
-`wss://` base URL, and `timeout_ms`, an integer in `1..2147483647` (default
-`120000`).
+`wss://` base URL, `timeout_ms`, an integer in `1..2147483647` (default
+`120000`), and `question_timeout_ms`, the `ask_user` reply budget in
+`60000..1800000` (default `300000`).
 Omission leaves `Configuration::hub_remote_call` empty. An explicit mapping requires
 a valid endpoint; it is not silently enabled with a guessed server address.
 The parser retains the independent timeout in `hub_remote_call_timeout`.
 
 The endpoint names `/agent/<session>/tools`; a future client appends the operation
 route to the URL pathname while retaining its authentication query. These
-settings cause core to register an `HubRemoteCallToolSet` with the `plan` tool, whose future
+settings cause core to register an `HubRemoteCallToolSet` with the plan, question and subagent tools, whose future
 tools can use `HubRemoteCallToolBase`. Omission leaves the set unloaded.
 The plan tool and skill are registered; construction opens no connection. The hub
 accepts authenticated one-shot requests on its dedicated listener and rejects

@@ -193,6 +193,8 @@ export interface PanelState {
     plans: ReadonlyMap<SessionId, SessionPlan>;
     /** Pending ask_user questions per session; Hub memory only, never restored. */
     questions: ReadonlyMap<SessionId, readonly OperatorQuestion[]>;
+    /** Refusal text per question id, so the card can explain and re-enable itself. */
+    questionFailures: ReadonlyMap<string, string>;
     hub: HubMetadata | null;
     /** The hub process every cursor in `views` belongs to. */
     epoch: TranscriptEpoch | null;
@@ -239,6 +241,8 @@ export interface PanelActions {
     setPlan(session: SessionId, plan: SessionPlan, snapshot?: boolean): void;
     /** Replace the pending-question set for one session. */
     setQuestions(session: SessionId, questions: readonly OperatorQuestion[]): void;
+    /** Record why the hub refused an answer; the card resets to editable. */
+    noteQuestionFailure(questionId: string, message: string): void;
     // -------------------------------------------------------------- reads --
     /** Sessions ordered for display: newest first. */
     sessionList(): SessionDescription[];
@@ -389,6 +393,7 @@ const INITIAL: PanelState = {
     pendingExecutions: new Map(),
     plans: new Map(),
     questions: new Map(),
+    questionFailures: new Map(),
     sessions: new Map(),
     views: new Map(),
     selected: null,
@@ -863,6 +868,17 @@ export function createPanelStore() {
             }
             if (sessions) set({ sessions });
         },
+        noteQuestionFailure(questionId, message) {
+            const failures = new Map(get().questionFailures);
+            failures.set(questionId, message);
+            // Bounded: an unanswered card is short-lived, and a stale entry is
+            // only ever read by the id it belongs to.
+            if (failures.size > 32) {
+                const oldest = failures.keys().next().value;
+                if (oldest !== undefined) failures.delete(oldest);
+            }
+            set({ questionFailures: failures });
+        },
         setQuestions(session, questions) {
             if (!Array.isArray(questions)) return;
             const next = new Map(get().questions);
@@ -884,7 +900,7 @@ export function createPanelStore() {
             set({ sessions: upserted(get(), session) });
         },
         applyWelcome(message) {
-            set({ plans: new Map(), questions: new Map() });
+            set({ plans: new Map(), questions: new Map(), questionFailures: new Map() });
             const state = get();
             const patch: Partial<PanelState> = {};
             if (message.hub) {

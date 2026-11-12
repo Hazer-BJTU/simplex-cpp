@@ -519,9 +519,9 @@ export function validateConfig(config: HubConfig): HubConfig {
         'toolRequests.port must be an integer between 0 and 65535');
     check(Number.isInteger(tools?.timeoutMs) && tools.timeoutMs > 0 && tools.timeoutMs <= 2147483647,
         'toolRequests.timeoutMs must be an integer between 1 and 2147483647');
-    check(Number.isInteger(tools?.questionTimeoutMs) && tools.questionTimeoutMs >= 60000
+    check(Number.isInteger(tools?.questionTimeoutMs) && tools.questionTimeoutMs >= 1000
         && tools.questionTimeoutMs <= 2147483647,
-        'toolRequests.questionTimeoutMs must be an integer between 60000 and 2147483647');
+        'toolRequests.questionTimeoutMs must be an integer between 1000 and 2147483647');
     check(Number.isInteger(tools?.maxConnections) && tools.maxConnections > 0,
         'toolRequests.maxConnections must be a positive integer');
     check(port === 0 || tools.port === 0 || port !== tools.port,
