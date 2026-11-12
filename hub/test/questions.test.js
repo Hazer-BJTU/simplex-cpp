@@ -200,6 +200,22 @@ it('times out as a normal result and withdraws on a cancelled run', async () => 
     assert.equal(cancelled.result.reason, 'run_cancelled');
 });
 
+it('clamps elapsed time when the wall clock steps backwards', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+    t.after(() => t.mock.timers.reset());
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'What time is it?', timeout_ms: 5000 }, 'question-clock');
+    await ctx.panel.waitFor((message) => message.type === 'questions'
+        && message.questions.length === 1);
+    // A clock correction during the wait must not produce a negative duration.
+    t.mock.timers.setTime(900_000);
+    ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'question-clock',
+        answer: { text: 'late' } });
+    const response = await pending;
+    assert.equal(response.result.outcome, 'answered');
+    assert.equal(response.result.elapsed_ms, 0);
+});
+
 it('refuses headless callers instead of waiting for an operator', async () => {
     const ctx = await setup();
     ctx.session.kind = 'headless';
