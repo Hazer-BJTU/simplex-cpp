@@ -46,6 +46,7 @@ import { normalizeSpec } from '../launch/spec.ts';
 import { buildPayload, buildSignal, newRequestId } from '../protocol/messages.ts';
 import type { PayloadEnvelope, SignalEnvelope } from '../protocol/messages.ts';
 import type { PlanStore } from '../state/plan.ts';
+import type { QuestionStore } from '../state/questions.ts';
 import { isValidSessionId } from '../state/session-id.ts';
 import type { Session, SessionRegistry } from '../state/registry.ts';
 import type { HubState, PersistableSession } from '../state/persist.ts';
@@ -60,6 +61,7 @@ import type {
     ConfirmationOutcome,
     HubMessage,
     HubMetadata,
+    SessionDescription,
     SessionSpec,
     WorkerEnvelope,
 } from '../../shared/protocol.ts';
@@ -119,6 +121,7 @@ export interface PanelApi {
     broadcast(message: HubMessage): void;
     broadcastSession(session: Session): void;
     broadcastPlan(session: string): void;
+    broadcastQuestions(session: string): void;
     /** Number of connected panel clients, for diagnostics and tests. */
     clientCount(): number;
     close(): void;
@@ -134,6 +137,7 @@ export interface PanelApiOptions {
     transcripts: TranscriptStore;
     state: HubState;
     plans: PlanStore;
+    questions: QuestionStore;
     /** Metadata for `welcome` and `/api/meta`. */
     meta: () => HubMetadata;
     /** Persistence hook, called for a debounced save. */
@@ -145,7 +149,8 @@ export interface PanelApiOptions {
  * the rest of the hub reports through.
  */
 export function createPanelApi({
-    config, log, registry, supervisor, subagents, transcripts, state, plans, meta, onSessionsChanged,
+    config, log, registry, supervisor, subagents, transcripts, state, plans, questions, meta,
+    onSessionsChanged,
 }: PanelApiOptions): PanelApi {
     const configurations = new ConfigurationStore(config);
     const clients = new Set<PanelClient>();
@@ -269,8 +274,9 @@ export function createPanelApi({
             && client.replays.get(session.id) === generation
             && registry.get(session.id) === session;
         const reply = (events: WorkerEnvelope[], latest: number, more: boolean): HubMessage => displaySnapshot({
-            type: 'subscribed', session: session.describe(),
+            type: 'subscribed', session: describeForPanel(session),
             plan: plans.read(session.id),
+            questions: questions.list(session.id),
             transcript: events,
             logs: displayLogs(session, LOG_TAIL_DEFAULT),
             latest, replay_more: more,
@@ -324,6 +330,16 @@ export function createPanelApi({
         }
     }
 
+    /** One description for panel consumers, including its pending questions. */
+    function describeForPanel(session: Session): SessionDescription {
+        return { ...session.describe(), pending_questions: questions.count(session.id) };
+    }
+
+    /** Publish the current pending-question set for one session. */
+    function broadcastQuestions(session: string): void {
+        broadcastToSession(session, { type: 'questions', session, questions: questions.list(session) });
+    }
+
     /** Send to every connected panel client. */
     function broadcast(message: HubMessage): void {
         for (const client of clients) send(client, message);
@@ -336,13 +352,13 @@ export function createPanelApi({
 
     /** Apply the same visibility policy to REST, list replies and reconnects. */
     function listedSessions() {
-        return registry.list().filter(isListed).map(session => session.describe());
+        return registry.list().filter(isListed).map(describeForPanel);
     }
 
     /** Remove successfully cleaned children immediately, including on late notifications. */
     function broadcastSession(session: Session): void {
         if (isListed(session)) {
-            broadcast({ type: 'session', session: session.describe() });
+            broadcast({ type: 'session', session: describeForPanel(session) });
         } else {
             broadcast({ type: 'session_removed', session: session.id });
         }
@@ -363,6 +379,7 @@ export function createPanelApi({
 
     /** Delete restorable history before forgetting an inactive session ID. */
     async function removeSession(session: Session): Promise<void> {
+        questions.cancel(session.id, 'session_removed');
         // For managed sessions, target cleanup must succeed before forgetting
         // the Hub-local reference. Failures retain retryable cleanup intent.
         await supervisor.removeStorage(session, () => {
@@ -722,7 +739,7 @@ export function createPanelApi({
             session.spec = { ...session.spec, ...selected };
             persist({ immediate: true });
             broadcastSession(session);
-            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
+            sendJson(res, 200, { session: describeForPanel(session) } satisfies SessionResponse);
         },
         'POST /api/sessions/:id/subagent-policy': async ({ req, res, params }) => {
             const session = requireSession(res, params.id as string, true);
@@ -733,7 +750,7 @@ export function createPanelApi({
                 return;
             }
             subagents.setPolicy(session, body.policy);
-            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
+            sendJson(res, 200, { session: describeForPanel(session) } satisfies SessionResponse);
         },
         'GET /api/subagents/recovery': ({ res }) => {
             sendJson(res, 200, subagents?.recoveryStatus() ?? { blocked: false, reason: null });
@@ -759,7 +776,7 @@ export function createPanelApi({
             }
             try {
                 const result = await subagents.recover(session, body.action, body.lifecycle_id);
-                sendJson(res, result.ok ? 200 : 409, { ...result, session: session.describe() } satisfies RecoveryResponse);
+                sendJson(res, result.ok ? 200 : 409, { ...result, session: describeForPanel(session) } satisfies RecoveryResponse);
             } catch (error) {
                 sendError(res, 409, 'recovery_conflict', error instanceof Error ? error.message : 'recovery failed');
             }
@@ -797,7 +814,7 @@ export function createPanelApi({
                 session.spec = rawSpec;
                 persist({ immediate: true });
                 broadcastSession(session);
-                sendJson(res, 201, { session: session.describe() } satisfies SessionResponse);
+                sendJson(res, 201, { session: describeForPanel(session) } satisfies SessionResponse);
             } catch (error) {
                 sendError(res, 400, 'invalid_session',
                     error instanceof Error ? error.message : String(error));
@@ -807,7 +824,7 @@ export function createPanelApi({
         'GET /api/sessions/:id': ({ res, params }) => {
             const session = requireSession(res, params.id as string, true);
             if (!session) return;
-            sendJson(res, 200, { session: session.describe() } satisfies SessionResponse);
+            sendJson(res, 200, { session: describeForPanel(session) } satisfies SessionResponse);
         },
 
         'DELETE /api/sessions/:id': async ({ res, params }) => {
@@ -984,7 +1001,8 @@ export function createPanelApi({
                 send(client, {
                     type: 'subscribed',
                     plan: plans.read(target.id),
-                    session: target.describe(),
+                    questions: questions.list(target.id),
+                    session: describeForPanel(target),
                     // The transcript measures envelopes rather than describing
                     // them, so its element type is the narrower one.
                     transcript: asEnvelopes(transcripts.get(target.id).since(Number(message.since) || 0)),
@@ -1038,7 +1056,7 @@ export function createPanelApi({
                 fresh.spec = message.spec ?? {};
                 persist({ immediate: true });
                 broadcastSession(fresh);
-                send(client, { type: 'created', session: fresh.describe() });
+                send(client, { type: 'created', session: describeForPanel(fresh) });
                 return;
             }
             case 'delete_session': {
@@ -1121,6 +1139,12 @@ export function createPanelApi({
                     });
                     return;
                 }
+                if (message.operation === 'cancel') {
+                    // A cancelled run no longer has a waiting tool to answer;
+                    // settle now instead of holding the worker until the deadline.
+                    questions.cancel(target.id, 'run_cancelled');
+                    try { broadcastQuestions(target.id); } catch { /* recoverable */ }
+                }
                 send(client, {
                     type: 'accepted', action: 'signal',
                     operation: message.operation, session: target.id,
@@ -1167,6 +1191,26 @@ export function createPanelApi({
                 }
                 return;
             }
+            case 'question_answer': {
+                const answer = message.answer;
+                if (!answer || typeof answer !== 'object' || typeof message.question_id !== 'string') {
+                    send(client, { type: 'error', error: 'invalid_answer',
+                        message: 'question_answer requires question_id and an answer object',
+                        request: message, action: 'question_answer', session: target.id });
+                    return;
+                }
+                const result = questions.answer(target.id, message.question_id, answer);
+                if (result.ok) {
+                    send(client, { type: 'accepted', action: 'question_answer',
+                        session: target.id, question_id: message.question_id });
+                } else {
+                    send(client, { type: 'error', error: result.code,
+                        message: result.message, request: message,
+                        action: 'question_answer', session: target.id,
+                        question_id: message.question_id });
+                }
+                return;
+            }
             case 'logs': {
                 const limit = Math.min(Number(message.limit) || LOG_TAIL_DEFAULT, LOG_TAIL_MAX);
                 send(client, {
@@ -1180,7 +1224,7 @@ export function createPanelApi({
             case 'status_snapshot': {
                 send(client, {
                     type: 'snapshot',
-                    session: target.describe(),
+                    session: describeForPanel(target),
                     transcript: asEnvelopes(transcripts.get(target.id).since(Number(message.since) || 0)),
                 });
                 return;
@@ -1284,8 +1328,12 @@ export function createPanelApi({
         broadcast,
         broadcastSession,
         broadcastPlan: (session) => broadcastToSession(session, { type: 'plan', session, plan: plans.read(session) }),
+        broadcastQuestions,
         clientCount: () => clients.size,
         close() {
+            // Pending questions cannot survive the process: settle them now so a
+            // waiting worker gets an explicit withdrawal instead of a silent hang.
+            questions.cancelAll('hub_shutdown');
             for (const client of clients) {
                 try {
                     client.ws.close(1001, 'hub shutting down');

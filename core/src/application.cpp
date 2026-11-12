@@ -643,7 +643,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                         if (!self->scope) throw std::runtime_error("no active run");
                         return tools::intrinsic::HubRemoteCallIdentity{
                             self->worker_id, self->session_id, self->run_id};
-                    }));
+                    }, config.hub_remote_call_question_timeout));
             }
 
             if (name == "ptc"

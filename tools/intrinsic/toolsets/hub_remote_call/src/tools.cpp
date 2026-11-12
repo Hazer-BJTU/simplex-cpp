@@ -64,12 +64,19 @@ bool valid_route(const std::string& route)
 HubRemoteCallToolSet::HubRemoteCallToolSet(
     endpoint::ResolvedEndpoint endpoint,
     std::chrono::milliseconds timeout,
-    HubRemoteCallIdentityProvider identity)
+    HubRemoteCallIdentityProvider identity,
+    std::chrono::milliseconds question_timeout)
     : endpoint_(std::move(endpoint)), timeout_(timeout)
 {
     validate_connection(endpoint_, timeout_);
+    const auto question_ms = question_timeout.count();
+    if (question_ms < 60000 || question_ms > 1800000) {
+        throw std::invalid_argument(
+            "hub_remote_call question timeout must be between 60000 and 1800000 ms");
+    }
     register_tools({
         std::make_shared<PlanTool>(endpoint_, timeout_, identity),
+        std::make_shared<AskUserTool>(endpoint_, timeout_, question_timeout, identity),
         std::make_shared<SubagentForkTool>(endpoint_, timeout_, identity),
         std::make_shared<SubagentSendTool>(endpoint_, timeout_, identity),
         std::make_shared<SubagentReceiveTool>(endpoint_, timeout_, identity)
@@ -78,6 +85,7 @@ HubRemoteCallToolSet::HubRemoteCallToolSet(
     declare_capability_group("subagents", {
         "subagent_fork", "subagent_send", "subagent_receive"
     });
+    declare_capability_group("questions", {"ask_user"});
     load_skill(hub_remote_call::schema_directory() / "skill.yaml");
 }
 
@@ -114,12 +122,18 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     std::string route,
     std::string worker_id,
     std::string session_id,
-    std::string run_id) const
+    std::string run_id,
+    std::optional<std::chrono::milliseconds> deadline) const
 {
     if (!valid_route(route) || !nonblank(worker_id) || !nonblank(session_id)
         || !nonblank(run_id) || !query.arguments.is_object()) {
         throw InvokeException(InvokeException::Stage::Invoke,
             "invalid hub remote call route, identity, or arguments", query);
+    }
+    const auto budget = deadline.value_or(timeout_);
+    if (budget.count() <= 0) {
+        throw InvokeException(InvokeException::Stage::Invoke,
+            "invalid hub remote call deadline", query);
     }
     auto target = endpoint_;
     const auto separator = target.target.find('?');
@@ -145,7 +159,7 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     try {
         wire = co_await intercom::cancellable_exchange(
             co_await boost::asio::this_coro::executor,
-            std::move(target), encoded_request, timeout_, {},
+            std::move(target), encoded_request, budget, {},
             endpoint::get_global_ssl_context(), 256 * 1024);
     } catch (const boost::system::system_error& error) {
         throw InvokeException(InvokeException::Stage::Invoke,

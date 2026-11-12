@@ -6,7 +6,9 @@
 import { authorizeTool, rejectedTool, succeededTool, ToolFailure } from './tool-context.ts';
 import type { ToolContext } from './tool-context.ts';
 import { dispatchPlan } from './plan.ts';
+import { dispatchQuestion } from './questions.ts';
 import type { PlanStore } from '../state/plan.ts';
+import type { QuestionStore } from '../state/questions.ts';
 import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
 import type { HubConfig } from '../config.ts';
@@ -20,18 +22,24 @@ import { isValidSessionId } from '../state/session-id.ts';
 /** Lowercase literal path segments; no decoding, wildcards, or argument routing. */
 const TOOL_ROUTE = /^\/agent\/([^/]+)\/tools\/([a-z][a-z0-9_-]*(?:\/[a-z][a-z0-9_-]*)*)$/;
 
+/** Node's largest timer delay; larger delays fire immediately. */
+const MAX_TIMER_MS = 2147483647;
+
 export interface ToolRouteOptions {
     registry: SessionRegistry;
     config: HubConfig;
     log: Logger;
     plans: PlanStore;
+    questions: QuestionStore;
     onPlanChanged: (session: string) => void;
+    onQuestionsChanged: (session: string) => void;
     /** Fixed internal handlers, keyed by literal URL route. */
     handlers?: ReadonlyMap<string, (context: ToolContext) => Record<string, unknown> | Promise<Record<string, unknown>>>;
 }
 
 /** Bind this adapter only to the dedicated tool listener. */
-export function createWorkerToolRoute({ registry, config, log, plans, onPlanChanged, handlers }: ToolRouteOptions): UpgradeHandler & {
+export function createWorkerToolRoute({ registry, config, log, plans, questions, onPlanChanged,
+    onQuestionsChanged, handlers }: ToolRouteOptions): UpgradeHandler & {
     close(): void;
 } {
     const wss = new WebSocketServer({
@@ -48,8 +56,15 @@ export function createWorkerToolRoute({ registry, config, log, plans, onPlanChan
         open.add(ws);
         let received = false;
         const abort = new AbortController();
-        const timer = setTimeout(() => { abort.abort(); ws.terminate(); }, config.toolRequests.timeoutMs);
+        const fire = (): void => { abort.abort(); ws.terminate(); };
+        let timer = setTimeout(fire, config.toolRequests.timeoutMs);
         timer.unref();
+        /** A waiting question replaces the generic deadline with its granted budget. */
+        const arm = (ms: number): void => {
+            clearTimeout(timer);
+            timer = setTimeout(fire, ms);
+            timer.unref();
+        };
         ws.once('close', () => {
             abort.abort();
             clearTimeout(timer);
@@ -83,6 +98,17 @@ export function createWorkerToolRoute({ registry, config, log, plans, onPlanChan
                 ws.close(1008, 'invalid tool request envelope');
                 return;
             }
+            // A question waits for an operator, which legitimately outlives the
+            // generic request deadline. The route grants min(requested, ceiling),
+            // so the fence must cover that granted wait, not the requested one.
+            if (route === 'ask_user/ask') {
+                const asked = request.arguments.timeout_ms;
+                if (Number.isSafeInteger(asked) && (asked as number) >= 1000) {
+                    const granted = Math.min(asked as number,
+                        config.toolRequests.questionTimeoutMs);
+                    arm(Math.min(granted + 5000, MAX_TIMER_MS));
+                }
+            }
             const dispatch = async (): Promise<void> => {
                 let response;
                 if (route === 'plan/read' || route === 'plan/replace') {
@@ -97,6 +123,10 @@ export function createWorkerToolRoute({ registry, config, log, plans, onPlanChan
                     };
                     void pending.then(cleanup, cleanup);
                     response = await pending;
+                } else if (route === 'ask_user/ask') {
+                    response = await dispatchQuestion(route, request, registry, questions, token,
+                        Math.min(config.limits.confirmIdentityHoldMs, config.toolRequests.timeoutMs),
+                        abort.signal, config.toolRequests.questionTimeoutMs, onQuestionsChanged);
                 } else if (handlers?.has(route)) {
                     try {
                         const context = await authorizeTool(route, request, registry, token,

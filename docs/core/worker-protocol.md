@@ -1637,17 +1637,21 @@ preserve the distinctions documented here.
 
 This transport is independent of events and confirmation. The hub implements
 the listener and rejection protocol. When configured, the worker constructs an
-`HubRemoteCallToolSet` with the `plan` tool and an abstract request base.
-Omission leaves the set unloaded. The set registers the plan tool and skill; construction opens no connection.
+`HubRemoteCallToolSet` with the plan, question and subagent tools and an
+abstract request base. Omission leaves the set unloaded. The set registers those
+tools and their skill; construction opens no connection.
 
 ```yaml
 hub_remote_call:
   endpoint: ws://127.0.0.1:8801/agent/session-1/tools?token=SESSION_TOKEN
   timeout_ms: 120000
+  question_timeout_ms: 300000
 ```
 
 The mapping is optional. If present, `endpoint` is a complete `ws://` or `wss://`
-URL; `timeout_ms` is an integer in `1..2147483647` and defaults to `120000`. The bundled hub uses
+URL; `timeout_ms` is an integer in `1..2147483647` and defaults to `120000`.
+`question_timeout_ms` is the operator reply budget of `ask_user`: an integer in
+`60000..1800000`, default `300000`; the hub caps the wait separately. The bundled hub uses
 plain WebSocket; a deployment may terminate TLS in front of it. The endpoint is
 a base URL: append `/<route>` to its **pathname**, preserving the query.
 For example, route `files/read` connects to
@@ -1718,7 +1722,9 @@ again; a response already sent for the first frame cannot be revoked.
 bounds upgraded sockets globally (default `128`). `toolRequests.timeoutMs`
 bounds the entire server-side exchange from upgrade through close (default
 `120000`); expiry terminates the socket, including silent clients and peers that
-never finish a closing handshake. Hub shutdown terminates these sockets without
+never finish a closing handshake. A question route replaces that deadline with
+its own declared budget plus a reply grace, bounded by
+`toolRequests.questionTimeoutMs` (default `1800000`). Hub shutdown terminates these sockets without
 waiting for peers. Timeout/disconnection is a transport failure, not a synthesized
 application response. The worker request base enforces its configured deadline and validates echoed
 identifiers. It never retries automatically.
@@ -1784,6 +1790,47 @@ cancellation or a lost reply. Read to resolve an uncertain outcome before replac
 Plans persist independently of AgentInputState across run completion, cancellation,
 compaction and restart. Panel subscription includes a full `plan` snapshot, so
 recovery does not depend on retained transcript events.
+
+### Question route
+
+The `ask_user` tool selects `ask_user/ask` and sends
+`{"question":"Which branch?","options":["main","next"],"timeout_ms":300000}`.
+`question` is nonblank UTF-8 of at most 8 KiB. `options` is optional and, when
+present, must contain 2 to 8 distinct nonblank strings of at most 200 bytes.
+`timeout_ms` is host policy injected by the tool, not a model argument; it must
+be an integer of at least 1000. A larger value is clamped to
+`toolRequests.questionTimeoutMs`. The tool is `read_only`
+and `trusted`: it changes no local state and never requires confirmation.
+
+The hub publishes the question to the panel and waits for the operator. Every
+outcome is a successful response; the four result shapes are:
+
+```json
+{"outcome":"answered","timeout_ms":300000,"elapsed_ms":12000,"reply":{"text":"Use option B"}}
+{"outcome":"answered","timeout_ms":300000,"elapsed_ms":12000,"reply":{"option_index":1,"option":"next"}}
+{"outcome":"timeout","timeout_ms":300000,"elapsed_ms":300001}
+{"outcome":"cancelled","reason":"run_cancelled","timeout_ms":300000,"elapsed_ms":4000}
+```
+
+`timeout` means the operator did not answer before the deadline; it is a normal
+result and the worker continues with no answer. `cancelled` covers a cancelled
+run, a deleted session, a hub shutdown and a closed worker connection. A pending
+question exists only in hub memory: nothing is persisted or replayed, and a hub
+restart drops its record without a reply (the waiting tool sees the socket close
+and reports no reply). Only a session shown in the operator panel can answer: a
+headless subagent caller is rejected with `not_implemented` immediately instead
+of waiting. A `timeout_ms` above the hub ceiling is clamped to it, and the
+result reports the granted `timeout_ms`. The hub replaces the generic socket
+deadline for this route with the granted budget plus 5 s; the worker waits its
+own requested budget plus 10 s, so a timeout is reported as a result rather than
+a transport failure. The panel always accepts free text in addition to the
+offered options, and the first accepted answer wins. Rejections use
+`unauthorized`, `invalid_arguments`, `too_many_questions` (four pending per
+session, 64 per hub), `request_conflict` for a reused request id, and
+`not_implemented` (unknown route or a headless caller).
+The worker turns a rejection, a lost connection or an unexpected reply into a
+normal tool result whose text starts with "No user reply", so a transport
+problem never fails the run.
 
 
 ## Bundled Hub implementation

@@ -319,9 +319,10 @@ The compact instruction is loaded from
 
 ## Optional hub remote-call toolset
 
-`hub_remote_call.endpoint` and optional `timeout_ms` (default `120000`) enable an
-intrinsic `HubRemoteCallToolSet` with the `plan` tool. `construct_runtime()` copies these settings
-into the set before registering it. Omission leaves it unloaded. The set registers the plan tool and skill without opening a startup connection.
+`hub_remote_call.endpoint`, optional `timeout_ms` (default `120000`) and optional
+`question_timeout_ms` (default `300000`) enable an intrinsic
+`HubRemoteCallToolSet` with the `plan`, `ask_user` and subagent tools. `construct_runtime()` copies these settings
+into the set before registering it. Omission leaves it unloaded. The set registers those tools and their skill without opening a startup connection.
 See the [package guide](../tools/intrinsic/toolsets/hub_remote_call/README.md) for
 the request base and [wire protocol](../docs/core/worker-protocol.md#remote-tool-requests).
 

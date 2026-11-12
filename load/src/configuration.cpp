@@ -311,6 +311,15 @@ Configuration parse_configuration(
         const auto& tools = object(document, "hub_remote_call");
         result.hub_remote_call = websocket_endpoint(text(tools, "endpoint"));
         result.hub_remote_call_timeout = std::chrono::milliseconds(number(tools, "timeout_ms", 120000));
+        result.hub_remote_call_question_timeout =
+            std::chrono::milliseconds(number(tools, "question_timeout_ms", 300000));
+        // The hub caps the wait as well; an out-of-range value is a configuration
+        // mistake that must fail startup instead of silently waiting seconds.
+        const auto question_ms = result.hub_remote_call_question_timeout.count();
+        if (question_ms < 60000 || question_ms > 1800000) {
+            throw std::invalid_argument(
+                "hub_remote_call question_timeout_ms must be between 60000 and 1800000");
+        }
     }
     const auto& experiment = object(document, "experimental");
     const auto research_limit = [](const Json& object, const char* key) -> std::uint64_t {

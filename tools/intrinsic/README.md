@@ -259,6 +259,6 @@ and the shared async runtime.
 ## Optional hub remote calls
 
 [`hub_remote_call`](toolsets/hub_remote_call/README.md) is a host-injected set with
-plan, subagent fork/send/receive tools and an abstract request-tool base. Core loads it only when the optional
+plan, ask_user, subagent fork/send/receive tools and an abstract request-tool base. Core loads it only when the optional
 `hub_remote_call` configuration is present. It owns endpoint/deadline settings,
-registers separate plan/subagents capability groups and their skill, and opens no connection during construction.
+registers separate plan/questions/subagents capability groups and their skill, and opens no connection during construction.

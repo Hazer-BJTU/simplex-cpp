@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <chrono>
+#include <optional>
 
 #include "tools/intrinsic/tool_base.hpp"
 #include "intercom/cancellable_exchange.hpp"
@@ -63,13 +65,18 @@ protected:
      * There are no retries or run-cancellation hooks. The bounded exchange joins
      * its transport cleanup before returning; system DNS can delay that cleanup
      * beyond the reply-validity deadline, as documented by cancellable_exchange.
+     *
+     * `deadline` replaces the set-wide timeout for one exchange. It exists for
+     * operations that legitimately wait for an operator, where the base timeout
+     * would otherwise abort a valid request. Absent means the set timeout.
      */
     boost::asio::awaitable<nlohmann::json> request(
         model_io::InvokeQuery query,
         std::string route,
         std::string worker_id,
         std::string session_id,
-        std::string run_id) const;
+        std::string run_id,
+        std::optional<std::chrono::milliseconds> deadline = std::nullopt) const;
 
 private:
     const endpoint::ResolvedEndpoint endpoint_;
@@ -89,5 +96,27 @@ public:
     boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
 private:
     HubRemoteCallIdentityProvider identity_;
+};
+
+/** Default operator reply budget for ask_user, matching the hub's own ceiling. */
+inline constexpr std::chrono::milliseconds default_question_timeout{300000};
+
+/**
+ * Ask the operator one question and wait for the reply inside the running loop.
+ * The tool is read-only and trusted: it changes no local state and does not ask
+ * for confirmation. Options are advisory; the panel always accepts free text.
+ * A timeout or a lost connection is a normal result, not an invocation failure,
+ * so an unanswered question never turns into a failed long-running task.
+ */
+class AskUserTool final : public HubRemoteCallToolBase {
+public:
+    AskUserTool(endpoint::ResolvedEndpoint endpoint, std::chrono::milliseconds timeout,
+        std::chrono::milliseconds question_timeout, HubRemoteCallIdentityProvider identity);
+    void ensure_arguments(model_io::InvokeQuery& query) const override;
+    void write_attributes(model_io::InvokeQuery& query) const override;
+    boost::asio::awaitable<model_io::Content> invoke(const model_io::InvokeQuery& query) override;
+private:
+    HubRemoteCallIdentityProvider identity_;
+    const std::chrono::milliseconds question_timeout_;
 };
 } // namespace tools::intrinsic

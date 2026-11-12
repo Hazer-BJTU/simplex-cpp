@@ -102,6 +102,7 @@ do not advertise the capability; those builds do not provide paged recovery.
 | --- | --- |
 | `worker-events` | worker envelopes are forwarded, unknown event names included |
 | `confirmations` | tool confirmations are surfaced and can be answered |
+| `operator-questions` | pending `ask_user` questions are shown inline and can be answered |
 | `supervisor` | worker processes can be started, stopped, and force-killed |
 | `transcript-replay` | `subscribed` replays the transcript after a cursor |
 | `transcript-pages` | opt-in subscription replay uses paced, byte-bounded pages |
@@ -418,6 +419,7 @@ the worker's persisted state remains the source of truth.
 | `history` | `session`, optional `request_id`, `start`, `step`, `limit` | if the current worker advertises `session-history`, sends a read-only payload; otherwise returns `input_not_sent`. The response arrives as a transient `history` worker event |
 | `signal` | `session`, `operation`: `status`\|`options`\|`cancel`\|`shutdown`, optional `run_id` | answers with `accepted` or `signal_not_sent` |
 | `confirmation` | `session`, `confirmation_id`, `decision`, optional `reason`, `request_id` | answers with `accepted` or `confirmation_rejected` |
+| `question_answer` | `session`, `question_id`, `answer` with exactly one of `text` or `option_index` | answers with `accepted` or `unknown_question` / `invalid_answer`; removes the pending question |
 | `logs` | `session`, optional `limit` | answers with up to 2000 captured worker lines |
 | `status_snapshot` | `session`, optional `since` | answers with a fresh `snapshot` |
 | `ping` | — | answers with `pong` |
@@ -545,6 +547,7 @@ clients need not understand paging unless they opt into it.
 | `accepted` | `action`, `session`, plus action-specific fields | the command was accepted |
 | `error` | `error`, `message`, optional `request` | the command was refused |
 | `plan` | `session`, `plan` | latest persisted session plan; an empty markdown string clears it |
+| `questions` | `session`, `questions` | complete pending-question set after any change; an empty array removes the cards |
 | `pong` | `at` | heartbeat reply |
 
 `envelope` is the worker's envelope with hub-added fields:
@@ -561,6 +564,19 @@ link history to replay independently; array positions never establish ownership.
 Legacy or unmatched entries remain separate with a visible explanation. See
 [history/replay correlation](../core/worker-protocol.md#matching-history-to-event-replay)
 for the Worker contract, including Continue and compact boundaries.
+
+`subscribed.questions` and the `questions` message carry the pending `ask_user`
+questions as `{question_id, question, options, asked_at, deadline_at}` objects.
+`SessionDescription.pending_questions` counts them, and that count is part of
+every description this Hub sends (`welcome`, `sessions`, `session`, `created`,
+`subscribed` and `snapshot`), so a sidebar badge does not disappear when a
+client re-subscribes. They exist only in Hub memory: a cancelled run, a deleted
+session, a closed worker connection or a Hub shutdown drops the record as
+`cancelled`, and a Hub restart drops it without a reply, leaving the waiting
+tool to report a closed connection. Answers are first-wins, and a free-text
+answer is always accepted even when the model offered options. Headless
+subagents have no panel to answer them, so the Hub rejects their `ask_user`
+calls with `not_implemented`.
 
 `subscribed.plan` and the `plan` message carry
 `{markdown: string, revision: number, updated_at: string | null}`. The initial
@@ -627,6 +643,8 @@ opaque.
 | `signal_not_sent` | same, for signals |
 | `unknown_confirmation` | that prompt is no longer open |
 | `confirmation_rejected` | the decision was refused (already answered, or identity unverified) |
+| `unknown_question` | that question is no longer open |
+| `invalid_answer` | the answer was malformed or did not fit the question |
 | `worker_action_failed` | the launcher or supervisor refused the action; `result.error` explains |
 | `binary_not_supported` | panel messages must be text |
 | `internal_error` | the hub failed to process the message; it is still serving |

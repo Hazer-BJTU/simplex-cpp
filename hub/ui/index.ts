@@ -44,6 +44,7 @@ export type {
     AcceptedMessage,
     ErrorMessage,
     SessionPlan,
+    OperatorQuestion,
     HubMessage,
     HubMessageType
 } from './protocol.ts';

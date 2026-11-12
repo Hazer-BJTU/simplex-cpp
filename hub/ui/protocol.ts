@@ -42,6 +42,8 @@ export const CAPABILITIES = [
     'worker-events',
     /** Tool confirmations are surfaced and can be answered. */
     'confirmations',
+    /** ask_user questions are surfaced inline and can be answered. */
+    'operator-questions',
     /** Worker processes can be started, stopped, and force-killed. */
     'supervisor',
     /** A `subscribed` reply replays the transcript after a cursor. */
@@ -93,6 +95,8 @@ export const ERROR_CODES = [
     'signal_not_sent',
     'unknown_confirmation',
     'confirmation_rejected',
+    'unknown_question',
+    'invalid_answer',
     'worker_action_failed',
     'binary_not_supported',
     'internal_error',
@@ -443,6 +447,8 @@ export interface SessionDescription {
     last_event: string | null;
     /** Current approval descriptions; reconcile snapshots by composite identity. */
     confirmations: ConfirmationPrompt[];
+    /** Pending ask_user questions for this session; panel UI only. */
+    pending_questions?: number;
     /** Supervisor process description, or null when none is tracked. */
     process: ProcessDescription | null;
     /** Retained payload admission records; not the complete transcript. */
@@ -737,6 +743,18 @@ export type PanelMessage =
         /** Human-readable diagnostic reason; not a stable error code. */
         reason?: string;
     }
+    | {
+        /** Panel protocol version; omission retains legacy v1 behavior. */
+        v?: number;
+        /** Wire discriminator or content encoding; narrow the enclosing variant before use. */
+        type: 'question_answer';
+        /** Target session ID or description according to the message variant. */
+        session: SessionId;
+        /** Pending question id from the `question` message. */
+        question_id: string;
+        /** Exactly one of free text or an option index. */
+        answer: { text?: string; option_index?: number };
+    }
     | { v?: number; type: 'logs'; session: SessionId; limit?: number }
     | { v?: number; type: 'status_snapshot'; session: SessionId; since?: number };
 
@@ -766,6 +784,8 @@ export interface AcceptedMessage {
     operation?: string;
     /** Present for `confirmation`. */
     confirmation_id?: string;
+    /** Present for `question_answer`. */
+    question_id?: string;
     /** Present for `worker`: the supervisor's own result, passed through. */
     result?: { ok: boolean; how?: string; forced?: boolean; pid?: number; error?: string };
 }
@@ -794,11 +814,29 @@ export interface ErrorMessage {
     session?: SessionId;
     /** Tool approval identifier; correlate with session, worker and run identity. */
     confirmation_id?: string;
+    /** Present for `question_answer` refusals. */
+    question_id?: string;
     /** Operation-specific result, which may also describe a refusal. */
     result?: unknown;
 }
 
-/** Everything the hub may send. */
+/**
+ * One pending `ask_user` question as the panel displays it. Pending questions
+ * live only in Hub memory: a restart settles them as cancelled.
+ */
+export interface OperatorQuestion {
+    /** Per-request question id, unique for this Hub's lifetime. */
+    question_id: string;
+    /** Question text written by the model. */
+    question: string;
+    /** Optional choices; free text is always accepted as well. */
+    options: string[];
+    /** Epoch milliseconds when the Hub received the question. */
+    asked_at: number;
+    /** Epoch milliseconds when an unanswered question settles as a timeout. */
+    deadline_at: number;
+}
+
 /** Latest hub-owned Markdown plan; an empty string hides the Plan tab. */
 export interface SessionPlan {
     /** Hub-owned plan text; an empty string means no visible plan. */
@@ -812,6 +850,13 @@ export interface SessionPlan {
 /** All Hub-to-panel wire variants. Validate unknown input before narrowing by type. */
 export type HubMessage =
     | { v?: number; type: 'plan'; session: SessionId; plan: SessionPlan }
+    | {
+        v?: number;
+        type: 'questions';
+        session: SessionId;
+        /** Complete pending set after any change; empty removes the cards. */
+        questions: OperatorQuestion[];
+    }
     | {
         /** Panel protocol version; omission retains legacy v1 behavior. */
         v?: number;
@@ -834,6 +879,8 @@ export type HubMessage =
         type: 'subscribed';
         /** Latest Hub-owned plan snapshot. */
         plan?: SessionPlan;
+        /** Pending ask_user questions, oldest first. */
+        questions?: OperatorQuestion[];
         /** Target session ID or description according to the message variant. */
         session: SessionDescription;
         /** Ordered retained Hub event projections; not full worker conversation history. */
@@ -907,12 +954,12 @@ export type HubMessageType = HubMessage['type'];
 export const PANEL_MESSAGE_TYPES = [
     'ping', 'list_sessions', 'subscribe', 'unsubscribe', 'create_session',
     'delete_session', 'worker', 'input', 'history', 'signal', 'confirmation', 'logs',
-    'status_snapshot', 'subagent_policy',
+    'status_snapshot', 'subagent_policy', 'question_answer',
 ] as const satisfies readonly PanelMessageType[];
 
 /** Every hub message `type`, in the order `docs/hub/hub-protocol.md` lists them. */
 export const HUB_MESSAGE_TYPES = [
     'welcome', 'sessions', 'session', 'session_removed', 'subscribed', 'created',
     'event', 'confirmation', 'process', 'connection', 'request', 'logs',
-    'snapshot', 'accepted', 'error', 'pong', 'plan',
+    'snapshot', 'accepted', 'error', 'pong', 'plan', 'questions',
 ] as const satisfies readonly HubMessageType[];

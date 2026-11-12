@@ -34,6 +34,29 @@ only revision and a short status. Hub rejections, malformed replies and transpor
 failures become invocation errors. A disconnect after commit leaves the outcome
 unknown; read before replacing again. There is no automatic retry or rollback.
 
+## Ask the operator
+
+`ask_user` accepts `{"question":"...","options":["A","B"]}`. The question is
+required, nonblank UTF-8 of at most 8 KiB; `options` is optional and, when
+present, must contain 2..8 distinct strings of at most 200 bytes. The panel
+always offers a free-text answer as well, so options are suggestions. The tool is
+`read_only` and `trusted`: it changes no local state and never asks for
+confirmation. Only a session shown in the operator panel can answer; a headless
+subagent caller is rejected with `not_implemented`, which the tool reports as an
+immediate "no operator" result.
+
+The call waits inside the run for `hub_remote_call.question_timeout_ms`
+(default 300000, valid 60000..1800000). Timeout, a rejected request and a lost
+connection are all normal results; only a malformed configuration or an internal
+failure is an invocation error. The result text always states the outcome
+(`answered`, `timeout`, `cancelled`, `unavailable`) so the model can continue
+with a stated assumption instead of treating silence as failure. Pending
+questions live only in Hub memory and are settled as cancelled when the run is
+cancelled, the session is deleted, or the Hub exits. The hub caps the wait with
+`toolRequests.questionTimeoutMs`; a larger requested budget is clamped to that
+ceiling and the reply reports the granted `timeout_ms`. The worker waits 10 s
+longer than its own budget so the hub's timeout reply always arrives first.
+
 ## Request base and extension boundary
 
 `HubRemoteCallToolBase` derives from DeclaredTool. Concrete tools provide their

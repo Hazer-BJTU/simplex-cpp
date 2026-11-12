@@ -9,8 +9,8 @@ namespace tools::intrinsic {
 
 /**
  * Optional host-injected toolset for session-scoped hub operations. Core creates
- * it only when hub_remote_call is configured. It registers plan/subagent tools and its
- * installed YAML skill without connecting during construction. The identity
+ * it only when hub_remote_call is configured. It registers plan, question and subagent tools
+ * and its installed YAML skill without connecting during construction. The identity
  * provider returns a fresh trusted snapshot for each invocation.
  */
 class HubRemoteCallToolSet final : public IntrinsicToolSet {
@@ -19,7 +19,8 @@ public:
     HubRemoteCallToolSet(
         endpoint::ResolvedEndpoint endpoint,
         std::chrono::milliseconds timeout,
-        HubRemoteCallIdentityProvider identity);
+        HubRemoteCallIdentityProvider identity,
+        std::chrono::milliseconds question_timeout = default_question_timeout);
 
     std::string_view name() const noexcept override;
 

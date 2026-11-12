@@ -22,6 +22,7 @@ import { createPanelApi } from './panel/api.ts';
 import type { PanelApi } from './panel/api.ts';
 import { HubState } from './state/persist.ts';
 import { PlanStore } from './state/plan.ts';
+import { QuestionStore } from './state/questions.ts';
 import { SessionRegistry } from './state/registry.ts';
 import type { Session } from './state/registry.ts';
 import { isSubagentId, isValidSessionId } from './state/session-id.ts';
@@ -117,6 +118,7 @@ export function createHub({
         },
     });
     const plans = new PlanStore(config.dataDir);
+    const questions = new QuestionStore();
     const registry = new SessionRegistry({ config, log });
     const transcripts = new TranscriptStore({ config, log });
     const state = new HubState({ config, log });
@@ -276,8 +278,14 @@ export function createHub({
     const family = subagents;
     const handlers = new Map(['subagent/clean-fork', 'subagent/receive', 'subagent/send']
         .map(route => [route, family.dispatch.bind(family)] as const));
-    const toolRequests = createWorkerToolRoute({ registry, config, log, plans, handlers,
+    const toolRequests = createWorkerToolRoute({ registry, config, log, plans, questions, handlers,
         onPlanChanged: session => safely('plan update', () => panel?.broadcastPlan(session)),
+        onQuestionsChanged: session => safely('question update', () => {
+            panel?.broadcastQuestions(session);
+            // Non-subscribed panels still need the sidebar count.
+            const entry = registry.get(session);
+            if (entry) panel?.broadcastSession(entry);
+        }),
     });
     toolHttp.useUpgrade(toolRequests);
 
@@ -290,6 +298,7 @@ export function createHub({
         transcripts,
         state,
         plans,
+        questions,
         meta,
         onSessionsChanged: (sessions) => state.schedule(sessions),
     });

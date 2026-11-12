@@ -1,0 +1,33 @@
+name: ask_user
+description: >-
+  Ask the operator one question and wait for the answer during the current run.
+  Use it when the plan is ambiguous or essential information is missing and a
+  wrong guess would be expensive. The panel shows the question inline; the
+  operator can choose one of the options or type any free text. Only sessions
+  shown in the operator panel can answer: a headless subagent gets an immediate
+  "no operator" result instead of waiting. The call waits
+  for a host-configured budget (5 minutes by default) and then returns a normal
+  "no user reply" result: a timeout is not an error and does not end the run,
+  so continue with a stated assumption or ask again later. Do not use it for
+  routine progress reports or for anything you can determine from the
+  repository. One question per call. The question and options are displayed to
+  the operator; never include credentials or other secrets.
+type: read_only
+security: trusted
+argument_schema:
+  type: object
+  additionalProperties: false
+  required: [question]
+  properties:
+    question:
+      type: string
+      description: One clear, self-contained question, at most 8 KiB UTF-8.
+    options:
+      type: array
+      minItems: 2
+      items:
+        type: string
+      description: >-
+        Optional 2 to 8 short choices shown as buttons. The operator can
+        still answer with free text, so treat the options as suggestions, not
+        a closed set.

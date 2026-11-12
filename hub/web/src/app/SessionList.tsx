@@ -60,6 +60,7 @@ function SessionRow({ session, selected, onSelect }: {
     // An open approval is the one thing that must not go unnoticed: it blocks a
     // tool call until it is answered or its deadline passes.
     const pending = session.confirmations.filter((prompt) => prompt.settled_at === null).length;
+    const questions = session.pending_questions ?? 0;
 
     return (
         <li>
@@ -88,6 +89,18 @@ function SessionRow({ session, selected, onSelect }: {
                         >
                             <Glyph name="approval" size="sm" />
                             {pending}
+                        </span>
+                    )}
+                    {questions > 0 && (
+                        <span
+                            data-testid="pending-question"
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-full
+                                bg-subtle px-1.5 text-xs font-semibold text-ink ring-1
+                                ring-inset ring-line-strong"
+                            title={`${questions} question(s) waiting for an answer`}
+                        >
+                            <Glyph name="question" size="sm" />
+                            {questions}
                         </span>
                     )}
                     <span className="flex-1" />

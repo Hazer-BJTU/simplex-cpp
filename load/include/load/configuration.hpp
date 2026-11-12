@@ -63,6 +63,8 @@ struct Configuration {
     std::optional<endpoint::ResolvedEndpoint> hub_remote_call;
     /** Total request deadline for remote tool clients; retries are not implicit. */
     std::chrono::milliseconds hub_remote_call_timeout{120000};
+    /** Operator reply budget for ask_user; the hub enforces its own ceiling. */
+    std::chrono::milliseconds hub_remote_call_question_timeout{300000};
     std::size_t event_capacity = 1024;
     std::size_t max_exchanges = 512;
     /** Zero disables automatic compaction; otherwise also converts exchange limits. */
