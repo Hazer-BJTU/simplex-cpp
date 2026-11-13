@@ -20,6 +20,7 @@
  */
 import { PanelBackground } from './PanelBackground.tsx';
 import { useEffect, useState } from 'react';
+import { DecisionRegion } from './DecisionRegion.tsx';
 import { HeadlessPanel } from './HeadlessPanel.tsx';
 import { usePanel } from '../state/usePanel.ts';
 import { ConversationPanels } from './ConversationPanels.tsx';
@@ -76,20 +77,23 @@ export function App() {
                             className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
                         >
                             {!headless && <SessionHeader />}
-                            {/* Approvals belong to the composer region: they are
-                                decisions the operator takes while reading, and
-                                a headless session has no composer to sit above,
-                                so it gets them under its own panel. */}
+                            {/* Approvals and questions are both decisions the
+                                run is waiting on. They share one region above
+                                the composer so their heights are budgeted
+                                together; a headless session has no composer and
+                                gets the same region under its own panel. */}
                             {headless && session ? (
                                 <>
                                     <HeadlessPanel session={session} />
-                                    <Approvals />
+                                    <DecisionRegion><Approvals /></DecisionRegion>
                                 </>
                             ) : (
                                 <>
                                     <ConversationPanels />
-                                    <Approvals />
-                                    <OperatorQuestions />
+                                    <DecisionRegion>
+                                        <Approvals />
+                                        <OperatorQuestions />
+                                    </DecisionRegion>
                                     <Composer />
                                 </>
                             )}

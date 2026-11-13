@@ -70,6 +70,75 @@ for (const width of [360, 768, 1440]) {
     });
 }
 
+test('approval actions end on the reading edge, whatever the side columns do', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, '?session=demo');
+    await page.request.post(`${STUB}/__stub/confirm`, { data: {
+        session: 'demo', confirmation_id: 'edge',
+        call: { name: 'run_command', arguments: { command: 'git status --short' } },
+    } });
+    const approve = page.locator('[data-testid="approval-block"] button[aria-label="Approve"]');
+    await expect(approve).toBeVisible();
+
+    /** The action sits on the content edge; the block's padding is the only inset. */
+    async function expectOnEdge(where: string): Promise<void> {
+        await expect.poll(async () => {
+            const action = (await approve.boundingBox())!;
+            const reading = (await page.getByTestId('reading-surface').boundingBox())!;
+            return Math.round(action.x + action.width - reading.x - reading.width);
+        }, { message: `actions against the reading edge, ${where}` }).toBe(8);
+    }
+
+    await expectOnEdge('sidebar open');
+    await page.getByRole('button', { name: 'Hide the session list' }).click();
+    await expectOnEdge('sidebar collapsed');
+    await page.getByRole('button', { name: 'Show inspector' }).click();
+    await expectOnEdge('inspector open');
+});
+
+test('a short viewport keeps the composer reachable with approvals and a question', async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 700 });
+    await open(page, '?session=demo');
+    for (const id of ['short-1', 'short-2']) {
+        await page.request.post(`${STUB}/__stub/confirm`, { data: {
+            session: 'demo', confirmation_id: id,
+            call: { name: 'run_command', arguments: { command: 'echo '.repeat(400) } },
+        } });
+    }
+    await expect(page.getByTestId('approval-block')).toHaveCount(2);
+    await page.getByTestId('approval-disclosure').first().click();
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'questions', session: 'demo', questions: [{
+            question_id: 'q-1', question: 'Which branch should I use?', options: ['main', 'next'],
+            deadline_at: new Date(Date.now() + 600_000).toISOString(),
+            received_at: new Date().toISOString(),
+        }],
+    } });
+    const questions = page.locator('.questions-shell');
+    await expect(questions).toBeVisible();
+
+    // One decision region, one budget: it scrolls, and it cannot push the
+    // composer — the control the operator is about to use — off the screen.
+    const region = page.locator('.decisions-shell');
+    expect(await region.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+    const geometry = await page.evaluate(() => {
+        const regionBox = document.querySelector('.decisions-shell')!.getBoundingClientRect();
+        const composerBox = document.querySelector('.composer-shell')!.getBoundingClientRect();
+        const transcriptBox = document.querySelector('[data-testid="transcript"]')!.getBoundingClientRect();
+        return {
+            overlap: Math.round(regionBox.bottom - composerBox.top),
+            composerBottom: Math.round(composerBox.bottom),
+            transcriptHeight: Math.round(transcriptBox.height),
+            viewport: window.innerHeight,
+        };
+    });
+    expect(geometry.overlap).toBeLessThanOrEqual(0);
+    expect(geometry.composerBottom).toBeLessThanOrEqual(geometry.viewport);
+    expect(geometry.transcriptHeight).toBeGreaterThan(24);
+    await expect(page.getByTestId('composer-surface')).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeInViewport({ ratio: 1 });
+});
+
 test.describe('classic scrollbar alignment', () => {
 
     for (const width of [768, 1440]) {
@@ -78,10 +147,11 @@ test.describe('classic scrollbar alignment', () => {
             await open(page, '?session=demo');
             await page.addStyleTag({ content: `
                 .reading-scroll { overflow-y: scroll !important; }
-                .reading-scroll::-webkit-scrollbar, .approvals-shell::-webkit-scrollbar { width: 16px; }
+                .reading-scroll::-webkit-scrollbar, .decisions-shell::-webkit-scrollbar { width: 16px; }
             ` });
             await emit(page, 'model_response', modelResponse('Long transcript.\n\n'.repeat(100)));
             const list = page.getByTestId('approvals');
+            const region = page.locator('.decisions-shell');
             async function expectAligned(): Promise<void> {
                 await expect.poll(async () => {
                     const reading = (await page.getByTestId('reading-surface').boundingBox())!;
@@ -99,7 +169,7 @@ test.describe('classic scrollbar alignment', () => {
                 } });
                 await expect(page.getByTestId('approval-block')).toHaveCount(index + 1);
                 if (index === 0) {
-                    expect(await list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
+                    expect(await region.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
                     await expectAligned();
                     const row = page.getByTestId('approval-block').first();
                     const approve = row.getByRole('button', { name: 'Approve', exact: true });
@@ -115,11 +185,11 @@ test.describe('classic scrollbar alignment', () => {
                     expect(await background(approve)).toBe('rgba(0, 0, 0, 0)');
                 }
             }
-            await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(16);
+            await expect.poll(() => region.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(16);
             await expectAligned();
-            // Re-measure after the independent scrollbar disappears again.
-            await page.addStyleTag({ content: '.approvals-shell { max-height: none; }' });
-            await expect.poll(() => list.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
+            // Re-measure after the region's scrollbar disappears again.
+            await page.addStyleTag({ content: '.decisions-shell { max-height: none; }' });
+            await expect.poll(() => region.evaluate((node: HTMLElement) => node.offsetWidth - node.clientWidth)).toBe(0);
             await expectAligned();
         });
     }

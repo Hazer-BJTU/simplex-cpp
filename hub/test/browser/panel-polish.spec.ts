@@ -343,3 +343,41 @@ test.describe('motion and placement', () => {
         await expect(page.getByText('1 approval waiting', { exact: true })).toHaveCount(0);
     });
 });
+
+test.describe('the top bar under pressure', () => {
+    for (const width of [360, 390]) {
+        test(`keeps its controls and its count inside ${width}px`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 720 });
+            await open(page, '?session=demo');
+            await page.request.post(`${STUB}/__stub/confirm`, {
+                data: { session: 'demo', confirmation_id: `bar-${width}` },
+            });
+            await expect(page.getByTestId('approval-block')).toBeVisible();
+
+            for (const state of ['connected', 'reconnecting'] as const) {
+                if (state === 'reconnecting') {
+                    await page.request.post(`${STUB}/__stub/down`);
+                    await expect(page.getByText('reconnecting', { exact: true })).toBeVisible();
+                }
+                const geometry = await page.evaluate(() => {
+                    const header = document.querySelector('header')!;
+                    const row = header.firstElementChild as HTMLElement;
+                    const theme = document.querySelector('[data-testid="theme-toggle"]')!.getBoundingClientRect();
+                    return {
+                        overflow: row.scrollWidth - row.clientWidth,
+                        themeRight: Math.round(theme.right),
+                        themeHeight: Math.round(theme.height),
+                        viewport: window.innerWidth,
+                    };
+                });
+                // Nothing may be clipped: the cluster wraps instead, and the
+                // theme control keeps its size on the right.
+                expect(geometry.overflow, `${width} ${state}`).toBeLessThanOrEqual(0);
+                expect(geometry.themeRight, `${width} ${state}`).toBeLessThanOrEqual(geometry.viewport);
+                expect(geometry.themeHeight, `${width} ${state}`).toBeLessThanOrEqual(40);
+                await expect(page.locator('header').getByText('1 approval', { exact: true })).toBeVisible();
+            }
+            await page.request.post(`${STUB}/__stub/up`);
+        });
+    }
+});

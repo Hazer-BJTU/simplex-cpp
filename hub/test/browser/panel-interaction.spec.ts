@@ -196,7 +196,7 @@ for (const [kind, args] of [
     ['command', { command: 'echo '.repeat(3000) }],
     ['edit', { path: '/tmp/example.cpp', old_str: 'old\n'.repeat(2000), new_str: 'new\n'.repeat(2000) }],
 ] as const) {
-    test(`a long ${kind} approval stays inside the viewport with reachable decisions`, async ({ page }) => {
+    test(`a long ${kind} approval stays answerable on a short viewport`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 420 });
         await open(page);
         await page.getByRole('button', { name: 'Open the session list' }).click();
@@ -213,22 +213,30 @@ for (const [kind, args] of [
         if (kind === 'edit') {
             await block.getByTestId('approval-disclosure').click();
         }
-        const bounds = await block.evaluate((node) => {
-            const box = node.getBoundingClientRect();
-            const summary = (node.querySelector('[data-testid="approval-arguments"]')
-                ?? node.querySelector('pre')) as HTMLElement;
+        // On a phone-sized viewport the decision area gives way to the composer
+        // rather than the other way round: it is bounded, it scrolls, and the
+        // long argument scrolls inside it. The actions stay one swipe away and
+        // are never pushed behind the keyboard.
+        const geometry = await page.evaluate(() => {
+            const region = document.querySelector('.decisions-shell')!;
+            const composer = document.querySelector('.composer-shell')!;
+            const preview = (document.querySelector('[data-testid="approval-block"] [data-testid="approval-arguments"]')
+                ?? document.querySelector('[data-testid="approval-block"] pre')) as HTMLElement;
             return {
-                top: box.top, bottom: box.bottom,
+                regionScrolls: region.scrollHeight > region.clientHeight,
+                composerBottom: Math.round(composer.getBoundingClientRect().bottom),
                 viewportHeight: window.innerHeight,
-                summaryScrolls: summary.scrollHeight > summary.clientHeight,
+                previewScrolls: preview.scrollHeight > preview.clientHeight,
             };
         });
-        // The strip is bounded and scrolls internally; the block itself still
-        // fits, and the decision stays reachable without scrolling the page.
-        expect(bounds.top).toBeGreaterThanOrEqual(0);
-        expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
-        expect(bounds.summaryScrolls).toBe(true);
-        await expect(block.getByRole('button', { name: 'Approve' })).toBeInViewport();
+        expect(geometry.regionScrolls).toBe(true);
+        expect(geometry.previewScrolls).toBe(true);
+        expect(geometry.composerBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+
+        const approve = block.getByRole('button', { name: 'Approve', exact: true });
+        await approve.scrollIntoViewIfNeeded();
+        await expect(approve).toBeInViewport();
+        await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeInViewport();
     });
 }
 

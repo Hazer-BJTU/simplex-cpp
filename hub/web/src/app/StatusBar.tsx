@@ -21,29 +21,33 @@ import { useClient } from './ClientContext.tsx';
 function describeConnection(state: string, attempt: number, nextDelayMs: number | null): {
     tone: StatusTone;
     label: string;
+    /** What fits on a phone, where the full sentence would wrap the bar. */
+    short: string;
     pulse: boolean;
 } {
     switch (state) {
         case 'open':
-            return { tone: 'ok', label: 'connected', pulse: false };
+            return { tone: 'ok', label: 'connected', short: 'connected', pulse: false };
         case 'connecting':
-            return { tone: 'idle', label: 'connecting…', pulse: true };
+            return { tone: 'idle', label: 'connecting…', short: 'connecting…', pulse: true };
         case 'reconnecting':
             return {
                 tone: 'warn',
                 label: `reconnecting (attempt ${attempt}${nextDelayMs ? `, in ${Math.round(nextDelayMs / 1000)}s` : ''})`,
+                short: 'reconnecting',
                 pulse: true,
             };
         case 'rejected':
             return {
                 tone: 'bad',
                 label: 'the hub refused this connection',
+                short: 'refused',
                 pulse: false,
             };
         case 'closed':
-            return { tone: 'bad', label: 'disconnected', pulse: false };
+            return { tone: 'bad', label: 'disconnected', short: 'disconnected', pulse: false };
         default:
-            return { tone: 'idle', label: 'not connected', pulse: false };
+            return { tone: 'idle', label: 'not connected', short: 'not connected', pulse: false };
     }
 }
 
@@ -74,43 +78,65 @@ export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions 
 
     return (
         <header className="border-b border-line bg-surface">
+            {/* Two groups rather than one row: the status cluster may wrap onto
+                a second line when a long connection message and a pending
+                approval compete for a phone's width, while the theme control
+                keeps its size and its place on the right. */}
             <div className="flex items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
-                <span className="hidden md:inline-flex">
-                    <Tooltip label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 sm:gap-x-3">
+                    <span className="hidden md:inline-flex">
+                        <Tooltip label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}>
+                            <IconButton
+                                label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}
+                                data-testid="sessions-desktop-toggle"
+                                aria-expanded={!sessionsCollapsed}
+                                aria-controls="session-list"
+                                onClick={onToggleSessions}
+                            >
+                                <Glyph name="sessions" />
+                            </IconButton>
+                        </Tooltip>
+                    </span>
+                    <Tooltip label="Sessions">
                         <IconButton
-                            label={sessionsCollapsed ? 'Show the session list' : 'Hide the session list'}
-                            data-testid="sessions-desktop-toggle"
-                            aria-expanded={!sessionsCollapsed}
-                            aria-controls="session-list"
-                            onClick={onToggleSessions}
+                            label="Open the session list"
+                            data-testid="sessions-toggle"
+                            onClick={onOpenSessions}
+                            className="md:hidden"
                         >
                             <Glyph name="sessions" />
                         </IconButton>
                     </Tooltip>
-                </span>
-                <Tooltip label="Sessions">
-                    <IconButton
-                        label="Open the session list"
-                        data-testid="sessions-toggle"
-                        onClick={onOpenSessions}
-                        className="md:hidden"
-                    >
-                        <Glyph name="sessions" />
-                    </IconButton>
-                </Tooltip>
-                <h1 className="hidden text-sm font-semibold text-ink sm:inline">Simplex</h1>
-                <Status tone={described.tone} pulse={described.pulse}>{described.label}</Status>
-                {pendingApprovals > 0 && (
-                    <Status tone="warn">
-                        {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'} waiting
+                    <h1 className="hidden text-sm font-semibold text-ink sm:inline">Simplex</h1>
+                    <Status tone={described.tone} pulse={described.pulse}>
+                        {described.short === described.label
+                            ? described.label
+                            : <>
+                                <span className="sm:hidden" title={described.label}>{described.short}</span>
+                                <span className="hidden sm:inline">{described.label}</span>
+                            </>}
                     </Status>
-                )}
-                <span className="flex-1" />
-                {connection.ignoredFrames > 0 && (
-                    <span className="hidden text-xs text-ink-muted sm:inline">
-                        {connection.ignoredFrames} message(s) from a newer hub were ignored
-                    </span>
-                )}
+                    {pendingApprovals > 0 && (
+                        <Status tone="warn">
+                            {/* The count is the cue; "waiting" is what it means,
+                                and on a phone the word costs a line of the bar. */}
+                            <span
+                                className="sm:hidden"
+                                title={`${pendingApprovals} approval${pendingApprovals === 1 ? '' : 's'} waiting for a decision`}
+                            >
+                                {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
+                            </span>
+                            <span className="hidden sm:inline">
+                                {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'} waiting
+                            </span>
+                        </Status>
+                    )}
+                    {connection.ignoredFrames > 0 && (
+                        <span className="hidden text-xs text-ink-muted sm:inline">
+                            {connection.ignoredFrames} message(s) from a newer hub were ignored
+                        </span>
+                    )}
+                </div>
                 <ThemeToggle />
             </div>
 

@@ -342,16 +342,17 @@ export function SessionHeader() {
                                     type="button"
                                     aria-describedby="session-confirm-body"
                                     onClick={() => dismiss()}
-                                    className="px-1 py-1 text-sm text-ink-muted underline-offset-2
-                                        hover:underline"
+                                    className="rounded px-2 py-1 text-sm text-ink-muted hover:bg-subtle"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => run(pending.action)}
-                                    className={`px-1 py-1 text-sm font-medium underline-offset-2
-                                        hover:underline ${pending.danger ? 'text-danger' : 'text-ink'}`}
+                                    className={`rounded px-2 py-1 text-sm font-medium
+                                        ${pending.danger
+                                            ? 'text-danger hover:bg-danger-soft'
+                                            : 'text-ink hover:bg-subtle'}`}
                                 >
                                     {pending.confirm}
                                 </button>

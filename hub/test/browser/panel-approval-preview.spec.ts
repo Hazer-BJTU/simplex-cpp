@@ -25,6 +25,11 @@ for (const width of [390, 1440]) {
             await expect(details).toHaveCount(0);
             await block.getByTestId('approval-disclosure').click();
             await expect(details).toContainText('display_truncated');
+            // The details keep what the summary sheds: the run this decision
+            // belongs to, when it arrived, and how much was cut.
+            await expect(block).toContainText('stub-run');
+            await expect(block).toContainText('received');
+            await expect(block).toContainText('truncated from');
             if (kind === 'fields') {
                 for (let index = 0; index < 10; index++) await expect(details).toContainText(`field_${index}`);
             } else {

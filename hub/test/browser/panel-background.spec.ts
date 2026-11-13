@@ -101,13 +101,15 @@ test('the conversation and composer show the image while the frame stays solid',
     await expect(page.getByTestId('tool-card')).toBeVisible();
     expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.6, 2);
 
-    // Approvals are part of the conversation surface, so they let the image
-    // through exactly as a question or the composer does.
+    // The decision region lets the image through like the composer, but an
+    // approval keeps almost all of its own surface: its contrast must not depend
+    // on whatever image the operator chose.
     await page.request.post(`${STUB}/__stub/confirm`, { data: { session: 'demo',
         confirmation_id: 'bg-approval',
         call: { name: 'run_command', arguments: { command: 'echo hi' } } } });
     await expect(page.getByTestId('approval-block')).toBeVisible();
-    expect(await backgroundAlpha(page, '.approvals-shell')).toBe(0);
+    expect(await backgroundAlpha(page, '.decisions-shell')).toBe(0);
+    expect(await backgroundAlpha(page, '.approval-block')).toBeGreaterThanOrEqual(0.9);
 });
 
 test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {

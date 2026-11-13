@@ -30,7 +30,7 @@
 import { useStore } from 'zustand';
 import { confirmationKey } from '../lib/confirmationDecisions.ts';
 import { profileCount } from '../lib/profile.ts';
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import type { ConfirmationPrompt } from '../../../ui/index.ts';
 import { usePanel, useVisiblePanel } from '../state/usePanel.ts';
 import { viewProjection } from '../state/viewProjection.ts';
@@ -62,6 +62,13 @@ function describeCall(prompt: ConfirmationPrompt): string {
 function countdown(deadline: number, now: number): string {
     const seconds = Math.max(0, Math.ceil((deadline - now) / 1000));
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/** An absolute time in the operator's locale: the summary counts down, the
+ * details answer "when". */
+function timeOf(value: string): string {
+    const at = new Date(value);
+    return Number.isNaN(at.getTime()) ? value : at.toLocaleTimeString();
 }
 
 /** One prompt, as a block in the conversation's own measure. */
@@ -166,7 +173,7 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
                 </p>
             )}
 
-            <div className="mt-1 flex flex-wrap items-start gap-x-4 gap-y-1">
+            <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
                 <button
                     type="button"
                     data-testid="approval-disclosure"
@@ -185,7 +192,8 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
                     </span>
                 </button>
 
-                <div className="-mr-2 flex w-full shrink-0 items-center justify-end gap-1 sm:w-auto">
+                <div className="-mr-2 flex w-full shrink-0 items-center justify-end gap-1
+                    sm:ml-auto sm:w-auto">
                     <span role="status" aria-live="polite" className="sr-only">
                         {waiting ? submission?.phase === 'checking'
                             ? 'Checking the decision outcome with the Hub.'
@@ -225,11 +233,13 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
             {argumentsOpen && (
                 <div className="mt-1">
                     <pre data-testid="approval-arguments"
-                        className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono
-                            text-xs text-ink">
+                        className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs
+                            text-ink [overflow-wrap:anywhere]">
                         {argumentsText}
                     </pre>
                     <dl className="mt-1 grid grid-cols-[7.5rem_1fr] gap-x-2 text-xs">
+                        <dt className="text-ink-faint">run</dt>
+                        <dd className="break-all font-mono text-ink">{prompt.run_id}</dd>
                         <dt className="text-ink-faint">security</dt>
                         <dd className="font-mono text-ink">{prompt.call?.security ?? '(none reported)'}</dd>
                         <dt className="text-ink-faint">worker identity</dt>
@@ -237,6 +247,21 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
                             {prompt.identity_state}
                             {prompt.verified ? '' : ' — the hub could not verify this worker'}
                         </dd>
+                        <dt className="text-ink-faint">received</dt>
+                        <dd className="text-ink">{timeOf(prompt.received_at)}</dd>
+                        <dt className="text-ink-faint">deadline</dt>
+                        <dd className="text-ink">
+                            {Number.isFinite(deadline) && prompt.deadline_at
+                                ? timeOf(prompt.deadline_at) : 'none reported'}
+                        </dd>
+                        {prompt.arguments_truncated && (
+                            <>
+                                <dt className="text-ink-faint">arguments</dt>
+                                <dd className="text-ink">
+                                    truncated from {prompt.arguments_bytes} encoded JSON bytes
+                                </dd>
+                            </>
+                        )}
                     </dl>
                 </div>
             )}
@@ -267,31 +292,13 @@ export function Approvals() {
     // Read the pre-indexed projection: unrelated events do no prompt scan/sort.
     // Actual prompt changes still reach the panel synchronously.
     const prompts = useVisiblePanel(true, state => viewProjection(state.views).prompts);
-    const list = useRef<HTMLElement>(null);
-    const hasPrompts = prompts.length > 0;
-    useLayoutEffect(() => {
-        const node = list.current;
-        if (!node) return;
-        // The strip can scroll independently of the transcript. Account for its
-        // own scrollbar before adding the shared conversation gutter, so its
-        // edges line up with the reading measure and the composer.
-        const update = () => node.style.setProperty(
-            '--approval-scrollbar', `${node.offsetWidth - node.clientWidth}px`,
-        );
-        update();
-        const observer = new ResizeObserver(update);
-        observer.observe(node);
-        return () => observer.disconnect();
-    }, [hasPrompts]);
-
-    if (!hasPrompts) return null;
+    if (prompts.length === 0) return null;
 
     return (
         <section
-            ref={list}
             aria-label="pending approvals"
             data-testid="approvals"
-            className="approvals-shell animate-enter"
+            className="approvals-shell animate-fade"
         >
             {/* One line for the count rather than a live region around the whole
                 section: the blocks change as decisions are sent, and a screen
