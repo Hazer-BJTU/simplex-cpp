@@ -102,6 +102,19 @@ Generated configurations do not add disabled background settings.
   `{ "light", "dark" }` pair. Defaults to 0.6. Zero makes tool cards fully
   transparent; one restores the opaque theme surface. The same tint applies to
   markdown table headers, inline code and code-block headers.
+- `frameOpacity`: values from 0 to 1, either one number for both themes or a
+  `{ "light", "dark" }` pair. Defaults are 0.3 and 0.45. It sets how much of its
+  own surface the frame keeps — the status bar, the session list, the session
+  header and the inspector — so the image reads through the chrome instead of
+  stopping at the conversation. One restores the solid frame; zero leaves only
+  the blur, which is derived from the same value (`(1 − frameOpacity) × 24px`),
+  so a thinner veil also means a softer one. Dialogs, menus and the approval
+  card stay solid regardless. At the defaults, the frame's primary and secondary
+  text keep WCAG AA over a black or white wallpaper (measured 13:1 and 5.2:1 in
+  light, 13.6:1 and 7.5:1 in dark); the 12px faint tone is promoted to the muted
+  one inside the frame, because over a veil it measured 3.9:1 and 4.4:1. Heavier
+  images or thinner veils lower those numbers, as they already do in the
+  conversation column.
 
 Only static PNG and JPEG are supported, up to 8 MiB and 33,554,432 pixels.
 Animated images, SVG, GIF and WebP are not supported. Hub validates container
@@ -112,9 +125,9 @@ Restart Hub after changing the settings or image. Hub retains one immutable
 image snapshot until restart. The authenticated panel fetches it through a fixed
 endpoint; no local pathname or credential appears in image URLs or metadata.
 The image covers the viewport without scrolling, tiling or animation. The
-conversation column and the composer let it through; the status bar, session
-list, inspector, approval strip, dialogs and menus keep solid surfaces for
-hierarchy and focus. Message bubbles keep a 60 percent tint; tool cards use
+conversation column, the composer and the frosted frame let it through; the
+approval card, dialogs and menus keep solid surfaces for hierarchy and focus.
+Message bubbles keep a 60 percent tint; tool cards use
 `toolCardOpacity` (0.6 by default), and markdown headers, inline code and
 code-block headers share that tint. Markdown code bodies are transparent.
 Image opacity never changes text or control opacity. Text in the transparent

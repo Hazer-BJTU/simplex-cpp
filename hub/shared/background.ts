@@ -10,6 +10,12 @@ export interface BackgroundOptions {
     opacity: { light: number; dark: number };
     /** Tool card surface opacity in each theme; zero lets the image through. */
     toolCardOpacity: { light: number; dark: number };
+    /**
+     * Frame surface opacity in each theme: the status bar, the session list, the
+     * session header and the inspector. One is the solid theme surface; zero
+     * leaves the image behind nothing but the blur its veil earns.
+     */
+    frameOpacity: { light: number; dark: number };
 }
 
 const positions = ['center', 'top', 'bottom', 'left', 'right',
@@ -37,7 +43,9 @@ export function normalizeBackground(value: unknown): BackgroundOptions {
     const fail = (message: string): never => { throw new Error(`panel.background: ${message}`); };
     if (!mapping(value)) return fail('must be an object');
     for (const key of Object.keys(value)) {
-        if (!['image', 'size', 'position', 'opacity', 'toolCardOpacity'].includes(key)) fail(`unknown field ${key}`);
+        if (!['image', 'size', 'position', 'opacity', 'toolCardOpacity', 'frameOpacity'].includes(key)) {
+            fail(`unknown field ${key}`);
+        }
     }
     const image = value.image ?? '';
     if (typeof image !== 'string' || image.includes('\0') || /^[a-z]+:\/\//i.test(image)
@@ -60,5 +68,6 @@ export function normalizeBackground(value: unknown): BackgroundOptions {
         position,
         opacity: opacityPair(value.opacity, 'opacity', { light: 0.12, dark: 0.08 }),
         toolCardOpacity: opacityPair(value.toolCardOpacity, 'toolCardOpacity', { light: 0.6, dark: 0.6 }),
+        frameOpacity: opacityPair(value.frameOpacity, 'frameOpacity', { light: 0.3, dark: 0.45 }),
     };
 }

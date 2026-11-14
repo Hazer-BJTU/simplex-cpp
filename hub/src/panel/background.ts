@@ -137,7 +137,7 @@ export async function loadBackground(value: unknown, log: Logger): Promise<Backg
         const revision = createHash('sha256').update(bytes).digest('hex');
         return { bytes, contentType, metadata: { url: '/api/panel/background/image', revision,
             size: options.size, position: options.position, opacity: options.opacity,
-            toolCardOpacity: options.toolCardOpacity } };
+            toolCardOpacity: options.toolCardOpacity, frameOpacity: options.frameOpacity } };
     } catch {
         log.warn('panel background disabled: use a readable static PNG/JPEG file (at most 8 MiB and 32 megapixels)');
         return null;

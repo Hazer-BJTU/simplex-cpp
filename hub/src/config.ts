@@ -69,7 +69,13 @@ export interface HubConfig {
         conversationBytes: number;
     };
     /** Empty token disables panel authentication on a loopback listener. */
-    panel: { token: string; background?: Omit<BackgroundOptions, 'opacity'> & { opacity: number | BackgroundOptions['opacity'] } };
+    panel: {
+        token: string;
+        background?: Omit<BackgroundOptions, 'opacity' | 'frameOpacity'> & {
+            opacity: number | BackgroundOptions['opacity'];
+            frameOpacity?: number | BackgroundOptions['frameOpacity'];
+        };
+    };
     worker: {
         bin: string;
         args: string[];

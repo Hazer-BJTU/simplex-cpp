@@ -6,10 +6,20 @@ import { STUB, call, emit, modelResponse, toolResult } from './harness.ts';
 const bytes = backgroundPng([240, 60, 40]);
 const descriptor = { url: '/api/panel/background/image', revision: createHash('sha256').update(bytes).digest('hex'),
     size: 'cover', position: 'center', opacity: { light: 0.12, dark: 0.08 },
-    toolCardOpacity: { light: 0.6, dark: 0.6 } };
+    toolCardOpacity: { light: 0.6, dark: 0.6 }, frameOpacity: { light: 0.3, dark: 0.45 } };
 
-async function setup(page: Page, options: Partial<typeof descriptor> = {}, status = 200) {
+/** Metadata overrides; `undefined` on a field models a Hub that omits it. */
+type BackgroundOverrides = {
+    size?: string;
+    position?: string;
+    opacity?: { light: number; dark: number } | number;
+    toolCardOpacity?: { light: number; dark: number } | number;
+    frameOpacity?: { light: number; dark: number } | number | undefined;
+};
+
+async function setup(page: Page, options: BackgroundOverrides = {}, status = 200) {
     await page.request.post(`${STUB}/__stub/reset`);
+    // JSON drops an undefined field, which is exactly an older Hub's payload.
     await page.request.post(`${STUB}/__stub/settings`, { data: { background: { ...descriptor, ...options } } });
     let requests = 0;
     await page.route('**/api/panel/background/image', async route => {
@@ -72,10 +82,11 @@ test('one full-page static image follows system theme without fetching on transc
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test('the conversation and composer show the image while the frame stays solid', async ({ page }) => {
+test('the conversation and composer show the image while the frame keeps a veil', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page);
     await page.getByTestId('session-row').click();
+    await page.getByRole('button', { name: 'Show inspector', exact: true }).click();
     await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
 
     // The conversation column and the composer let the image through.
@@ -83,10 +94,38 @@ test('the conversation and composer show the image while the frame stays solid',
         '.composer-shell', '.composer-surface', '.composer-footer']) {
         expect(await backgroundAlpha(page, selector), selector).toBe(0);
     }
-    // The frame is a control surface: status bar and side panes stay solid.
-    for (const selector of ['header', 'aside']) {
-        expect(await backgroundAlpha(page, selector), selector).toBe(1);
+    // The frame is frosted glass: a veil of its own surface colour, so the image
+    // reads through it without its detail competing with the labels. Every
+    // region that owns the image is checked, not just the status bar.
+    const frame = ['header[data-panel-frame="surface"]', '#session-list',
+        'main div[data-panel-frame="surface"]', '[data-testid="inspector"]'];
+    for (const selector of frame) {
+        expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.3, 2);
     }
+    // Each region keeps its own base, so the session list stays a step below the
+    // status bar instead of lifting to the page surface. Custom properties
+    // resolve before they are read, so the comparison runs through the browser's
+    // colour parser rather than through the token text.
+    const bases = await page.evaluate((selectors) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext('2d')!;
+        const rgb = (value: string) => {
+            context.fillStyle = '#000000';
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+            return Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3);
+        };
+        const root = getComputedStyle(document.documentElement);
+        return {
+            regions: selectors.map(selector => rgb(getComputedStyle(document.querySelector(selector)!)
+                .getPropertyValue('--panel-frame-base'))),
+            surface: rgb(root.getPropertyValue('--surface')),
+            sunken: rgb(root.getPropertyValue('--sunken')),
+        };
+    }, frame);
+    expect(bases.regions).toEqual([bases.surface, bases.sunken, bases.surface, bases.surface]);
 
     // A bubble and a tool card keep their grouping with a 60% tint.
     await page.getByLabel('message').fill('A message that keeps its bubble');
@@ -110,6 +149,103 @@ test('the conversation and composer show the image while the frame stays solid',
     await expect(page.getByTestId('approval-block')).toBeVisible();
     expect(await backgroundAlpha(page, '.decisions-shell')).toBe(0);
     expect(await backgroundAlpha(page, '.approval-block')).toBeGreaterThanOrEqual(0.9);
+});
+
+test('frameOpacity one restores the solid frame and zero leaves only the blur', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { frameOpacity: { light: 1, dark: 0 } });
+    await page.getByTestId('session-row').click();
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
+    const header = page.locator('header').first();
+    expect(await backgroundAlpha(page, 'header')).toBe(1);
+    await expect(header).toHaveCSS('backdrop-filter', 'blur(0px)');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    expect(await backgroundAlpha(page, 'header')).toBe(0);
+    await expect(header).toHaveCSS('backdrop-filter', 'blur(24px)');
+});
+
+test('a Hub that omits frameOpacity keeps the solid frame', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { frameOpacity: undefined });
+    await page.getByTestId('session-row').click();
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
+    expect(await backgroundAlpha(page, 'header')).toBe(1);
+    await expect(page.locator('header').first()).toHaveCSS('backdrop-filter', 'blur(0px)');
+});
+
+test('frameOpacity accepts one number for both themes', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { frameOpacity: 0.2 });
+    await page.getByTestId('session-row').click();
+    expect(await backgroundAlpha(page, 'header')).toBeCloseTo(0.2, 2);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    expect(await backgroundAlpha(page, 'header')).toBeCloseTo(0.2, 2);
+});
+
+test('frame text keeps WCAG AA over black and white wallpaper at the defaults', async ({ page }) => {
+    await setup(page);
+    for (const theme of ['light', 'dark'] as const) {
+        await page.emulateMedia({ colorScheme: theme });
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        // The frame's worst case: the wallpaper is pure black on one edge of the
+        // image and pure white on the other, at the configured image opacity, and
+        // the veil is the one theme value the panel actually carries.
+        const worst = await page.evaluate(() => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const context = canvas.getContext('2d')!;
+            const parse = (value: string): [number, number, number] => {
+                context.fillStyle = '#000000';
+                context.fillStyle = value;
+                context.fillRect(0, 0, 1, 1);
+                const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                return [r!, g!, b!];
+            };
+            const luminance = ([r, g, b]: [number, number, number]) => {
+                const channel = (value: number) => {
+                    const scaled = value / 255;
+                    return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+                };
+                return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+            };
+            const ratio = (foreground: [number, number, number], background: [number, number, number]) => {
+                const [light, dark] = [luminance(foreground), luminance(background)]
+                    .sort((a, b) => b - a) as [number, number];
+                return (light + 0.05) / (dark + 0.05);
+            };
+            const root = getComputedStyle(document.documentElement);
+            const frame = getComputedStyle(document.querySelector('[data-panel-frame]')!);
+            const app = parse(root.getPropertyValue('--app'));
+            const surface = parse(root.getPropertyValue('--surface'));
+            const dark = document.documentElement.dataset.theme === 'dark';
+            const image = Number(root.getPropertyValue(dark
+                ? '--panel-image-dark-opacity' : '--panel-image-light-opacity'));
+            const veil = Number(frame.getPropertyValue('--panel-frame-opacity'));
+            const worstOf = (foreground: [number, number, number]) => Math.min(...[0, 255].map(wall => {
+                const backdrop = surface.map((channel, index) =>
+                    veil * channel + (1 - veil) * (image * wall + (1 - image) * app[index]!)) as
+                    [number, number, number];
+                return ratio(foreground, backdrop);
+            }));
+            return {
+                ink: worstOf(parse(root.getPropertyValue('--ink'))),
+                muted: worstOf(parse(root.getPropertyValue('--ink-muted'))),
+                faint: worstOf(parse(frame.getPropertyValue('--ink-faint'))),
+                faintIsMuted: frame.getPropertyValue('--ink-faint').trim()
+                    === 'var(--ink-muted)' || parse(frame.getPropertyValue('--ink-faint'))
+                        .every((value, index) => value === parse(root.getPropertyValue('--ink-muted'))[index]),
+            };
+        });
+        expect(worst.ink, `${theme} ink`).toBeGreaterThanOrEqual(4.5);
+        expect(worst.muted, `${theme} muted`).toBeGreaterThanOrEqual(4.5);
+        expect(worst.faint, `${theme} faint`).toBeGreaterThanOrEqual(4.5);
+        // The 12px labels take the muted tone inside the frame; over a veil the
+        // faint one measured 3.9:1 (light) and 4.4:1 (dark).
+        expect(worst.faintIsMuted, `${theme} faint remap`).toBe(true);
+    }
 });
 
 test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {

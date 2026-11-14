@@ -26,7 +26,9 @@ export function PanelBackground() {
             const metadata = JSON.parse(key);
             if (metadata.url !== '/api/panel/background/image' || !/^[a-f0-9]{64}$/.test(metadata.revision)) return;
             options = normalizeBackground({ image: '', size: metadata.size, position: metadata.position,
-                opacity: metadata.opacity, toolCardOpacity: metadata.toolCardOpacity });
+                opacity: metadata.opacity, toolCardOpacity: metadata.toolCardOpacity,
+                // A Hub that predates the field painted its frame solid.
+                frameOpacity: metadata.frameOpacity ?? 1 });
         } catch { return; }
         if (!options.opacity.light && !options.opacity.dark) return;
         const controller = new AbortController();
@@ -45,6 +47,8 @@ export function PanelBackground() {
             root.style.setProperty('--panel-image-dark-opacity', String(settings.opacity.dark));
             root.style.setProperty('--panel-tool-card-light-opacity', `${settings.toolCardOpacity.light * 100}%`);
             root.style.setProperty('--panel-tool-card-dark-opacity', `${settings.toolCardOpacity.dark * 100}%`);
+            root.style.setProperty('--panel-frame-light-opacity', String(settings.frameOpacity.light));
+            root.style.setProperty('--panel-frame-dark-opacity', String(settings.frameOpacity.dark));
             root.dataset.panelBackground = [settings.opacity.light > 0 ? 'light' : '',
                 settings.opacity.dark > 0 ? 'dark' : ''].filter(Boolean).join(' ');
             setImage({ key, epoch, url: objectUrl, size: settings.size, position: settings.position });
@@ -61,6 +65,8 @@ export function PanelBackground() {
             root.style.removeProperty('--panel-image-dark-opacity');
             root.style.removeProperty('--panel-tool-card-light-opacity');
             root.style.removeProperty('--panel-tool-card-dark-opacity');
+            root.style.removeProperty('--panel-frame-light-opacity');
+            root.style.removeProperty('--panel-frame-dark-opacity');
         };
     }, [client, key, epoch, connected, unauthorized]);
 

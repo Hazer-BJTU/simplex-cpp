@@ -77,7 +77,7 @@ export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions 
     const pendingApprovals = useVisiblePanel(true, state => viewProjection(state.views).prompts.length);
 
     return (
-        <header className="border-b border-line bg-surface">
+        <header data-panel-frame="surface" className="border-b border-line bg-surface">
             {/* Two groups rather than one row: the status cluster may wrap onto
                 a second line when a long connection message and a pending
                 approval compete for a phone's width, while the theme control

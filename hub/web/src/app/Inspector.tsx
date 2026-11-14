@@ -328,6 +328,7 @@ export function Inspector() {
             />
             <aside
                 data-testid="inspector"
+                data-panel-frame="surface"
                 aria-label="context drawer"
                 className="fixed inset-y-0 right-0 z-40 flex w-[min(24rem,100vw)] animate-drawer
                     flex-col border-l border-line bg-surface md:static md:z-auto md:w-96
