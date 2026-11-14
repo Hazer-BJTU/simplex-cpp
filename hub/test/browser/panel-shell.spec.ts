@@ -93,26 +93,25 @@ test('an approval for a session the panel is not watching still arrives (A1)', a
     });
     expect(response.ok()).toBe(true);
 
-    // The banner names the session that raised it, which is the whole point:
-    // the operator can answer it without navigating there first. And the dialog
-    // opens itself, so an approval cannot sit unnoticed in a corner.
-    const banner = page.getByTestId('approval-banner');
-    await expect(banner).toBeVisible();
-    await expect(banner).toContainText('other');
-    await expect(banner).toContainText('run_command');
+    // The block names the session that raised it, which is the whole point:
+    // the operator can answer it without navigating there first. It sits above
+    // the composer rather than over the conversation, so it cannot be missed
+    // and it does not hide what is being read.
+    const block = page.getByTestId('approval-block');
+    await expect(block).toBeVisible();
+    await expect(block).toContainText('other');
+    await expect(block).toContainText('run_command');
+    await expect(block).toContainText('ls');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('1 approval waiting', { exact: true })).toBeVisible();
 
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('session other');
-    await expect(dialog).toContainText('ls');
-
-    await dialog.getByRole('button', { name: 'Approve' }).click();
+    await block.getByRole('button', { name: 'Approve' }).click();
 
     await page.request.post(`${STUB}/__stub/settle`, {
         data: { session: 'other', confirmation_id: 'c-other', decision: 'approved' },
     });
-    await expect(page.getByTestId('approval-banner')).toHaveCount(0);
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByTestId('approval-block')).toHaveCount(0);
+    await expect(page.getByText('1 approval waiting', { exact: true })).toHaveCount(0);
 });
 
 test('a message the operator sends appears and stays (D19)', async ({ page }) => {

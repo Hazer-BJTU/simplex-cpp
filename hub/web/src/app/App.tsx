@@ -20,6 +20,7 @@
  */
 import { PanelBackground } from './PanelBackground.tsx';
 import { useEffect, useState } from 'react';
+import { DecisionRegion } from './DecisionRegion.tsx';
 import { HeadlessPanel } from './HeadlessPanel.tsx';
 import { usePanel } from '../state/usePanel.ts';
 import { ConversationPanels } from './ConversationPanels.tsx';
@@ -76,8 +77,26 @@ export function App() {
                             className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
                         >
                             {!headless && <SessionHeader />}
-                            <Approvals />
-                            {headless && session ? <HeadlessPanel session={session} /> : <><ConversationPanels /><OperatorQuestions /><Composer /></>}
+                            {/* Approvals and questions are both decisions the
+                                run is waiting on. They share one region above
+                                the composer so their heights are budgeted
+                                together; a headless session has no composer and
+                                gets the same region under its own panel. */}
+                            {headless && session ? (
+                                <>
+                                    <HeadlessPanel session={session} />
+                                    <DecisionRegion><Approvals /></DecisionRegion>
+                                </>
+                            ) : (
+                                <>
+                                    <ConversationPanels />
+                                    <DecisionRegion>
+                                        <Approvals />
+                                        <OperatorQuestions />
+                                    </DecisionRegion>
+                                    <Composer />
+                                </>
+                            )}
                         </main>
                         {!headless && <Inspector />}
                     </div>

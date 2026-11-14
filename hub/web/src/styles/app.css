@@ -595,14 +595,32 @@ select option:checked {
     font-size: var(--conversation-font-size);
     line-height: var(--conversation-line-height);
 }
-.questions-shell {
+/* The decisions above the composer share one height budget. Independent caps
+ * let approvals and questions each take 45dvh, which on a short viewport pushes
+ * the composer past the bottom of the window. The region is what scrolls, and
+ * its own scrollbar is subtracted so both sections keep the conversation edge.
+ * The second term reserves the status bar, the session header and the tallest
+ * composer before the decisions take their share; the zero floor is deliberate,
+ * because on a window that small the composer is the only thing worth keeping
+ * on screen. */
+.decisions-shell {
+    display: flex;
+    flex-direction: column;
     flex-shrink: 0;
-    max-height: 45dvh;
+    max-height: min(45dvh, max(0px, calc(100dvh - 24rem)));
     overflow-y: auto;
-    padding: 0.25rem var(--reading-gutter) 0;
-    padding-right: calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px));
     background: var(--surface);
+    color: var(--ink);
 }
+.questions-shell,
+.approvals-shell {
+    flex-shrink: 0;
+    padding-inline: var(--reading-gutter);
+    padding-right: max(0px, calc(var(--reading-gutter)
+        + var(--conversation-scrollbar, 0px) - var(--decision-scrollbar, 0px)));
+}
+.questions-shell { padding-block: 0.25rem 0; }
+.approvals-shell { padding-block: 0.5rem 0.25rem; }
 .composer-shell {
     flex-shrink: 0;
     padding: 0.5rem var(--reading-gutter) max(0.75rem, env(safe-area-inset-bottom));
@@ -628,35 +646,32 @@ select option:checked {
 .tool-disclosure-arrow { transition: transform 120ms ease; }
 .tool-disclosure[open] > summary .tool-disclosure-arrow { transform: rotate(90deg); }
 
-/* Approval requests use the conversation measure, without nested cards. */
-.approval-list {
-    flex-shrink: 0;
-    max-height: 30dvh;
-    overflow-y: auto;
-    padding: 0.5rem var(--reading-gutter);
-    padding-right: max(0px, calc(var(--reading-gutter)
-        + var(--conversation-scrollbar, 0px) - var(--approval-scrollbar, 0px)));
-    border-bottom: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--ink);
+/* Approvals sit where a question sits: in the region above the composer, in the
+ * reading measure, with no surface of their own. */
+/* The negative margin lets the arrival cue bleed into the gutter without
+ * moving the text off the reading edge. */
+.approval-block {
+    margin-inline: -0.5rem;
+    padding: 0.5rem;
+    border-radius: 0.375rem;
+    box-shadow: inset 0 1px 0 var(--line);
+    animation: approval-arrive 1.6s var(--ease-out) 1;
 }
-.approval-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding-block: 0.625rem;
-}
-.approval-row + .approval-row { border-top: 1px solid var(--line); }
-@media (max-width: 639px) {
-    .approval-row { align-items: stretch; flex-direction: column; gap: 0.375rem; }
-    .approval-row > :last-child { align-self: flex-end; }
+.approval-block + .approval-block { margin-top: 0.25rem; }
+/* A new prompt draws its rule in the warning tone and lets it fade back to the
+ * ordinary hairline. Animating the rule rather than a background keeps the
+ * text's contrast steady while the cue is running; the status bar keeps the
+ * count after it ends. */
+@keyframes approval-arrive {
+    from { box-shadow: inset 0 1px 0 var(--warn); }
+    to { box-shadow: inset 0 1px 0 var(--line); }
 }
 
 /* Static, viewport-wide decoration. The image is page-level: the conversation
- * column and the composer let it through, while the frame (status bar, session
- * list, inspector), approval strip, dialogs and menus keep solid surfaces for
- * hierarchy and focus. Bubbles and tool cards keep a 60% tint so their grouping
- * survives the image. */
+ * column, the decisions that belong to it and the composer let it through, while
+ * the frame (status bar, session list, inspector), dialogs and menus keep solid
+ * surfaces for hierarchy and focus. Bubbles and tool cards keep a 60% tint so
+ * their grouping survives the image. */
 .panel-root { position: relative; isolation: isolate; height: 100%; }
 .panel-shell { position: relative; z-index: 1; }
 .panel-background {
@@ -679,7 +694,11 @@ html:is([data-theme="light"][data-panel-background~="light"],
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .reading-width,
 html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .decisions-shell,
+html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .questions-shell,
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .approvals-shell,
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .composer-shell,
 html:is([data-theme="light"][data-panel-background~="light"],
@@ -687,6 +706,13 @@ html:is([data-theme="light"][data-panel-background~="light"],
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .composer-footer {
     background: transparent;
+}
+/* A decision keeps most of its surface even over an image: an approval whose
+ * contrast depends on whatever the operator chose as a wallpaper is not one
+ * you can rely on having read. 96% keeps the texture without the risk. */
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) .approval-block {
+    background-color: color-mix(in srgb, var(--surface) 96%, transparent);
 }
 html:is([data-theme="light"][data-panel-background~="light"]) {
     --panel-card-tint: var(--panel-tool-card-light-opacity, 60%);

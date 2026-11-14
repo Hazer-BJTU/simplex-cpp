@@ -282,40 +282,41 @@ test.describe('motion and placement', () => {
         expect(Number.parseFloat(duration)).toBeLessThan(0.05);
     });
 
-    test('centres a dialog and gives it a surface', async ({ page }) => {
+    test('answers a destructive action inside the session header, not over it', async ({ page }) => {
         await open(page);
         await withSession(page, stoppedSession('demo'));
         await page.reload();
         await page.getByTestId('session-row').click();
         await page.getByRole('button', { name: 'More actions' }).click();
         await page.getByRole('menuitem', { name: /Delete session/ }).click();
-        const dialog = page.getByRole('dialog');
-        await expect(dialog).toBeVisible();
+        const confirm = page.getByTestId('session-confirm');
+        await expect(confirm).toBeVisible();
 
+        // Nothing is covered and nothing floats: the question shares the reading
+        // column with the composer, inside the header that asked it.
+        await expect(page.getByRole('dialog')).toHaveCount(0);
         const geometry = await page.evaluate(() => {
-            const node = document.querySelector('[role="dialog"]') as HTMLElement;
-            const box = node.getBoundingClientRect();
+            const column = document.querySelector('[data-testid="session-confirm"] .reading-width')!;
+            const composer = document.querySelector('[data-testid="composer-surface"]')!;
+            const box = column.getBoundingClientRect();
+            const target = composer.getBoundingClientRect();
             return {
-                centre: box.x + box.width / 2,
-                viewport: window.innerWidth / 2,
-                background: getComputedStyle(node).backgroundColor,
+                delta: Math.abs(box.x - target.x) + Math.abs(box.width - target.width),
+                background: getComputedStyle(document.querySelector('[data-testid="session-confirm"]')!)
+                    .backgroundColor,
             };
         });
-        // The class list this reads is the one the regression broke: without
-        // `-translate-x-1/2` the box starts at the centre and runs off the edge.
-        expect(Math.abs(geometry.centre - geometry.viewport)).toBeLessThan(4);
-        expect(geometry.background).not.toBe('rgba(0, 0, 0, 0)');
-        // Entry is a fade, so the surface is legitimately transparent for the
-        // first frame or two. What must be true is that it *arrives* — a dialog
-        // that stayed at zero would be an invisible modal, which is worse than
-        // an unanimated one.
-        await expect.poll(async () => Number.parseFloat(await page.evaluate(() => {
-            const node = document.querySelector('[role="dialog"]') as HTMLElement;
-            return getComputedStyle(node).opacity;
-        }))).toBeGreaterThan(0.9);
+        expect(geometry.delta).toBeLessThan(1);
+        // The header is the surface; the question does not paint another one.
+        expect(geometry.background).toBe('rgba(0, 0, 0, 0)');
+
+        await page.keyboard.press('Escape');
+        await expect(confirm).toHaveCount(0);
+        // Closing returns focus to the control that asked, not to the document.
+        await expect(page.getByRole('button', { name: 'More actions' })).toBeFocused();
     });
 
-    test('puts focus on the approval dialog itself, arming nothing', async ({ page }) => {
+    test('a new approval says so in the top bar and draws its rule once', async ({ page }) => {
         await open(page);
         await page.locator('[data-testid="session-row"][data-session="demo"]').click();
         await page.request.post(`${STUB}/__stub/confirm`, {
@@ -325,21 +326,58 @@ test.describe('motion and placement', () => {
                 call: { name: 'run_command', arguments: { command: 'rm -rf /' } },
             },
         });
-        await expect(page.getByRole('dialog')).toBeVisible();
+        const block = page.getByTestId('approval-block');
+        await expect(block).toBeVisible();
+        // The old modal was impossible to miss because it covered the page. The
+        // replacement is a count in the one bar that is always on screen, plus one
+        // pass of the block's own rule.
+        await expect(page.getByText('1 approval waiting', { exact: true })).toBeVisible();
+        const cue = await block.evaluate(node => {
+            const style = getComputedStyle(node);
+            return { name: style.animationName, count: style.animationIterationCount };
+        });
+        expect(cue.name).toBe('approval-arrive');
+        expect(cue.count).toBe('1');
 
-        // Focus is inside the dialog — so a screen reader announces it — but on
-        // the container, so Enter decides nothing (defect D16).
-        const focused = await page.evaluate(() => ({
-            role: document.activeElement?.getAttribute('role'),
-            tag: document.activeElement?.tagName,
-            isButton: document.activeElement?.tagName === 'BUTTON',
-        }));
-        expect(focused.isButton).toBe(false);
-        expect(focused.role ?? focused.tag).toBeTruthy();
-
-        await page.keyboard.press('Enter');
-        await expect(page.getByRole('dialog')).toBeVisible();
-        const decisions = await page.request.get(`${STUB}/__stub/decisions`);
-        expect((await decisions.json()).decisions).toEqual([]);
+        await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'c-polish' } });
+        await expect(page.getByText('1 approval waiting', { exact: true })).toHaveCount(0);
     });
+});
+
+test.describe('the top bar under pressure', () => {
+    for (const width of [360, 390]) {
+        test(`keeps its controls and its count inside ${width}px`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 720 });
+            await open(page, '?session=demo');
+            await page.request.post(`${STUB}/__stub/confirm`, {
+                data: { session: 'demo', confirmation_id: `bar-${width}` },
+            });
+            await expect(page.getByTestId('approval-block')).toBeVisible();
+
+            for (const state of ['connected', 'reconnecting'] as const) {
+                if (state === 'reconnecting') {
+                    await page.request.post(`${STUB}/__stub/down`);
+                    await expect(page.getByText('reconnecting', { exact: true })).toBeVisible();
+                }
+                const geometry = await page.evaluate(() => {
+                    const header = document.querySelector('header')!;
+                    const row = header.firstElementChild as HTMLElement;
+                    const theme = document.querySelector('[data-testid="theme-toggle"]')!.getBoundingClientRect();
+                    return {
+                        overflow: row.scrollWidth - row.clientWidth,
+                        themeRight: Math.round(theme.right),
+                        themeHeight: Math.round(theme.height),
+                        viewport: window.innerWidth,
+                    };
+                });
+                // Nothing may be clipped: the cluster wraps instead, and the
+                // theme control keeps its size on the right.
+                expect(geometry.overflow, `${width} ${state}`).toBeLessThanOrEqual(0);
+                expect(geometry.themeRight, `${width} ${state}`).toBeLessThanOrEqual(geometry.viewport);
+                expect(geometry.themeHeight, `${width} ${state}`).toBeLessThanOrEqual(40);
+                await expect(page.locator('header').getByText('1 approval', { exact: true })).toBeVisible();
+            }
+            await page.request.post(`${STUB}/__stub/up`);
+        });
+    }
 });

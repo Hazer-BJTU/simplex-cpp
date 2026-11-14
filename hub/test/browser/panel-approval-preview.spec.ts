@@ -12,21 +12,32 @@ for (const width of [390, 1440]) {
             await page.request.post(`${STUB}/__stub/confirm`, { data: {
                 confirmation_id: 'budget-preview', call: { name: 'run_command', arguments: args },
             } });
-            const dialog = page.getByRole('dialog');
-            await expect(dialog).toBeVisible();
-            await expect(dialog).toContainText('Argument preview only');
-            await expect(dialog).toContainText('The decision applies to the original operation');
-            await dialog.locator('details summary').click();
-            const details = dialog.locator('details pre');
+            // The decision is answered in the page, so the evidence for it has
+            // to be bounded where it sits: a long call scrolls inside its own
+            // preview instead of pushing the actions out of reach.
+            const block = page.getByTestId('approval-block');
+            await expect(block).toBeVisible();
+            await expect(block).toContainText('Argument preview only');
+            await expect(block).toContainText('The decision applies to the original operation');
+            const details = block.getByTestId('approval-arguments');
+            // The evidence is rendered only when it is asked for; a bounded
+            // preview can still be tens of kilobytes.
+            await expect(details).toHaveCount(0);
+            await block.getByTestId('approval-disclosure').click();
             await expect(details).toContainText('display_truncated');
+            // The details keep what the summary sheds: the run this decision
+            // belongs to, when it arrived, and how much was cut.
+            await expect(block).toContainText('stub-run');
+            await expect(block).toContainText('received');
+            await expect(block).toContainText('truncated from');
             if (kind === 'fields') {
                 for (let index = 0; index < 10; index++) await expect(details).toContainText(`field_${index}`);
             } else {
-                await expect(dialog.locator('pre').first()).toContainText('printf');
+                await expect(block.locator('pre').first()).toContainText('printf');
                 await expect(details).toContainText('/workspace');
             }
             expect(await details.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
-            const geometry = await dialog.evaluate(node => {
+            const geometry = await block.evaluate(node => {
                 const box = node.getBoundingClientRect();
                 return { top: box.top, bottom: box.bottom, height: innerHeight,
                     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
@@ -34,11 +45,11 @@ for (const width of [390, 1440]) {
             expect(geometry.top).toBeGreaterThanOrEqual(0);
             expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
             expect(geometry.overflow).toBeLessThanOrEqual(1);
-            for (const name of ['Approve', 'Deny', 'Later']) {
-                await expect(dialog.getByRole('button', { name, exact: true })).toBeInViewport();
+            for (const name of ['Approve', 'Deny']) {
+                await expect(block.getByRole('button', { name, exact: true })).toBeInViewport();
             }
             await page.screenshot({ path: testInfo.outputPath('approval-preview.png'), animations: 'disabled' });
-            await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+            await block.getByRole('button', { name: 'Approve', exact: true }).click();
             const received = await page.request.get(`${STUB}/__stub/decisions`);
             expect((await received.json()).decisions).toHaveLength(1);
         });

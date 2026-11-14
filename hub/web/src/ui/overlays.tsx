@@ -32,13 +32,23 @@ const SURFACE = 'z-50 rounded-md border border-line bg-raised p-1 shadow-lg '
 export const Menu = DropdownMenu.Root;
 export const MenuTrigger = DropdownMenu.Trigger;
 
-export function MenuContent({ children, align = 'end' }: {
+export function MenuContent({ children, align = 'end', onCloseAutoFocus }: {
     children: ReactNode;
     align?: 'start' | 'center' | 'end';
+    /**
+     * Where focus goes when the menu closes. Radix returns it to the trigger by
+     * default; a menu item that opens a confirmation makes that the wrong place.
+     */
+    onCloseAutoFocus?: (event: Event) => void;
 }) {
     return (
         <DropdownMenu.Portal>
-            <DropdownMenu.Content align={align} sideOffset={4} className={`${SURFACE} min-w-44`}>
+            <DropdownMenu.Content
+                align={align}
+                sideOffset={4}
+                className={`${SURFACE} min-w-44`}
+                {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
+            >
                 {children}
             </DropdownMenu.Content>
         </DropdownMenu.Portal>

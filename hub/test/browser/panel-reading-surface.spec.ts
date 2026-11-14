@@ -91,8 +91,8 @@ for (const theme of ['light', 'dark'] as const) {
                 call: call('edit', 'str_replace_edit', { path: '/workspace/notes.md',
                     old_str: 'Original line\n'.repeat(40), new_str: 'Replacement line\n'.repeat(40) }, { security: 'require_confirm', type: 'serial_write' }),
             } });
-            await expect(page.getByRole('dialog')).toBeVisible();
-            await page.getByRole('dialog').getByText('arguments as the worker sent them').click();
+            await expect(page.getByTestId('approval-block')).toBeVisible();
+            await page.getByTestId('approval-block').getByTestId('approval-disclosure').click();
             await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('approval.png') });
             await testInfo.attach('approval', { path: testInfo.outputPath('approval.png'), contentType: 'image/png' });
         });
@@ -136,19 +136,19 @@ test('expired and externally settled approvals cannot retain actionable buttons'
     await page.request.post(`${STUB}/__stub/confirm`, { data: {
         confirmation_id: 'expires', deadline_at: new Date(Date.now() + 1200).toISOString(),
     } });
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-    await expect(dialog.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
-    await expect(dialog).toContainText('Approval deadline passed');
+    const block = page.getByTestId('approval-block');
+    await expect(block).toBeVisible();
+    await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await expect(block.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
+    await expect(block.getByRole('button', { name: 'Deny', exact: true })).toBeDisabled();
+    await expect(block).toContainText('Approval deadline passed');
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'expires', decision: 'denied' } });
-    await expect(dialog).toHaveCount(0);
+    await expect(block).toHaveCount(0);
     await page.request.post(`${STUB}/__stub/confirm`, { data: { confirmation_id: 'elsewhere' } });
-    await expect(dialog).toBeVisible();
+    await expect(block).toBeVisible();
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'elsewhere', decision: 'approved' } });
-    await expect(dialog).toHaveCount(0);
-    await expect(page.getByTestId('approval-banner')).toHaveCount(0);
+    await expect(block).toHaveCount(0);
+    await expect(page.getByTestId('approval-block')).toHaveCount(0);
 });
 
 test('narrow and short viewports bound the composer and long output', async ({ page }) => {

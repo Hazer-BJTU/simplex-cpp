@@ -50,9 +50,9 @@ export function ThemeToggle() {
             aria-label={`theme: ${label}`}
             title={`theme: ${detail} — activate for the next of light, dark, system`}
             onClick={() => { controller.cycle(); }}
-            className="inline-flex items-center gap-1.5 rounded border border-line px-2 py-1
-                text-xs text-ink-muted transition-colors hover:bg-subtle hover:text-ink
-                focus-visible:outline-2 focus-visible:outline-offset-1
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border
+                border-line px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-subtle
+                hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1
                 focus-visible:outline-interactive"
         >
             <Glyph name={GLYPH_OF[preference]} size="sm" />
