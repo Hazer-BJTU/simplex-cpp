@@ -705,6 +705,14 @@ html:is([data-theme="light"][data-panel-background~="light"],
         calc(var(--panel-frame-opacity) * 100%), transparent);
     backdrop-filter: blur(calc((1 - var(--panel-frame-opacity)) * 24px));
 }
+/* The faint tone is tuned to 4.5:1 against the solid surface, and a veil is not
+ * that surface: over a black or white region at the default opacity it measures
+ * 3.9:1 in light and 4.4:1 in dark. The frame's 12px labels take the muted tone,
+ * which clears the floor at the same settings (5.2:1 and 7.5:1). */
+html:is([data-theme="light"][data-panel-background~="light"],
+        [data-theme="dark"][data-panel-background~="dark"]) [data-panel-frame] {
+    --ink-faint: var(--ink-muted);
+}
 html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .panel-shell { background: transparent; }
 html:is([data-theme="light"][data-panel-background~="light"],

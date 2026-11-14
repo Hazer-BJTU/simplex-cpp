@@ -14,7 +14,8 @@
         //     "size": "cover",
         //     "position": "center",
         //     "opacity": { "light": 0.12, "dark": 0.08 },
-        //     "toolCardOpacity": 0.6
+        //     "toolCardOpacity": 0.6,
+        //     "frameOpacity": { "light": 0.3, "dark": 0.45 }
         // }
     },
 
