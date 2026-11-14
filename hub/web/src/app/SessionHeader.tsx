@@ -199,7 +199,7 @@ export function SessionHeader() {
     }
 
     return (
-        <div className="animate-enter border-b border-line bg-surface px-3 py-2 sm:px-4">
+        <div data-panel-frame="surface" className="animate-enter border-b border-line bg-surface px-3 py-2 sm:px-4">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <h2 data-testid="session-title" className="font-mono text-sm font-semibold text-ink">
                     {sessionId}

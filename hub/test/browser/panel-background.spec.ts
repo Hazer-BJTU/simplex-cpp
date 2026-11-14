@@ -6,7 +6,7 @@ import { STUB, call, emit, modelResponse, toolResult } from './harness.ts';
 const bytes = backgroundPng([240, 60, 40]);
 const descriptor = { url: '/api/panel/background/image', revision: createHash('sha256').update(bytes).digest('hex'),
     size: 'cover', position: 'center', opacity: { light: 0.12, dark: 0.08 },
-    toolCardOpacity: { light: 0.6, dark: 0.6 } };
+    toolCardOpacity: { light: 0.6, dark: 0.6 }, frameOpacity: { light: 0.3, dark: 0.45 } };
 
 async function setup(page: Page, options: Partial<typeof descriptor> = {}, status = 200) {
     await page.request.post(`${STUB}/__stub/reset`);
@@ -72,7 +72,7 @@ test('one full-page static image follows system theme without fetching on transc
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test('the conversation and composer show the image while the frame stays solid', async ({ page }) => {
+test('the conversation and composer show the image while the frame keeps a veil', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page);
     await page.getByTestId('session-row').click();
@@ -83,10 +83,16 @@ test('the conversation and composer show the image while the frame stays solid',
         '.composer-shell', '.composer-surface', '.composer-footer']) {
         expect(await backgroundAlpha(page, selector), selector).toBe(0);
     }
-    // The frame is a control surface: status bar and side panes stay solid.
+    // The frame is frosted glass: a veil of its own surface colour, so the image
+    // reads through it without its detail competing with the labels.
     for (const selector of ['header', 'aside']) {
-        expect(await backgroundAlpha(page, selector), selector).toBe(1);
+        expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.3, 2);
     }
+    // The veil keeps each region's own base: the session list stays a step below
+    // the status bar instead of lifting to the page surface.
+    const frameTints = await Promise.all(['header', 'aside'].map(selector =>
+        page.locator(selector).first().evaluate(node => getComputedStyle(node).backgroundColor)));
+    expect(frameTints[0]).not.toBe(frameTints[1]);
 
     // A bubble and a tool card keep their grouping with a 60% tint.
     await page.getByLabel('message').fill('A message that keeps its bubble');
@@ -110,6 +116,20 @@ test('the conversation and composer show the image while the frame stays solid',
     await expect(page.getByTestId('approval-block')).toBeVisible();
     expect(await backgroundAlpha(page, '.decisions-shell')).toBe(0);
     expect(await backgroundAlpha(page, '.approval-block')).toBeGreaterThanOrEqual(0.9);
+});
+
+test('frameOpacity one restores the solid frame and zero leaves only the blur', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { frameOpacity: { light: 1, dark: 0 } });
+    await page.getByTestId('session-row').click();
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
+    const header = page.locator('header').first();
+    expect(await backgroundAlpha(page, 'header')).toBe(1);
+    await expect(header).toHaveCSS('backdrop-filter', 'blur(0px)');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    expect(await backgroundAlpha(page, 'header')).toBe(0);
+    await expect(header).toHaveCSS('backdrop-filter', 'blur(24px)');
 });
 
 test('tool cards follow toolCardOpacity in each theme', async ({ page }) => {

@@ -521,6 +521,12 @@ export interface PanelBackground {
     opacity: { light: number; dark: number };
     /** Per-theme tool card surface opacity in [0, 1]; 0 lets the image through. */
     toolCardOpacity?: { light: number; dark: number };
+    /**
+     * Per-theme frame surface opacity in [0, 1]; 1 is the solid surface and 0
+     * leaves only the blur. Absent from Hubs that predate it: those clients
+     * paint the frame solid, which is what their panel did.
+     */
+    frameOpacity?: { light: number; dark: number };
 }
 
 /** Public Hub metadata shared by REST discovery and the panel welcome frame. */

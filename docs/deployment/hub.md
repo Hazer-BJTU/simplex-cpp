@@ -102,6 +102,16 @@ Generated configurations do not add disabled background settings.
   `{ "light", "dark" }` pair. Defaults to 0.6. Zero makes tool cards fully
   transparent; one restores the opaque theme surface. The same tint applies to
   markdown table headers, inline code and code-block headers.
+- `frameOpacity`: values from 0 to 1, either one number for both themes or a
+  `{ "light", "dark" }` pair. Defaults are 0.3 and 0.45. It sets how much of its
+  own surface the frame keeps — the status bar, the session list, the session
+  header and the inspector — so the image reads through the chrome instead of
+  stopping at the conversation. One restores the solid frame; zero leaves only
+  the blur, which is derived from the same value (`(1 − frameOpacity) × 24px`),
+  so a thinner veil also means a softer one. Dialogs, menus and the approval
+  card stay solid regardless. Below roughly 0.5, secondary grey labels in those
+  panes lose contrast as the wallpaper behind them darkens or lightens; the
+  primary text colour keeps WCAG AA at any value.
 
 Only static PNG and JPEG are supported, up to 8 MiB and 33,554,432 pixels.
 Animated images, SVG, GIF and WebP are not supported. Hub validates container

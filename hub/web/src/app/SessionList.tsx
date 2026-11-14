@@ -189,6 +189,7 @@ export function SessionList({ open, onClose, collapsed }: {
                 id="session-list"
                 aria-label="sessions"
                 data-testid="session-list"
+                data-panel-frame="sunken"
                 data-open={open ? 'true' : 'false'}
                 data-collapsed={collapsed ? 'true' : 'false'}
                 className={`${open ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72
