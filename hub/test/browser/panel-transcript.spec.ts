@@ -841,6 +841,9 @@ test('keeps the activity text and stops its motion when requested', async ({ pag
         (dot) => getComputedStyle(dot).animationDuration,
     );
     expect(Number.parseFloat(duration)).toBeLessThan(0.01);
+    // The cue itself arrives with the same fade the overlays use: it is a
+    // status, not a line, so it does not rise with the conversation.
+    expect(await activity.evaluate(node => getComputedStyle(node).animationName)).toBe('fade');
 });
 
 test('renders a model response as markdown', async ({ page }) => {

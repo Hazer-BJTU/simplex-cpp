@@ -121,7 +121,7 @@ function RunActivity({ label }: { label: string }) {
                 data-testid="run-activity"
                 role="status"
                 aria-live="polite"
-                className="flex w-fit items-center gap-3 py-3 text-sm text-ink-muted"
+                className="flex w-fit animate-fade items-center gap-3 py-3 text-sm text-ink-muted"
                 tabIndex={0}
             >
                 <span aria-hidden="true" className="flex items-center gap-1">
@@ -356,24 +356,26 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle, inputLin
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
     return (
         <section data-testid="history-turn" className="min-w-0 space-y-4 py-3">
-            <button type="button" onClick={() => onToggle(turn.index, open)}
+            <Line><button type="button" onClick={() => onToggle(turn.index, open)}
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
                 turn {turn.index + 1} · {inputLinked ? 'additional restored responses'
                     : user.slice(0, 100) || (turn.internal_input ? 'continued from memory' : '(empty input)')}
                 {user.length > 100 ? '…' : ''}
-            </button>
+            </button></Line>
             {open && <div className="min-w-0 space-y-3">
-                {!turn.internal_input && !inputLinked && <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
-                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
-                        {user || '(empty input)'}
-                    </p>
-                </div>}
+                {!turn.internal_input && !inputLinked && <Line>
+                    <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
+                        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
+                            {user || '(empty input)'}
+                        </p>
+                    </div>
+                </Line>}
                 {turn.steps.map((step) => {
                     const answer = step.content.map(contentText).filter(Boolean).join('\n\n');
                     return (
-                        <div key={step.index} className="min-w-0 space-y-1">
+                        <Line key={step.index}><div className="min-w-0 space-y-1">
                             {step.reasoning?.raw && (
                                 <Reasoning text={step.reasoning.raw} truncated={step.reasoning.truncated === true}
                                     {...(step.reasoning.bytes === undefined ? {} : { bytes: step.reasoning.bytes })} />
@@ -389,7 +391,7 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle, inputLin
                             {step.tool_calls > 0 && <p className="text-xs text-ink-muted">
                                 {step.tool_calls} tool call{step.tool_calls === 1 ? '' : 's'}
                             </p>}
-                        </div>
+                        </div></Line>
                     );
                 })}
                 {turn.omitted_steps > 0 && <p className="text-xs text-ink-muted">
