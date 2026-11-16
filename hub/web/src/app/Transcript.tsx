@@ -829,7 +829,8 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                 className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
-                    {view?.transcriptNotices?.map(notice => <NoteLine key={notice.id} item={notice} />)}
+                    {view?.transcriptNotices?.map(notice =>
+                        <Line key={notice.id}><NoteLine item={notice} /></Line>)}
                     {dropped > 0 && (
                         <p className="text-xs text-ink-faint">
                             {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the
@@ -937,9 +938,10 @@ const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, 
             )}
             {round.kind === 'run' && !expanded && (
                 <div className="mt-1 space-y-1">
-                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
+                    {round.notes.map((note) =>
+                        <Line key={note.id}><NoteLine item={note} /></Line>)}
                     {round.problems.map((problem) => (
-                        <ProblemLine key={problem.key} problem={problem} />
+                        <Line key={problem.key}><ProblemLine problem={problem} /></Line>
                     ))}
                 </div>
             )}

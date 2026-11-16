@@ -61,6 +61,36 @@ async function readSamples(page: Page) {
         { __scrollSamples: { top: number; gap: number }[] }).__scrollSamples);
 }
 
+/** The `history` requests the panel has sent, oldest first. */
+async function historyQueries(page: Page): Promise<{ request_id: string }[]> {
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const received = (await response.json()).received as { type: string; request_id?: string }[];
+    return received.filter((message): message is { type: string; request_id: string } =>
+        message.type === 'history' && typeof message.request_id === 'string');
+}
+
+/** Restored turns long enough that three of them are taller than the viewport. */
+function historyTurns(count: number) {
+    return Array.from({ length: count }, (_, index) => {
+        const execution = { worker_id: 'stub-worker', request_id: `restored-${index}`,
+            run_id: `restored-run-${index}` };
+        return {
+            index,
+            source: execution,
+            user: [{ type: 'text', modality: 'text', raw: `Restored input ${index}` }],
+            steps: [{
+                index: 0,
+                execution,
+                commit_sequence: '1',
+                content: [{ type: 'text', modality: 'text',
+                    raw: `Restored answer ${index}.\n\n`.repeat(12) }],
+                tool_calls: 0,
+            }],
+            omitted_steps: 0,
+        };
+    });
+}
+
 /** Count actual DOM work over twenty frame-separated input positions; never assert timings. */
 async function sampleScrollWork(scroller: Locator) {
     return scroller.evaluate(async node => {
@@ -371,4 +401,50 @@ test('jump to latest lands at once when the reader asks for less motion', async 
     await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
     const positions = [...new Set((await readSamples(page)).map(sample => sample.top))];
     expect(positions.length).toBeLessThanOrEqual(2);
+});
+
+test('a restored page that arrives late lands instead of sweeping', async ({ page }) => {
+    await open(page);
+    const turns = historyTurns(8);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: turns, historyResponses: [{ __hold: true }],
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] },
+        { request_id: '', run_id: '' });
+    await page.goto('/?session=demo');
+    const scroller = page.getByTestId('transcript');
+    await expect(scroller).toBeVisible();
+    await expect.poll(async () => (await historyQueries(page)).length).toBe(1);
+    // Past the quiet window: on the clock alone this page would look like a
+    // message arriving, and the viewport would sweep from the top to the end.
+    await page.waitForTimeout(400);
+    await startSampling(page);
+    const query = (await historyQueries(page))[0]!;
+    await emit(page, 'history', { request_id: query.request_id, start: 0, step: 0,
+        next: turns.length, next_step: 0, total: turns.length, revision: 1, turns });
+    await expect(page.getByTestId('history-turn')).toHaveCount(turns.length);
+    await frames(page);
+    const samples = await readSamples(page);
+    expect(samples.length).toBeGreaterThan(3);
+    // A restore is not a scroll: the reader is already at the end of what they
+    // had, so the page lands there.
+    expect(Math.max(...samples.map(sample => sample.gap))).toBeLessThan(2);
+});
+
+test('a single large arrival moves in bounded steps', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Opening.\n\n'.repeat(20)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await page.waitForTimeout(300);
+    await startSampling(page);
+    await emit(page, 'model_response', modelResponse('A very long answer.\n\n'.repeat(150)));
+    await expect(page.getByTestId('transcript')).toContainText('A very long answer.');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    const tops = (await readSamples(page)).map(sample => sample.top);
+    expect(new Set(tops).size).toBeGreaterThan(3);
+    const steps = tops.slice(1).map((top, index) => Math.abs(top - tops[index]!));
+    // The glide is capped per frame, so a three-thousand-pixel answer is still
+    // followed frame by frame instead of losing a third of it at once.
+    expect(Math.max(...steps)).toBeLessThanOrEqual(84);
 });

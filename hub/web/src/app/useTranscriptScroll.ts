@@ -9,6 +9,8 @@ const EASE_DISTANCE = 24;
 const FOLLOW_TAU = 45;
 /** Smallest step the glide takes, so it lands in finite time. */
 const FOLLOW_STEP = 0.75;
+/** Largest step a frame may take: more than this reads as a cut, not a glide. */
+const MAX_STEP = 80;
 /**
  * Growth that follows the previous growth this closely is a replay or a burst,
  * not a message arriving: it lands instead of gliding. Hydration after a mount
@@ -62,7 +64,10 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         let settled = false;
         let lastHeight = node.scrollHeight;
         let lastViewport = node.clientHeight;
+        let lastWidth = node.clientWidth;
         let lastGrowthAt = performance.now();
+        /** The line that ended the conversation at the last write. */
+        let lastArrival: Element | null = null;
         const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
         const ownership = new ScrollOwnership();
         const index = new TranscriptAnchorIndex(content);
@@ -125,6 +130,16 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         function bottom(): number {
             return node!.scrollHeight - node!.clientHeight;
         }
+        /**
+         * The line that currently ends the conversation. Status cues, notices and
+         * the loading marker are not lines: history or replay that arrives *above*
+         * the end leaves this element unchanged, which is how a restore is told
+         * apart from a message without asking why it arrived.
+         */
+        function currentArrival(): Element | null {
+            const lines = content!.querySelectorAll('[data-testid="conversation-line"]');
+            return lines[lines.length - 1] ?? null;
+        }
         function schedule() {
             if (disposed || frame || !node!.clientHeight) return;
             frame = requestAnimationFrame(run);
@@ -157,11 +172,20 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             const growth = height - lastHeight;
             lastHeight = height;
             const viewport = node!.clientHeight;
-            const resized = viewport !== lastViewport;
+            const width = node!.clientWidth;
+            const resized = viewport !== lastViewport || width !== lastWidth;
             lastViewport = viewport;
+            lastWidth = width;
             const now = performance.now();
             const quiet = now - lastGrowthAt > GLIDE_QUIET_MS;
             if (growth > 0.5) lastGrowthAt = now;
+            // Only content that was appended *after* the line that ended the
+            // conversation is an arrival. A history page, a re-fetch or a replay
+            // that lands above it is a restore: the reader is already looking at
+            // the end, and sweeping the viewport down to it would be a lie.
+            const arrival = currentArrival();
+            const appended = lastArrival !== null && arrival !== null && arrival !== lastArrival;
+            lastArrival = arrival;
             if (!follows.current) {
                 stop();
                 if (anchor?.element.isConnected) {
@@ -183,7 +207,7 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             }
             const aim = bottom();
             const delta = aim - node!.scrollTop;
-            const glide = settled && quiet && growth > 0.5
+            const glide = settled && quiet && appended && growth > 0.5
                 && delta > EASE_DISTANCE && !motion.matches;
             settled = true;
             if (glide) {
@@ -219,7 +243,9 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
                     capture();
                     return;
                 }
-                const eased = 1 - (1 - progress) ** 3;
+                const eased = progress < 0.5
+                    ? 4 * progress ** 3
+                    : 1 - (-2 * progress + 2) ** 3 / 2;
                 write(current.from + (aim - current.from) * eased);
                 schedule();
                 return;
@@ -235,7 +261,7 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             const elapsed = Math.min(64, Math.max(1, now - current.last));
             current.last = now;
             const step = delta * (1 - Math.exp(-elapsed / FOLLOW_TAU));
-            write(node!.scrollTop + Math.max(step, FOLLOW_STEP));
+            write(node!.scrollTop + Math.min(Math.max(step, FOLLOW_STEP), MAX_STEP));
             schedule();
         }
         function run(now: number) {

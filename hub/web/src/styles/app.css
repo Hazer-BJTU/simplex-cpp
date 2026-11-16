@@ -664,8 +664,7 @@ select option:checked {
  * visible without moving anything: the glyph already says which state it is,
  * and the colour is the part of it that used to switch between two frames. */
 .tool-status {
-    transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out),
-        box-shadow 150ms var(--ease-out);
+    transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
 }
 
 /* Approvals sit where a question sits: in the region above the composer, in the
