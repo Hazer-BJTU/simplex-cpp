@@ -24,6 +24,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type ReactNode,
 } from 'react';
 import type {
     ContentPart,
@@ -120,7 +121,7 @@ function RunActivity({ label }: { label: string }) {
                 data-testid="run-activity"
                 role="status"
                 aria-live="polite"
-                className="flex w-fit items-center gap-3 py-3 text-sm text-ink-muted"
+                className="flex w-fit animate-fade items-center gap-3 py-3 text-sm text-ink-muted"
                 tabIndex={0}
             >
                 <span aria-hidden="true" className="flex items-center gap-1">
@@ -132,6 +133,16 @@ function RunActivity({ label }: { label: string }) {
             </div>
         </Tooltip>
     );
+}
+
+/**
+ * One line of the conversation: a reply, a tool card, a note. It rises by the
+ * single number `--line-enter-rise` and fades in, which is the only entrance
+ * the transcript has: the round above it does not animate, so a new turn and
+ * the replies that follow it arrive with the same weight.
+ */
+function Line({ children }: { children: ReactNode }) {
+    return <div data-testid="conversation-line" className="conversation-line">{children}</div>;
 }
 
 /** A note the panel itself added: a replay gap, a restart, a warning. */
@@ -345,24 +356,26 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle, inputLin
     const calls = turn.steps.reduce((count, step) => count + step.tool_calls, 0);
     return (
         <section data-testid="history-turn" className="min-w-0 space-y-4 py-3">
-            <button type="button" onClick={() => onToggle(turn.index, open)}
+            <Line><button type="button" onClick={() => onToggle(turn.index, open)}
                 aria-expanded={open}
                 className="w-full min-w-0 break-words [overflow-wrap:anywhere] text-left
                     text-xs text-ink-muted hover:text-ink">
                 turn {turn.index + 1} · {inputLinked ? 'additional restored responses'
                     : user.slice(0, 100) || (turn.internal_input ? 'continued from memory' : '(empty input)')}
                 {user.length > 100 ? '…' : ''}
-            </button>
+            </button></Line>
             {open && <div className="min-w-0 space-y-3">
-                {!turn.internal_input && !inputLinked && <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
-                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
-                        {user || '(empty input)'}
-                    </p>
-                </div>}
+                {!turn.internal_input && !inputLinked && <Line>
+                    <div className="ml-auto w-fit max-w-full rounded-lg bg-subtle px-4 py-3 text-ink">
+                        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm">
+                            {user || '(empty input)'}
+                        </p>
+                    </div>
+                </Line>}
                 {turn.steps.map((step) => {
                     const answer = step.content.map(contentText).filter(Boolean).join('\n\n');
                     return (
-                        <div key={step.index} className="min-w-0 space-y-1">
+                        <Line key={step.index}><div className="min-w-0 space-y-1">
                             {step.reasoning?.raw && (
                                 <Reasoning text={step.reasoning.raw} truncated={step.reasoning.truncated === true}
                                     {...(step.reasoning.bytes === undefined ? {} : { bytes: step.reasoning.bytes })} />
@@ -378,7 +391,7 @@ const HistoryRound = memo(function HistoryRound({ turn, open, onToggle, inputLin
                             {step.tool_calls > 0 && <p className="text-xs text-ink-muted">
                                 {step.tool_calls} tool call{step.tool_calls === 1 ? '' : 's'}
                             </p>}
-                        </div>
+                        </div></Line>
                     );
                 })}
                 {turn.omitted_steps > 0 && <p className="text-xs text-ink-muted">
@@ -554,7 +567,7 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
     return (
         <div className="min-w-0 space-y-4">
             {round.compacting && !round.compactResult && !round.failure && (
-                <p className="text-sm text-ink-muted">
+                <Line><p className="text-sm text-ink-muted">
                     {round.status === 'cancelled'
                         ? 'Context compaction cancelled. The original conversation remains available.'
                         : round.status === 'rejected'
@@ -562,21 +575,22 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                             : round.status
                                 ? 'No saved summary was received. Refresh conversation to inspect the current state.'
                                 : round.open ? 'Compacting conversation context…' : 'Context compaction requested.'}
-                </p>
+                </p></Line>
             )}
             {round.input ? (
-                <UserMessage item={round.input} />
+                <Line><UserMessage item={round.input} /></Line>
             ) : historicalInput && !round.continued ? (
-                <RestoredUserMessage turn={historicalInput} />
+                <Line><RestoredUserMessage turn={historicalInput} /></Line>
             ) : round.admitted ? (
-                <AdmittedPlaceholder />
+                <Line><AdmittedPlaceholder /></Line>
             ) : null}
 
             {round.timeline.map((entry) => {
+                let content: ReactNode = null;
                 if (entry.kind === 'compact') {
                     const result = round.compactResult;
-                    return result ? (
-                        <section key={entry.key} data-testid="compact-result"
+                    content = result ? (
+                        <section data-testid="compact-result"
                             className="min-w-0 space-y-2 rounded-lg border border-line bg-subtle p-3">
                             <p className="text-sm font-medium">Context compacted</p>
                             <p className="text-xs text-ink-muted">
@@ -595,40 +609,31 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                             </details>
                         </section>
                     ) : null;
-                }
-                if (entry.kind === 'assistant') {
+                } else if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
-                    return block
-                        ? <AssistantMessage key={entry.key} block={block} calls={calls} />
-                        : null;
-                }
-                if (entry.kind === 'calls') {
+                    content = block ? <AssistantMessage block={block} calls={calls} /> : null;
+                } else if (entry.kind === 'calls') {
                     const call = calls.get(entry.key);
-                    return call
-                        ? <div key={entry.key} className="space-y-1"><ToolCard call={call} /></div>
-                        : null;
-                }
-                if (entry.kind === 'tool_omission') {
+                    content = call ? <div className="space-y-1"><ToolCard call={call} /></div> : null;
+                } else if (entry.kind === 'tool_omission') {
                     const category = entry.category === 'calls' ? 'call' : 'result';
-                    return <p key={entry.key} data-testid="tool-omission" className="text-xs text-ink-muted">
+                    content = <p data-testid="tool-omission" className="text-xs text-ink-muted">
                         {entry.count} tool {category} preview{entry.count === 1 ? '' : 's'} omitted from this display.
                     </p>;
-                }
-                if (entry.kind === 'problem') {
+                } else if (entry.kind === 'problem') {
                     const problem = problems.get(entry.key);
-                    return problem ? <ProblemLine key={entry.key} problem={problem} /> : null;
-                }
-                if (entry.kind === 'note') {
+                    content = problem ? <ProblemLine problem={problem} /> : null;
+                } else if (entry.kind === 'note') {
                     const note = notes.get(entry.key);
-                    return note ? <NoteLine key={entry.key} item={note} /> : null;
+                    content = note ? <NoteLine item={note} /> : null;
                 }
                 // Retain protocol entries in rounds for replay correlation, not presentation.
-                return null;
+                return content === null ? null : <Line key={entry.key}>{content}</Line>;
             })}
 
             {round.failure && (
-                <RunFailureNotice failure={round.failure} actionable={actionableFailure}
-                    compacting={round.compacting} sessionId={sessionId} latest={latestRun} />
+                <Line><RunFailureNotice failure={round.failure} actionable={actionableFailure}
+                    compacting={round.compacting} sessionId={sessionId} latest={latestRun} /></Line>
             )}
         </div>
     );
@@ -824,7 +829,8 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
                 className="min-h-0 flex-1 overflow-y-auto reading-scroll"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
-                    {view?.transcriptNotices?.map(notice => <NoteLine key={notice.id} item={notice} />)}
+                    {view?.transcriptNotices?.map(notice =>
+                        <Line key={notice.id}><NoteLine item={notice} /></Line>)}
                     {dropped > 0 && (
                         <p className="text-xs text-ink-faint">
                             {dropped} earlier item{dropped === 1 ? '' : 's'} dropped to keep the
@@ -912,15 +918,14 @@ const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, 
         <section
             data-testid="round"
             data-kind={round.kind}
-            className="animate-enter"
         >
             {round.kind === 'run' && (
-                <RoundSummary
+                <Line><RoundSummary
                     round={round}
                     historicalInput={historicalInput}
                     expanded={expanded}
                     onToggle={() => onToggle(round.key, expanded)}
-                />
+                /></Line>
             )}
             {(round.kind === 'prelude' || expanded) && (
                 <div className={round.kind === 'run' ? 'mt-2' : ''}>
@@ -933,9 +938,10 @@ const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, 
             )}
             {round.kind === 'run' && !expanded && (
                 <div className="mt-1 space-y-1">
-                    {round.notes.map((note) => <NoteLine key={note.id} item={note} />)}
+                    {round.notes.map((note) =>
+                        <Line key={note.id}><NoteLine item={note} /></Line>)}
                     {round.problems.map((problem) => (
-                        <ProblemLine key={problem.key} problem={problem} />
+                        <Line key={problem.key}><ProblemLine problem={problem} /></Line>
                     ))}
                 </div>
             )}

@@ -580,6 +580,9 @@ select option:checked {
     --reading-gutter: clamp(0.75rem, 2vw, 1.5rem);
     --conversation-font-size: 1rem;
     --conversation-line-height: 1.6;
+    /* How far a line rises as it arrives. One number for the whole transcript:
+       3px is about an eighth of the 25.6px line box the conversation is set in. */
+    --line-enter-rise: 3px;
 }
 .reading-width {
     width: 100%;
@@ -589,6 +592,18 @@ select option:checked {
 }
 .reading-scroll { padding: 1.5rem var(--reading-gutter); }
 .conversation-space > * + * { margin-top: 1.75rem; }
+/* A conversation line is the smallest thing that arrives: one reply, one tool
+ * call, one note. It rises by a single number so the whole transcript can be
+ * tuned in one place, and it is the only entrance the conversation has — the
+ * round above it stays still, so a new turn and the replies that follow it
+ * arrive at the same weight. Only transforms are used: `scrollAnchors` subtracts
+ * ancestor translations from the geometry it measures, and a margin or a height
+ * would read as history growth and pull the reader's position with it. */
+@keyframes line-enter {
+    from { opacity: 0; transform: translateY(var(--line-enter-rise)); }
+    to { opacity: 1; transform: none; }
+}
+.conversation-line { animation: line-enter 140ms var(--ease-out) both; }
 .conversation-space .md,
 .conversation-space [data-testid="outbox-item"] > p:first-child,
 .conversation-space [data-testid="restored-user-message"] > p {
@@ -645,6 +660,12 @@ select option:checked {
 .tool-disclosure > summary::-webkit-details-marker { display: none; }
 .tool-disclosure-arrow { transition: transform 120ms ease; }
 .tool-disclosure[open] > summary .tool-disclosure-arrow { transform: rotate(90deg); }
+/* A call changes state in place. Fading between the tones keeps the change
+ * visible without moving anything: the glyph already says which state it is,
+ * and the colour is the part of it that used to switch between two frames. */
+.tool-status {
+    transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
 
 /* Approvals sit where a question sits: in the region above the composer, in the
  * reading measure, with no surface of their own — the region's glass is the

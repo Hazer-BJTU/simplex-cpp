@@ -1,9 +1,94 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { call, emit, modelResponse, open, STUB, toolResult } from './harness.ts';
+import { call, emit, modelResponse, open, setSessions, STUB, toolResult } from './harness.ts';
 
 async function frames(page: Page) {
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() =>
         requestAnimationFrame(() => resolve()))));
+}
+
+/** One whole turn, with identities an assertion can tell apart. */
+function turnEvents(index: number) {
+    const extra = { request_id: `request-${index}`, run_id: `run-${index}` };
+    return [
+        { event: 'input_admitted', data: { operation: 'message' }, extra },
+        { event: 'run_started', data: {}, extra },
+        { event: 'model_response', data: modelResponse(`Round ${index}.\n\n`.repeat(8)), extra },
+        { event: 'tool_calls', data: [call(`tool-${index}`, 'run_command', { command: `echo ${index}` })], extra },
+        { event: 'tool_results', data: [toolResult(`tool-${index}`, 'run_command', `out ${index}`)], extra },
+        { event: 'run_finished', data: { status: 'completed', exchanges: 1 }, extra },
+    ];
+}
+
+/**
+ * Sample the transcript's distance from its last line on every frame, from
+ * before the bundle runs. A sample is taken before the frame's paint, so a gap
+ * recorded here is a frame that painted the conversation above its end.
+ */
+async function sampleBeforeLoad(page: Page) {
+    await page.addInitScript(() => {
+        const target = window as unknown as { __scrollSamples?: { top: number; gap: number }[] };
+        target.__scrollSamples = [];
+        const sample = () => {
+            const node = document.querySelector('[data-testid="transcript"]');
+            if (node) target.__scrollSamples!.push({
+                top: node.scrollTop,
+                gap: node.scrollHeight - node.scrollTop - node.clientHeight,
+            });
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+    });
+}
+
+async function startSampling(page: Page) {
+    await page.evaluate(() => {
+        const target = window as unknown as { __scrollSamples?: { top: number; gap: number }[] };
+        target.__scrollSamples = [];
+        const sample = () => {
+            const node = document.querySelector('[data-testid="transcript"]');
+            if (node) target.__scrollSamples!.push({
+                top: node.scrollTop,
+                gap: node.scrollHeight - node.scrollTop - node.clientHeight,
+            });
+            requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+    });
+}
+
+async function readSamples(page: Page) {
+    return page.evaluate(() => (window as unknown as
+        { __scrollSamples: { top: number; gap: number }[] }).__scrollSamples);
+}
+
+/** The `history` requests the panel has sent, oldest first. */
+async function historyQueries(page: Page): Promise<{ request_id: string }[]> {
+    const response = await page.request.get(`${STUB}/__stub/received`);
+    const received = (await response.json()).received as { type: string; request_id?: string }[];
+    return received.filter((message): message is { type: string; request_id: string } =>
+        message.type === 'history' && typeof message.request_id === 'string');
+}
+
+/** Restored turns long enough that three of them are taller than the viewport. */
+function historyTurns(count: number) {
+    return Array.from({ length: count }, (_, index) => {
+        const execution = { worker_id: 'stub-worker', request_id: `restored-${index}`,
+            run_id: `restored-run-${index}` };
+        return {
+            index,
+            source: execution,
+            user: [{ type: 'text', modality: 'text', raw: `Restored input ${index}` }],
+            steps: [{
+                index: 0,
+                execution,
+                commit_sequence: '1',
+                content: [{ type: 'text', modality: 'text',
+                    raw: `Restored answer ${index}.\n\n`.repeat(12) }],
+                tool_calls: 0,
+            }],
+            omitted_steps: 0,
+        };
+    });
 }
 
 /** Count actual DOM work over twenty frame-separated input positions; never assert timings. */
@@ -208,4 +293,158 @@ test('content growth in the same frame does not swallow upward reader movement',
     await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
     await page.getByRole('button', { name: 'jump to latest' }).click();
     await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+});
+
+test('a conversation paints at its latest message, not at its top', async ({ page }) => {
+    await page.request.post(`${STUB}/__stub/reset`);
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: {
+        session: 'demo', seedOnly: true,
+        events: Array.from({ length: 20 }, (_, index) => turnEvents(index)).flat(),
+    } });
+    await sampleBeforeLoad(page);
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('round')).toHaveCount(20);
+    await frames(page);
+    const samples = await readSamples(page);
+    expect(samples.length).toBeGreaterThan(3);
+    // The write lands in the commit's layout effect, so no frame ever painted
+    // the conversation above its last message. Deferring it to the next
+    // animation frame used to paint one frame of the top of the session.
+    expect(Math.max(...samples.map(sample => sample.gap))).toBeLessThan(2);
+    expect(samples.at(-1)!.top).toBeGreaterThan(100);
+});
+
+test('switching sessions paints the new conversation at its latest message', async ({ page }) => {
+    await page.request.post(`${STUB}/__stub/reset`);
+    await setSessions(page, ['demo', 'other']);
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: { session: 'demo', seedOnly: true,
+        events: Array.from({ length: 20 }, (_, index) => turnEvents(index)).flat() } });
+    await page.request.post(`${STUB}/__stub/emit-batch`, { data: { session: 'other', seedOnly: true,
+        events: Array.from({ length: 16 }, (_, index) => turnEvents(200 + index)).flat() } });
+    await sampleBeforeLoad(page);
+    await page.goto('/?session=demo');
+    await expect(page.getByTestId('round')).toHaveCount(20);
+    await frames(page);
+    const from = await page.evaluate(() => (window as unknown as
+        { __scrollSamples: unknown[] }).__scrollSamples.length);
+    await page.locator('[data-testid="session-row"][data-session="other"]').click();
+    await expect(page.getByTestId('transcript')).toContainText('Round 215.');
+    await frames(page);
+    const samples = (await readSamples(page)).slice(from);
+    expect(samples.length).toBeGreaterThan(2);
+    expect(Math.max(...samples.map(sample => sample.gap))).toBeLessThan(2);
+});
+
+test('growth while following glides to the latest message', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Opening.\n\n'.repeat(40)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    // The quiet window is what separates a message arriving from hydration
+    // replaying; wait past it so this growth is treated as a message.
+    await page.waitForTimeout(300);
+    await startSampling(page);
+    await emit(page, 'model_response', modelResponse('A reply that arrives after a pause.\n\n'.repeat(8)));
+    await expect(page.getByTestId('transcript')).toContainText('A reply that arrives after a pause.');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    const gaps = (await readSamples(page)).map(sample => sample.gap);
+    expect(gaps.length).toBeGreaterThan(3);
+    // It moved through positions between the old end and the new one instead of
+    // teleporting, and it never moved away from the end on the way there.
+    const first = gaps.findIndex(gap => gap > 2);
+    expect(first).toBeGreaterThan(-1);
+    const glide = gaps.slice(first).filter(gap => gap < 400);
+    expect(glide.length).toBeGreaterThan(2);
+    for (let index = 1; index < glide.length; index += 1) {
+        expect(glide[index]!).toBeLessThanOrEqual(glide[index - 1]! + 1);
+    }
+    await expect(page.getByRole('button', { name: 'jump to latest' })).toHaveCount(0);
+});
+
+test('jump to latest moves instead of teleporting, and a wheel takes it back', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Long read.\n\n'.repeat(120)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await scroller.hover();
+    await page.mouse.wheel(0, -1500);
+    const jump = page.getByRole('button', { name: 'jump to latest' });
+    await expect(jump).toBeVisible();
+    await startSampling(page);
+    await jump.click();
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    const positions = [...new Set((await readSamples(page)).map(sample => sample.top))];
+    expect(positions.length).toBeGreaterThanOrEqual(3);
+
+    // A gesture mid-glide owns the position again: nothing keeps moving under it.
+    await scroller.hover();
+    await page.mouse.wheel(0, -600);
+    await frames(page);
+    const held = await scroller.evaluate(node => node.scrollTop);
+    await frames(page);
+    expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - held)).toBeLessThanOrEqual(2);
+    await expect(jump).toBeVisible();
+});
+
+test('jump to latest lands at once when the reader asks for less motion', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Long read.\n\n'.repeat(120)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await scroller.hover();
+    await page.mouse.wheel(0, -1500);
+    const jump = page.getByRole('button', { name: 'jump to latest' });
+    await expect(jump).toBeVisible();
+    await startSampling(page);
+    await jump.click();
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    const positions = [...new Set((await readSamples(page)).map(sample => sample.top))];
+    expect(positions.length).toBeLessThanOrEqual(2);
+});
+
+test('a restored page that arrives late lands instead of sweeping', async ({ page }) => {
+    await open(page);
+    const turns = historyTurns(8);
+    await page.request.post(`${STUB}/__stub/settings`, { data: {
+        historyEnabled: true, historyTurns: turns, historyResponses: [{ __hold: true }],
+    } });
+    await emit(page, 'ready', { active: false, capabilities: ['session-history'] },
+        { request_id: '', run_id: '' });
+    await page.goto('/?session=demo');
+    const scroller = page.getByTestId('transcript');
+    await expect(scroller).toBeVisible();
+    await expect.poll(async () => (await historyQueries(page)).length).toBe(1);
+    // Past the quiet window: on the clock alone this page would look like a
+    // message arriving, and the viewport would sweep from the top to the end.
+    await page.waitForTimeout(400);
+    await startSampling(page);
+    const query = (await historyQueries(page))[0]!;
+    await emit(page, 'history', { request_id: query.request_id, start: 0, step: 0,
+        next: turns.length, next_step: 0, total: turns.length, revision: 1, turns });
+    await expect(page.getByTestId('history-turn')).toHaveCount(turns.length);
+    await frames(page);
+    const samples = await readSamples(page);
+    expect(samples.length).toBeGreaterThan(3);
+    // A restore is not a scroll: the reader is already at the end of what they
+    // had, so the page lands there.
+    expect(Math.max(...samples.map(sample => sample.gap))).toBeLessThan(2);
+});
+
+test('a single large arrival moves in bounded steps', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Opening.\n\n'.repeat(20)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await page.waitForTimeout(300);
+    await startSampling(page);
+    await emit(page, 'model_response', modelResponse('A very long answer.\n\n'.repeat(150)));
+    await expect(page.getByTestId('transcript')).toContainText('A very long answer.');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    const tops = (await readSamples(page)).map(sample => sample.top);
+    expect(new Set(tops).size).toBeGreaterThan(3);
+    const steps = tops.slice(1).map((top, index) => Math.abs(top - tops[index]!));
+    // The glide is capped per frame, so a three-thousand-pixel answer is still
+    // followed frame by frame instead of losing a third of it at once.
+    expect(Math.max(...steps)).toBeLessThanOrEqual(84);
 });

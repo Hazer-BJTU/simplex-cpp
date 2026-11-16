@@ -298,7 +298,7 @@ export const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
                 <summary onClick={event => setDetailsOpen(!(event.currentTarget.parentElement as HTMLDetailsElement).open)}
                     className="block min-w-0 cursor-pointer select-none text-xs text-ink-muted hover:text-ink">
                     <span className="flex min-w-0 items-center gap-2">
-                        <span data-testid="tool-status" title={status.label} className={status.tone}>
+                        <span data-testid="tool-status" title={status.label} className={`tool-status ${status.tone}`}>
                             <Glyph name={status.icon} size="sm" />
                             {!hasStatusLine && <span className="sr-only">{status.label}</span>}
                         </span>

@@ -35,6 +35,9 @@ test('keeps a replay-gap notice visible when a full transcript is trimmed and re
         + ' (last seen 2000); earlier envelopes are gone';
     const note = page.getByTestId('transcript-note').filter({ hasText: text });
     await expect(note).toBeVisible();
+    // A note is a line like any other: it enters with the conversation instead
+    // of appearing between two frames.
+    expect(await note.evaluate(node => node.closest('[data-testid="conversation-line"]') !== null)).toBe(true);
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'snapshot', session: sessions.sessions[0], transcript: [last],
     } });
@@ -841,6 +844,9 @@ test('keeps the activity text and stops its motion when requested', async ({ pag
         (dot) => getComputedStyle(dot).animationDuration,
     );
     expect(Number.parseFloat(duration)).toBeLessThan(0.01);
+    // The cue itself arrives with the same fade the overlays use: it is a
+    // status, not a line, so it does not rise with the conversation.
+    expect(await activity.evaluate(node => getComputedStyle(node).animationName)).toBe('fade');
 });
 
 test('renders a model response as markdown', async ({ page }) => {
