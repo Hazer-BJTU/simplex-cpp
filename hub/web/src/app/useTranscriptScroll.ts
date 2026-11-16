@@ -5,14 +5,21 @@ import { ScrollOwnership, TranscriptAnchorIndex } from './scrollAnchors.ts';
 const BOTTOM_DISTANCE = 48;
 
 /**
- * One frame-coalesced scroll owner. Resize/content growth never changes reader
- * intent; wheel, touch, keys and scrollbar drags do. A preserved DOM anchor
- * keeps history readers stationary when earlier content or approvals resize.
+ * One scroll owner. Resize/content growth never changes reader intent; wheel,
+ * touch, keys and scrollbar drags do. A preserved DOM anchor keeps history
+ * readers stationary when earlier content or approvals resize.
+ *
+ * The write happens where the browser still has time to paint it: in the
+ * commit's layout effect, in the mutation and resize callbacks, and on mount.
+ * Deferring it to the next animation frame painted one frame of the new
+ * content below the fold — and one frame of the top of the conversation on
+ * every session switch. The frame queue is kept only for scroll echoes, which
+ * must not write from inside a scroll event.
  */
 export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, active: boolean) {
     const [following, setFollowing] = useState(true);
     const follows = useRef(true);
-    const schedule = useRef<() => void>(() => {});
+    const land = useRef<() => void>(() => {});
     const resume = useRef<() => void>(() => {});
 
     useLayoutEffect(() => {
@@ -64,9 +71,23 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             const element = index.find(top, element => bounds(element, translations));
             anchor = element ? { element, offset: bounds(element, translations).top - top } : undefined;
         }
-        function update() {
-            frame = 0;
+        function flush() {
+            if (frame) {
+                cancelAnimationFrame(frame);
+                frame = 0;
+            }
             if (disposed || !node!.clientHeight) return;
+            // The browser can move the position for the reader before the scroll
+            // event that reports it arrives. Writing first would undo that move,
+            // so the same ownership test the scroll handler uses runs here too.
+            // The anchor from that movement stays the baseline: this commit's
+            // layout shift is still compensated against it below.
+            if (ownership.readerMoved(node!.scrollTop, performance.now(), geometry())) {
+                const distance = node!.scrollHeight - node!.scrollTop - node!.clientHeight;
+                const value = distance <= BOTTOM_DISTANCE;
+                follows.current = value;
+                setFollowing(value);
+            }
             if (follows.current) {
                 node!.scrollTop = node!.scrollHeight - node!.clientHeight;
             } else if (anchor?.element.isConnected) {
@@ -77,8 +98,9 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             ownership.wrote(node!.scrollTop, geometry());
             capture();
         }
-        function enqueue() {
-            if (!disposed && !frame) frame = requestAnimationFrame(update);
+        /** Only for writes that must not run inside a scroll event. */
+        function defer() {
+            if (!disposed && !frame) frame = requestAnimationFrame(flush);
         }
         function intent() {
             ownership.intent(performance.now(), node!.scrollTop, geometry());
@@ -94,20 +116,20 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             } else if (follows.current && distance > 0.5) {
                 // A superseded PageUp animation or automatic movement must
                 // not leave explicit following stranded above the latest item.
-                enqueue();
+                defer();
             }
         }
-        schedule.current = enqueue;
+        land.current = flush;
         resume.current = () => {
             ownership.resumeFollowing();
-            enqueue();
+            flush();
         };
         const mutation = new MutationObserver(records => {
             index.changed(records);
-            enqueue();
+            flush();
         });
         mutation.observe(content, { childList: true, subtree: true });
-        const resize = new ResizeObserver(enqueue);
+        const resize = new ResizeObserver(flush);
         resize.observe(node);
         resize.observe(content);
         node.addEventListener('scroll', scroll, { passive: true });
@@ -117,7 +139,7 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
         // Returning from a hidden pane preserves the browser's scroll offset.
         // Read the anchor before any scheduled follow/resize work.
         capture();
-        enqueue();
+        flush();
         return () => {
             disposed = true;
             cancelAnimationFrame(frame);
@@ -125,13 +147,13 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             resize.disconnect();
             node.removeEventListener('scroll', scroll);
             for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) node.removeEventListener(event, intent);
-            schedule.current = () => {};
+            land.current = () => {};
             resume.current = () => {};
         };
     }, [active, scroller]);
 
     // Runs after a coherent React commit, not once for each ingested event.
-    useLayoutEffect(() => { if (active) schedule.current(); });
+    useLayoutEffect(() => { if (active) land.current(); });
     const jumpToLatest = useCallback(() => {
         follows.current = true;
         setFollowing(true);
