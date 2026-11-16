@@ -96,9 +96,11 @@ test('the conversation and composer show the image while the frame keeps a veil'
     }
     // The frame is frosted glass: a veil of its own surface colour, so the image
     // reads through it without its detail competing with the labels. Every
-    // region that owns the image is checked, not just the status bar.
+    // region that owns the image is checked, not just the status bar; the
+    // decision region is the same glass with a different job.
     const frame = ['header[data-panel-frame="surface"]', '#session-list',
-        'main div[data-panel-frame="surface"]', '[data-testid="inspector"]'];
+        'main div[data-panel-frame="surface"]', '[data-testid="inspector"]',
+        '.decisions-shell'];
     for (const selector of frame) {
         expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.3, 2);
     }
@@ -125,7 +127,8 @@ test('the conversation and composer show the image while the frame keeps a veil'
             sunken: rgb(root.getPropertyValue('--sunken')),
         };
     }, frame);
-    expect(bases.regions).toEqual([bases.surface, bases.sunken, bases.surface, bases.surface]);
+    expect(bases.regions).toEqual([bases.surface, bases.sunken, bases.surface, bases.surface,
+        bases.surface]);
 
     // A bubble and a tool card keep their grouping with a 60% tint.
     await page.getByLabel('message').fill('A message that keeps its bubble');
@@ -140,15 +143,46 @@ test('the conversation and composer show the image while the frame keeps a veil'
     await expect(page.getByTestId('tool-card')).toBeVisible();
     expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.6, 2);
 
-    // The decision region lets the image through like the composer, but an
-    // approval keeps almost all of its own surface: its contrast must not depend
-    // on whatever image the operator chose.
+    // A decision carries no surface of its own. The approval used to keep 96% of
+    // the theme surface, which over an image was a solid card in a transparent
+    // column; both it and the question now sit on the region's glass, which is
+    // the frame's veil.
     await page.request.post(`${STUB}/__stub/confirm`, { data: { session: 'demo',
         confirmation_id: 'bg-approval',
         call: { name: 'run_command', arguments: { command: 'echo hi' } } } });
     await expect(page.getByTestId('approval-block')).toBeVisible();
-    expect(await backgroundAlpha(page, '.decisions-shell')).toBe(0);
-    expect(await backgroundAlpha(page, '.approval-block')).toBeGreaterThanOrEqual(0.9);
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'questions', session: 'demo', questions: [{
+            question_id: 'bg-question', question: 'Which branch should I use?',
+            options: ['main', 'next'],
+            deadline_at: new Date(Date.now() + 600_000).toISOString(),
+            received_at: new Date().toISOString(),
+        }],
+    } });
+    await expect(page.locator('.questions-shell article')).toBeVisible();
+    expect(await backgroundAlpha(page, '[data-testid="approval-block"]')).toBe(0);
+    expect(await backgroundAlpha(page, '.questions-shell article')).toBe(0);
+    // The 12px tones inside a decision take the same promotion they take inside
+    // the frame, so a question answered over a dark wallpaper keeps its hint line
+    // readable instead of sitting on the image at 3.4:1.
+    const promoted = await page.evaluate(() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext('2d')!;
+        const rgb = (value: string): string => {
+            context.fillStyle = '#000000';
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+            return String(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+        };
+        const arrow = document.querySelector('[data-testid="approval-disclosure"] span[aria-hidden="true"]');
+        return {
+            arrow: arrow ? rgb(getComputedStyle(arrow).color) : null,
+            muted: rgb(getComputedStyle(document.documentElement).getPropertyValue('--ink-muted')),
+        };
+    });
+    expect(promoted.arrow, 'faint promoted inside the decision region').toBe(promoted.muted);
 });
 
 test('frameOpacity one restores the solid frame and zero leaves only the blur', async ({ page }) => {
@@ -156,13 +190,18 @@ test('frameOpacity one restores the solid frame and zero leaves only the blur', 
     await setup(page, { frameOpacity: { light: 1, dark: 0 } });
     await page.getByTestId('session-row').click();
     await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
-    const header = page.locator('header').first();
-    expect(await backgroundAlpha(page, 'header')).toBe(1);
-    await expect(header).toHaveCSS('backdrop-filter', 'blur(0px)');
+    // The frame and the decision region are one surface: the same number paints
+    // both, so the two cannot drift apart.
+    for (const selector of ['header', '.decisions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBe(1);
+        await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(0px)');
+    }
     await page.emulateMedia({ colorScheme: 'dark' });
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    expect(await backgroundAlpha(page, 'header')).toBe(0);
-    await expect(header).toHaveCSS('backdrop-filter', 'blur(24px)');
+    for (const selector of ['header', '.decisions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBe(0);
+        await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(24px)');
+    }
 });
 
 test('a Hub that omits frameOpacity keeps the solid frame', async ({ page }) => {
@@ -170,18 +209,24 @@ test('a Hub that omits frameOpacity keeps the solid frame', async ({ page }) => 
     await setup(page, { frameOpacity: undefined });
     await page.getByTestId('session-row').click();
     await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
-    expect(await backgroundAlpha(page, 'header')).toBe(1);
-    await expect(page.locator('header').first()).toHaveCSS('backdrop-filter', 'blur(0px)');
+    for (const selector of ['header', '.decisions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBe(1);
+        await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(0px)');
+    }
 });
 
 test('frameOpacity accepts one number for both themes', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page, { frameOpacity: 0.2 });
     await page.getByTestId('session-row').click();
-    expect(await backgroundAlpha(page, 'header')).toBeCloseTo(0.2, 2);
+    for (const selector of ['header', '.decisions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.2, 2);
+    }
     await page.emulateMedia({ colorScheme: 'dark' });
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    expect(await backgroundAlpha(page, 'header')).toBeCloseTo(0.2, 2);
+    for (const selector of ['header', '.decisions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.2, 2);
+    }
 });
 
 test('frame text keeps WCAG AA over black and white wallpaper at the defaults', async ({ page }) => {
@@ -234,6 +279,10 @@ test('frame text keeps WCAG AA over black and white wallpaper at the defaults', 
                 ink: worstOf(parse(root.getPropertyValue('--ink'))),
                 muted: worstOf(parse(root.getPropertyValue('--ink-muted'))),
                 faint: worstOf(parse(frame.getPropertyValue('--ink-faint'))),
+                // The tones an approval uses for its label and its destructive
+                // action sit on the same veil, so they clear the same floor.
+                warn: worstOf(parse(root.getPropertyValue('--warn'))),
+                danger: worstOf(parse(root.getPropertyValue('--danger'))),
                 faintIsMuted: frame.getPropertyValue('--ink-faint').trim()
                     === 'var(--ink-muted)' || parse(frame.getPropertyValue('--ink-faint'))
                         .every((value, index) => value === parse(root.getPropertyValue('--ink-muted'))[index]),
@@ -242,6 +291,8 @@ test('frame text keeps WCAG AA over black and white wallpaper at the defaults', 
         expect(worst.ink, `${theme} ink`).toBeGreaterThanOrEqual(4.5);
         expect(worst.muted, `${theme} muted`).toBeGreaterThanOrEqual(4.5);
         expect(worst.faint, `${theme} faint`).toBeGreaterThanOrEqual(4.5);
+        expect(worst.warn, `${theme} warn`).toBeGreaterThanOrEqual(4.5);
+        expect(worst.danger, `${theme} danger`).toBeGreaterThanOrEqual(4.5);
         // The 12px labels take the muted tone inside the frame; over a veil the
         // faint one measured 3.9:1 (light) and 4.4:1 (dark).
         expect(worst.faintIsMuted, `${theme} faint remap`).toBe(true);

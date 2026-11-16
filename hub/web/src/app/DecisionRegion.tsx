@@ -10,6 +10,10 @@
  * The region scrolls as a whole rather than per section, so a scrollbar appears
  * once. Its own scrollbar narrows the content, so it publishes its width for the
  * children to subtract, keeping their edges on the conversation's measure.
+ *
+ * It is also a pane of the same glass as the frame. Nothing inside it paints a
+ * surface of its own: an approval used to keep 96% of the theme surface, which
+ * over an image meant a solid card in the middle of a transparent column.
  */
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 
@@ -26,5 +30,9 @@ export function DecisionRegion({ children }: { children: ReactNode }) {
         observer.observe(node);
         return () => observer.disconnect();
     }, []);
-    return <div ref={region} className="decisions-shell">{children}</div>;
+    // The region carries the frame's glass (`data-panel-frame`): an approval or a
+    // question is a surface the operator reads while the run waits, and one that
+    // depends on the wallpaper either disappears into it or covers it. Sharing
+    // the frame's veil gives both the contrast the chrome already guarantees.
+    return <div ref={region} className="decisions-shell" data-panel-frame="decision">{children}</div>;
 }
