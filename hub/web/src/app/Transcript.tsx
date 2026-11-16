@@ -24,6 +24,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type ReactNode,
 } from 'react';
 import type {
     ContentPart,
@@ -132,6 +133,16 @@ function RunActivity({ label }: { label: string }) {
             </div>
         </Tooltip>
     );
+}
+
+/**
+ * One line of the conversation: a reply, a tool card, a note. It rises by the
+ * single number `--line-enter-rise` and fades in, which is the only entrance
+ * the transcript has: the round above it does not animate, so a new turn and
+ * the replies that follow it arrive with the same weight.
+ */
+function Line({ children }: { children: ReactNode }) {
+    return <div data-testid="conversation-line" className="conversation-line">{children}</div>;
 }
 
 /** A note the panel itself added: a replay gap, a restart, a warning. */
@@ -554,7 +565,7 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
     return (
         <div className="min-w-0 space-y-4">
             {round.compacting && !round.compactResult && !round.failure && (
-                <p className="text-sm text-ink-muted">
+                <Line><p className="text-sm text-ink-muted">
                     {round.status === 'cancelled'
                         ? 'Context compaction cancelled. The original conversation remains available.'
                         : round.status === 'rejected'
@@ -562,21 +573,22 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                             : round.status
                                 ? 'No saved summary was received. Refresh conversation to inspect the current state.'
                                 : round.open ? 'Compacting conversation context…' : 'Context compaction requested.'}
-                </p>
+                </p></Line>
             )}
             {round.input ? (
-                <UserMessage item={round.input} />
+                <Line><UserMessage item={round.input} /></Line>
             ) : historicalInput && !round.continued ? (
-                <RestoredUserMessage turn={historicalInput} />
+                <Line><RestoredUserMessage turn={historicalInput} /></Line>
             ) : round.admitted ? (
-                <AdmittedPlaceholder />
+                <Line><AdmittedPlaceholder /></Line>
             ) : null}
 
             {round.timeline.map((entry) => {
+                let content: ReactNode = null;
                 if (entry.kind === 'compact') {
                     const result = round.compactResult;
-                    return result ? (
-                        <section key={entry.key} data-testid="compact-result"
+                    content = result ? (
+                        <section data-testid="compact-result"
                             className="min-w-0 space-y-2 rounded-lg border border-line bg-subtle p-3">
                             <p className="text-sm font-medium">Context compacted</p>
                             <p className="text-xs text-ink-muted">
@@ -595,40 +607,31 @@ const RoundBody = memo(function RoundBody({ round, historicalInput, actionableFa
                             </details>
                         </section>
                     ) : null;
-                }
-                if (entry.kind === 'assistant') {
+                } else if (entry.kind === 'assistant') {
                     const block = assistant.get(entry.key);
-                    return block
-                        ? <AssistantMessage key={entry.key} block={block} calls={calls} />
-                        : null;
-                }
-                if (entry.kind === 'calls') {
+                    content = block ? <AssistantMessage block={block} calls={calls} /> : null;
+                } else if (entry.kind === 'calls') {
                     const call = calls.get(entry.key);
-                    return call
-                        ? <div key={entry.key} className="space-y-1"><ToolCard call={call} /></div>
-                        : null;
-                }
-                if (entry.kind === 'tool_omission') {
+                    content = call ? <div className="space-y-1"><ToolCard call={call} /></div> : null;
+                } else if (entry.kind === 'tool_omission') {
                     const category = entry.category === 'calls' ? 'call' : 'result';
-                    return <p key={entry.key} data-testid="tool-omission" className="text-xs text-ink-muted">
+                    content = <p data-testid="tool-omission" className="text-xs text-ink-muted">
                         {entry.count} tool {category} preview{entry.count === 1 ? '' : 's'} omitted from this display.
                     </p>;
-                }
-                if (entry.kind === 'problem') {
+                } else if (entry.kind === 'problem') {
                     const problem = problems.get(entry.key);
-                    return problem ? <ProblemLine key={entry.key} problem={problem} /> : null;
-                }
-                if (entry.kind === 'note') {
+                    content = problem ? <ProblemLine problem={problem} /> : null;
+                } else if (entry.kind === 'note') {
                     const note = notes.get(entry.key);
-                    return note ? <NoteLine key={entry.key} item={note} /> : null;
+                    content = note ? <NoteLine item={note} /> : null;
                 }
                 // Retain protocol entries in rounds for replay correlation, not presentation.
-                return null;
+                return content === null ? null : <Line key={entry.key}>{content}</Line>;
             })}
 
             {round.failure && (
-                <RunFailureNotice failure={round.failure} actionable={actionableFailure}
-                    compacting={round.compacting} sessionId={sessionId} latest={latestRun} />
+                <Line><RunFailureNotice failure={round.failure} actionable={actionableFailure}
+                    compacting={round.compacting} sessionId={sessionId} latest={latestRun} /></Line>
             )}
         </div>
     );
@@ -912,15 +915,14 @@ const TranscriptRound = memo(function TranscriptRound({ round, historicalInput, 
         <section
             data-testid="round"
             data-kind={round.kind}
-            className="animate-enter"
         >
             {round.kind === 'run' && (
-                <RoundSummary
+                <Line><RoundSummary
                     round={round}
                     historicalInput={historicalInput}
                     expanded={expanded}
                     onToggle={() => onToggle(round.key, expanded)}
-                />
+                /></Line>
             )}
             {(round.kind === 'prelude' || expanded) && (
                 <div className={round.kind === 'run' ? 'mt-2' : ''}>

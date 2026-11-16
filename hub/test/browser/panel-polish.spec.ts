@@ -17,7 +17,7 @@
  *     everything after the first line.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { STUB, emit, open, stoppedSession, withSession } from './harness.ts';
+import { STUB, emit, modelResponse, open, stoppedSession, withSession } from './harness.ts';
 
 /** What the stub has received over the panel socket, newest last. */
 async function received(page: Page): Promise<{ type: string; [key: string]: unknown }[]> {
@@ -269,16 +269,35 @@ test.describe('a narrow screen', () => {
 });
 
 test.describe('motion and placement', () => {
-    test('drops the animation when the reader asks for less', async ({ page }) => {
+    test('each arriving line enters once, and its round stays still', async ({ page }) => {
+        await open(page, '?session=demo');
+        await emit(page, 'model_response', modelResponse('First line'));
+        const line = page.getByTestId('conversation-line').last();
+        await expect(line).toContainText('First line');
+        const motion = await line.evaluate(node => {
+            const style = getComputedStyle(node);
+            const round = node.closest('[data-testid="round"]') as Element;
+            return {
+                name: style.animationName,
+                duration: style.animationDuration,
+                round: getComputedStyle(round).animationName,
+            };
+        });
+        // One entrance for the conversation: the line rises and fades, and the
+        // round it belongs to does not animate a second time around it.
+        expect(motion.name).toBe('line-enter');
+        expect(Number.parseFloat(motion.duration)).toBeLessThanOrEqual(0.2);
+        expect(motion.round).toBe('none');
+    });
+
+    test('drops the line entrance when the reader asks for less', async ({ page }) => {
         await page.emulateMedia({ reducedMotion: 'reduce' });
         await open(page);
         await page.locator('[data-testid="session-row"][data-session="demo"]').click();
-        await emit(page, 'run_started', {});
-        await page.getByTestId('round').first().waitFor();
-        const duration = await page.evaluate(() => {
-            const round = document.querySelector('[data-testid="round"]') as Element;
-            return getComputedStyle(round).animationDuration;
-        });
+        await emit(page, 'model_response', modelResponse('Quiet arrival'));
+        const line = page.getByTestId('conversation-line').last();
+        await expect(line).toContainText('Quiet arrival');
+        const duration = await line.evaluate(node => getComputedStyle(node).animationDuration);
         expect(Number.parseFloat(duration)).toBeLessThan(0.05);
     });
 
