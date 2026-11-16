@@ -932,3 +932,17 @@ worker changes are unnecessary. The packaged examples live in `schemas/skills/`,
 where `code-review.yaml` also serves as the authoring template. See the
 [deployment guide](../docs/deployment/hub.md#predefined-skills-in-messages)
 for the format, limits, and recovery semantics.
+
+### Subagent navigation
+
+The sidebar keeps ordinary sessions in their own list. A separate, initially
+collapsed **Subagents** section groups descendants by root session and puts the
+selected family first. Nested descendants remain flat and identify their direct
+parent. Missing parents do not hide their children. The section scrolls
+independently and uses at most 45% of the sidebar height.
+
+A main session's subagent count opens and focuses its family. Pending approvals
+remain visible both beside that count and in the collapsed section header.
+Background updates do not automatically expand the section or move focus.
+Selecting a subagent opens the existing lifecycle and safety-policy view;
+approval handling and worker lifetime rules are unchanged.

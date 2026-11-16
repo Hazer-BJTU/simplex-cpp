@@ -18,6 +18,7 @@ test('headless entries expose status, policy and global approvals without conver
             observed_at: '2026-01-01T00:00:01.000Z' },
     });
     await page.reload();
+    await page.getByRole('button', { name: /Subagents · 1/ }).click();
     await page.getByTestId('session-row').click();
     await expect(page.getByTestId('headless-panel')).toBeVisible();
     await expect(page.getByTestId('headless-panel').getByText('0 pending', { exact: true })).toBeVisible();
