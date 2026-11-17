@@ -233,8 +233,20 @@ test('a reader retains their anchor and offset across Plan and approval-region r
     // The strip appears above the composer, not over the transcript, so the
     // reader's anchor must survive it arriving and leaving.
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
+    await page.request.post(`${STUB}/__stub/message`, { data: {
+        type: 'questions', session: 'demo', questions: [{
+            question_id: 'anchor-question', question: 'Keep reading here?', options: ['Yes'],
+            deadline_at: Date.now() + 600_000,
+            asked_at: Date.now(),
+        }],
+    } });
+    await expect(page.locator('[data-question="anchor-question"]')).toBeVisible();
+    expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'first' } });
     await expect(page.getByTestId('approvals')).toHaveCount(0);
+    expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
+    await page.request.post(`${STUB}/__stub/message`, { data: { type: 'questions', session: 'demo', questions: [] } });
+    await expect(page.locator('[data-question="anchor-question"]')).toHaveCount(0);
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
 });
 

@@ -106,16 +106,16 @@ Generated configurations do not add disabled background settings.
   `{ "light", "dark" }` pair. Defaults are 0.3 and 0.45. It sets how much of its
   own surface the frame keeps — the status bar, the session list, the session
   header and the inspector — so the image reads through the chrome instead of
-  stopping at the conversation. The decision region above the composer carries
-  the same number: an approval and a question paint no surface of their own, so
-  they read as the same glass rather than as a card that covers the image. One
-  restores the solid frame; zero leaves only the blur, which is derived from the
+  stopping at the conversation. Approval and question cards above the composer
+  use the same setting within the conversation's reading width; their outer
+  scrolling region and gutters stay transparent. One restores the solid frame;
+  zero leaves only the blur, which is derived from the
   same value (`(1 − frameOpacity) × 24px`), so a thinner veil also means a
   softer one. Dialogs and menus stay solid regardless. At the defaults, the
   frame's primary and secondary text keep WCAG AA over a black or white
   wallpaper (measured 13:1 and 5.2:1 in light, 13.6:1 and 7.5:1 in dark); the
   12px faint tone is promoted to the muted one inside both the frame and the
-  decision region, because over a veil it measured 3.9:1 and 4.4:1. Heavier
+  decision cards, because over a veil it measured 3.9:1 and 4.4:1. Heavier
   images or thinner veils lower those numbers, as they already do in the
   conversation column.
 

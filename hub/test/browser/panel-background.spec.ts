@@ -52,6 +52,12 @@ async function backgroundAlpha(page: Page, selector: string): Promise<number> {
     });
 }
 
+/** Put a real decision surface inside the transparent scrolling region. */
+async function showApproval(page: Page): Promise<void> {
+    await page.request.post(`${STUB}/__stub/confirm`, { data: { confirmation_id: 'frame-approval' } });
+    await expect(page.getByTestId('approval-block')).toBeVisible();
+}
+
 test('one full-page static image follows system theme without fetching on transcript updates', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     const count = await setup(page);
@@ -96,11 +102,9 @@ test('the conversation and composer show the image while the frame keeps a veil'
     }
     // The frame is frosted glass: a veil of its own surface colour, so the image
     // reads through it without its detail competing with the labels. Every
-    // region that owns the image is checked, not just the status bar; the
-    // decision region is the same glass with a different job.
+    // region that owns the image is checked, not just the status bar.
     const frame = ['header[data-panel-frame="surface"]', '#session-list',
-        'main div[data-panel-frame="surface"]', '[data-testid="inspector"]',
-        '.decisions-shell'];
+        'main div[data-panel-frame="surface"]', '[data-testid="inspector"]'];
     for (const selector of frame) {
         expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.3, 2);
     }
@@ -127,8 +131,7 @@ test('the conversation and composer show the image while the frame keeps a veil'
             sunken: rgb(root.getPropertyValue('--sunken')),
         };
     }, frame);
-    expect(bases.regions).toEqual([bases.surface, bases.sunken, bases.surface, bases.surface,
-        bases.surface]);
+    expect(bases.regions).toEqual([bases.surface, bases.sunken, bases.surface, bases.surface]);
 
     // A bubble and a tool card keep their grouping with a 60% tint.
     await page.getByLabel('message').fill('A message that keeps its bubble');
@@ -143,10 +146,8 @@ test('the conversation and composer show the image while the frame keeps a veil'
     await expect(page.getByTestId('tool-card')).toBeVisible();
     expect(await backgroundAlpha(page, '[data-testid="tool-card"]')).toBeCloseTo(0.6, 2);
 
-    // A decision carries no surface of its own. The approval used to keep 96% of
-    // the theme surface, which over an image was a solid card in a transparent
-    // column; both it and the question now sit on the region's glass, which is
-    // the frame's veil.
+    // Only the bounded cards carry the frame's glass. Their parent and gutters
+    // must neither veil nor blur a full row across the conversation pane.
     await page.request.post(`${STUB}/__stub/confirm`, { data: { session: 'demo',
         confirmation_id: 'bg-approval',
         call: { name: 'run_command', arguments: { command: 'echo hi' } } } });
@@ -155,13 +156,17 @@ test('the conversation and composer show the image while the frame keeps a veil'
         type: 'questions', session: 'demo', questions: [{
             question_id: 'bg-question', question: 'Which branch should I use?',
             options: ['main', 'next'],
-            deadline_at: new Date(Date.now() + 600_000).toISOString(),
-            received_at: new Date().toISOString(),
+            deadline_at: Date.now() + 600_000,
+            asked_at: Date.now(),
         }],
     } });
     await expect(page.locator('.questions-shell article')).toBeVisible();
-    expect(await backgroundAlpha(page, '[data-testid="approval-block"]')).toBe(0);
-    expect(await backgroundAlpha(page, '.questions-shell article')).toBe(0);
+    expect(await backgroundAlpha(page, '[data-testid="approval-block"]')).toBeCloseTo(0.3, 2);
+    expect(await backgroundAlpha(page, '.questions-shell article')).toBeCloseTo(0.3, 2);
+    for (const selector of ['.decisions-shell', '.approvals-shell', '.questions-shell']) {
+        expect(await backgroundAlpha(page, selector), selector).toBe(0);
+        await expect(page.locator(selector)).toHaveCSS('backdrop-filter', 'none');
+    }
     // The 12px tones inside a decision take the same promotion they take inside
     // the frame, so a question answered over a dark wallpaper keeps its hint line
     // readable instead of sitting on the image at 3.4:1.
@@ -190,15 +195,15 @@ test('frameOpacity one restores the solid frame and zero leaves only the blur', 
     await setup(page, { frameOpacity: { light: 1, dark: 0 } });
     await page.getByTestId('session-row').click();
     await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
-    // The frame and the decision region are one surface: the same number paints
-    // both, so the two cannot drift apart.
-    for (const selector of ['header', '.decisions-shell']) {
+    await showApproval(page);
+    // The frame and each bounded decision share one opacity setting.
+    for (const selector of ['header', '[data-testid="approval-block"]']) {
         expect(await backgroundAlpha(page, selector), selector).toBe(1);
         await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(0px)');
     }
     await page.emulateMedia({ colorScheme: 'dark' });
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    for (const selector of ['header', '.decisions-shell']) {
+    for (const selector of ['header', '[data-testid="approval-block"]']) {
         expect(await backgroundAlpha(page, selector), selector).toBe(0);
         await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(24px)');
     }
@@ -209,7 +214,8 @@ test('a Hub that omits frameOpacity keeps the solid frame', async ({ page }) => 
     await setup(page, { frameOpacity: undefined });
     await page.getByTestId('session-row').click();
     await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'light dark');
-    for (const selector of ['header', '.decisions-shell']) {
+    await showApproval(page);
+    for (const selector of ['header', '[data-testid="approval-block"]']) {
         expect(await backgroundAlpha(page, selector), selector).toBe(1);
         await expect(page.locator(selector).first()).toHaveCSS('backdrop-filter', 'blur(0px)');
     }
@@ -219,12 +225,13 @@ test('frameOpacity accepts one number for both themes', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page, { frameOpacity: 0.2 });
     await page.getByTestId('session-row').click();
-    for (const selector of ['header', '.decisions-shell']) {
+    await showApproval(page);
+    for (const selector of ['header', '[data-testid="approval-block"]']) {
         expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.2, 2);
     }
     await page.emulateMedia({ colorScheme: 'dark' });
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    for (const selector of ['header', '.decisions-shell']) {
+    for (const selector of ['header', '[data-testid="approval-block"]']) {
         expect(await backgroundAlpha(page, selector), selector).toBeCloseTo(0.2, 2);
     }
 });

@@ -67,9 +67,11 @@ function QuestionCard({ session, question }: { session: string; question: Operat
     return (
         <article
             aria-label="Operator question"
-            className="border-t border-line pt-3 first:border-t-0 first:pt-0"
+            data-question={question.question_id}
+            data-panel-frame="decision"
+            className="decision-card border-t border-line first:border-t-0"
         >
-            <div className="flex items-center gap-2 text-xs text-ink-muted">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 <span aria-hidden className="size-1.5 rounded-full bg-accent" />
                 <span className="font-medium text-ink">Question from the agent</span>
                 <span className="ml-auto tabular-nums">
@@ -81,7 +83,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                 {question.question}
             </p>
             {question.options.length > 0 && (
-                <div className="-mx-2 mt-1 flex flex-col">
+                <div className="mt-1 flex flex-col">
                     {question.options.map((option, index) => (
                         <button key={option} type="button" disabled={sending}
                             onClick={() => submit({ option_index: index })}
@@ -91,7 +93,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                             <span aria-hidden className="mt-[0.45rem] size-1.5 shrink-0
                                 rounded-full bg-line-strong transition-colors
                                 group-hover:bg-accent" />
-                            <span>{option}</span>
+                            <span className="min-w-0">{option}</span>
                         </button>
                     ))}
                 </div>
@@ -118,7 +120,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                     placeholder={question.options.length > 0
                         ? 'Or type a different answer…' : 'Type your answer…'}
                     aria-label="Answer"
-                    className="question-answer min-h-8 max-h-40 flex-1 resize-none overflow-y-auto
+                    className="question-answer min-w-0 min-h-8 max-h-40 flex-1 resize-none overflow-y-auto
                         bg-transparent py-1 text-sm placeholder:text-ink-faint"
                 />
                 <button type="button" disabled={!canSend} onClick={submitText}

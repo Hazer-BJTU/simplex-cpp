@@ -11,9 +11,9 @@
  * once. Its own scrollbar narrows the content, so it publishes its width for the
  * children to subtract, keeping their edges on the conversation's measure.
  *
- * It is also a pane of the same glass as the frame. Nothing inside it paints a
- * surface of its own: an approval used to keep 96% of the theme surface, which
- * over an image meant a solid card in the middle of a transparent column.
+ * This full-width layout container stays transparent, including its gutters.
+ * Each reading-width decision paints the frame's glass on its own bounds;
+ * painting it here would veil an entire row even on a wide conversation pane.
  */
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 
@@ -30,9 +30,5 @@ export function DecisionRegion({ children }: { children: ReactNode }) {
         observer.observe(node);
         return () => observer.disconnect();
     }, []);
-    // The region carries the frame's glass (`data-panel-frame`): an approval or a
-    // question is a surface the operator reads while the run waits, and one that
-    // depends on the wallpaper either disappears into it or covers it. Sharing
-    // the frame's veil gives both the contrast the chrome already guarantees.
-    return <div ref={region} className="decisions-shell" data-panel-frame="decision">{children}</div>;
+    return <div ref={region} className="decisions-shell">{children}</div>;
 }

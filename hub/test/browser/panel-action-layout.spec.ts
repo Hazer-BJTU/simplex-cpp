@@ -80,13 +80,13 @@ test('approval actions end on the reading edge, whatever the side columns do', a
     const approve = page.locator('[data-testid="approval-block"] button[aria-label="Approve"]');
     await expect(approve).toBeVisible();
 
-    /** The action sits on the content edge; the block's padding is the only inset. */
+    /** The action stays inside the reading edge by the card's padding. */
     async function expectOnEdge(where: string): Promise<void> {
         await expect.poll(async () => {
             const action = (await approve.boundingBox())!;
             const reading = (await page.getByTestId('reading-surface').boundingBox())!;
             return Math.round(action.x + action.width - reading.x - reading.width);
-        }, { message: `actions against the reading edge, ${where}` }).toBe(8);
+        }, { message: `actions inside the reading edge, ${where}` }).toBe(-8);
     }
 
     await expectOnEdge('sidebar open');
@@ -110,8 +110,8 @@ test('a short viewport keeps the composer reachable with approvals and a questio
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'questions', session: 'demo', questions: [{
             question_id: 'q-1', question: 'Which branch should I use?', options: ['main', 'next'],
-            deadline_at: new Date(Date.now() + 600_000).toISOString(),
-            received_at: new Date().toISOString(),
+            deadline_at: Date.now() + 600_000,
+            asked_at: Date.now(),
         }],
     } });
     const questions = page.locator('.questions-shell');
