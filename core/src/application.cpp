@@ -35,6 +35,7 @@
 #include <limits>
 #include <optional>
 #include <array>
+#include <cctype>
 #include <string_view>
 
 namespace core {
@@ -132,6 +133,82 @@ void inject_environment(
         text,
         model_io::SectionStability::Volatile
     );
+}
+
+/** One signature greeting: the organization it credits and a matching hint. */
+struct SignatureContributor {
+    std::string_view organization;
+    std::string_view key;
+};
+
+/**
+ * Organizations credited by the runtime signature. Keys match a provider
+ * factory name or a token of the configured model id, so a generic
+ * `chat-completions` entry still credits the lab behind the loaded weights.
+ * Entries name organizations rather than model versions, so the table does not
+ * age with every release. The greeting is decorative and grants no capability.
+ */
+constexpr auto signature_contributors = std::to_array<SignatureContributor>({
+    {"DeepSeek", "deepseek"},
+    {"Qwen Team", "qwen"},
+    {"Qwen Team", "tongyi"},
+    {"Qwen Team", "dashscope"},
+    {"Zhipu GLM Team", "glm"},
+    {"Zhipu GLM Team", "zhipu"},
+    {"Zhipu GLM Team", "chatglm"},
+    {"Zhipu GLM Team", "bigmodel"},
+    {"Kimi Team", "kimi"},
+    {"Kimi Team", "moonshot"},
+    {"MiniMax", "minimax"},
+    {"MiniMax", "hailuo"},
+    {"ByteDance Seed", "doubao"},
+    {"ByteDance Seed", "seed"},
+    {"ByteDance Seed", "volcengine"},
+    {"ByteDance Seed", "bytedance"},
+    {"Tencent Hunyuan Team", "hunyuan"},
+    {"Tencent Hunyuan Team", "tencent"},
+    {"Google DeepMind", "gemini"},
+    {"Google DeepMind", "gemma"},
+    {"Google DeepMind", "google"},
+    {"Meta AI", "llama"},
+    {"Meta AI", "meta"},
+    {"Mistral AI", "mistral"},
+    {"Mistral AI", "mixtral"},
+    {"Mistral AI", "magistral"},
+    {"Mistral AI", "devstral"},
+    {"Mistral AI", "codestral"},
+    {"Mistral AI", "pixtral"},
+});
+
+/** Case-insensitive ASCII prefix that ends on a model-id token boundary. */
+bool signature_key_matches(std::string_view key, std::string_view value) {
+    if (value.size() < key.size()) return false;
+    const auto lower = [](char character) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    };
+    for (std::size_t index = 0; index < key.size(); ++index) {
+        if (lower(value[index]) != lower(key[index])) return false;
+    }
+    if (value.size() == key.size()) return true;
+    const auto next = static_cast<unsigned char>(value[key.size()]);
+    return next == '-' || next == '.' || next == '_' || next == ':' || next == '/'
+        || next == '@' || std::isdigit(next) != 0;
+}
+
+/** Credit the organization behind a provider factory name or configured model. */
+std::string_view signature_organization(std::string_view provider, std::string_view model) {
+    for (const auto& entry : signature_contributors) {
+        if (signature_key_matches(entry.key, provider)) return entry.organization;
+        // Aggregators expose "vendor/model" ids; any token may carry the hint.
+        for (std::string_view rest = model; !rest.empty();) {
+            const auto slash = rest.find('/');
+            if (signature_key_matches(entry.key, rest.substr(0, slash)))
+                return entry.organization;
+            if (slash == std::string_view::npos) break;
+            rest.remove_prefix(slash + 1);
+        }
+    }
+    return {};
 }
 
 /** Queue cancellation must not hide the transport error that closed it. */
@@ -749,23 +826,29 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                 prompt.add_section(section.name, section.title, section.text, section.stability);
         }
         // A decorative footer refreshed on restore, immediately before memory.
-        // Match provider factory IDs, not user-defined configuration aliases.
-        // This acknowledgement is decorative and grants no runtime capability.
-        static constexpr std::array<std::string_view, 4> contributors{
-            "deepseek", "qwen", "glm", "zhipu"
-        };
-        const auto provider = config.provider.empty()
-            ? std::string("provider") : config.provider;
-        const bool contributor = std::find(
-            contributors.begin(), contributors.end(), provider
-        ) != contributors.end();
+        // Provider factory names and model ids only select a greeting; the
+        // acknowledgement grants no runtime capability and never gates a call.
+        std::string model_id;
+        if (config.model.is_object()) {
+            if (const auto entry = config.model.find("model");
+                entry != config.model.end() && entry->is_string()) {
+                model_id = entry->get<std::string>();
+            }
+        }
         std::string signature = "Powered by agent runtime simplex version ";
         signature += simplex::VERSION_STRING;
-        signature += ". Greetings to ";
-        if (contributor) {
-            signature += "open source AI technology contributor ";
+        signature += ".";
+        if (const auto organization = signature_organization(config.provider, model_id);
+            !organization.empty()) {
+            signature += " Greetings to ";
+            signature += organization;
+            signature += ".";
         }
-        signature += provider + ".";
+        if (!model_id.empty()) {
+            signature += "\n\nAll the best with your work, ";
+            signature += model_id;
+            signature += ".";
+        }
         prompt.add_section(
             "signature.runtime",
             "",

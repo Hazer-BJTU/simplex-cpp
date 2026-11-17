@@ -580,11 +580,14 @@ asks the model to recheck the system clock when current time matters. The sectio
 session, is not hot-reloaded, and remains editable through existing loop hooks.
 
 The worker appends a short, untitled `signature.runtime` Volatile section after
-configured sections and before restored memory: “Powered by agent runtime simplex version <version>. Greetings to <provider>.”
-For the provider factory IDs `deepseek`, `qwen`, `glm`, and `zhipu`, the greeting
-acknowledges an “open source AI technology contributor” before the provider name. This decorative footer is regenerated
-at startup, including on restore, using the current build version and provider.
-It is host-owned and cannot be declared in a role YAML file.
+configured sections and before restored memory: “Powered by agent runtime simplex version <version>.”
+The provider factory name and the configured model id select an optional
+“Greetings to <organization>.” clause — a department name such as “Kimi Team”,
+not the vendor alias — followed by a second paragraph, “All the best with your
+work, <model>.”, that names the configured model id. An unrecognized provider
+keeps the footer without a greeting. This decorative footer is regenerated at
+startup, including on restore, using the current build version, provider and
+model. It is host-owned and cannot be declared in a role YAML file.
 
 ## Compact configuration
 
