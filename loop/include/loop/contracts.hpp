@@ -31,7 +31,7 @@ namespace loop {
 enum class RunStatus {
     Completed, // A final model response was committed without tool calls.
     Cancelled, // A stop request was observed and required results were committed.
-    ExchangeLimit, // The exchange budget ended after settling the last tool batch.
+    ExchangeLimit, // More work remained at the cap; any last tool batch is settled.
     Failed,    // Inspect error and state.loop before deciding how to continue.
     AutoCompactRequired, // Settled boundary; the host may compact before continuing.
     ExperimentalLimit // Research budget ended at a settled boundary.
@@ -115,6 +115,10 @@ struct Options {
     bool reset_experimental = false;
     /// Compact finishes its replacement before the host applies the budget.
     bool defer_experimental_boundary = false;
+    /// Continue tool-free responses whose content has no nonempty raw value.
+    /// Reasoning is not an answer; each empty response still consumes budgets.
+    /// Single-request operations such as compact must explicitly disable this.
+    bool empty_advance = true;
 
 };
 

@@ -105,6 +105,9 @@ struct Model : llm::LLMModel {
         model_io::Content content;
         if (summary) {
             ++summaries;
+            if (mode == Mode::SummaryEmpty && summaries > 1) {
+                throw std::runtime_error("empty compact unexpectedly requested another exchange");
+            }
             BOOST_TEST(state.tools.empty());
 #if defined(__linux__)
             if (cleanup_fault != CleanupFault::None) {
@@ -125,7 +128,7 @@ struct Model : llm::LLMModel {
                 asio::steady_timer wait(co_await asio::this_coro::executor, std::chrono::seconds(20));
                 co_await wait.async_wait(asio::use_awaitable);
             }
-            content.raw = mode == Mode::SummaryEmpty ? " \n"
+            content.raw = mode == Mode::SummaryEmpty ? ""
                 : "Goal: finish original task. State: verified work. Retrieve: /workspace/results. Next: verify.";
             if (oversized_summary) content.raw += std::string(64 * 1024, 'S');
             if (mode == Mode::SummaryTools) {
@@ -169,7 +172,14 @@ struct Model : llm::LLMModel {
                 result.invokes = std::vector<model_io::InvokeQuery>{query};
             }
         }
-        result.content.push_back(std::move(content));
+        if (summary && mode == Mode::SummaryEmpty) {
+            // Compact explicitly disables empty advancement: reasoning alone
+            // must fail after one request even though ordinary runs advance.
+            content.raw = "Still considering the summary";
+            result.reasoning = std::move(content);
+        } else {
+            result.content.push_back(std::move(content));
+        }
         co_return result;
     }
 };
@@ -483,6 +493,7 @@ void exercise(Mode mode, bool save_run, bool sqlite = false,
             : mode == Mode::SummaryTools ? "must not call tools" : "summary provider unavailable";
         BOOST_TEST(finished.at("error").get<std::string>().find(expected) != std::string::npos);
         BOOST_TEST(finished.at("failure").at("operation") == "auto_compact");
+        if (mode == Mode::SummaryEmpty) BOOST_TEST(model->summaries == 1);
     }
     if (save_run || mode == Mode::Cancel) {
         const auto state = store->load_current()->state;

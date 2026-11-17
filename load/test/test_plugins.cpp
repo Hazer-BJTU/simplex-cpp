@@ -304,6 +304,7 @@ BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_netwo
     BOOST_TEST(config.transport.write_capacity == 256u);
     BOOST_TEST(config.event_capacity == 1024u);
     BOOST_TEST(config.max_exchanges == 512u);
+    BOOST_TEST(config.empty_advance);
 
     // Omitting optional values must use the same defaults as the template.
     document["client"].erase("payload_capacity");
@@ -311,12 +312,18 @@ BOOST_AUTO_TEST_CASE(shipped_template_loads_plugins_without_credentials_or_netwo
     document["client"]["transport"].erase("write_capacity");
     document["worker"].erase("event_capacity");
     document["worker"].erase("max_exchanges");
+    document["worker"].erase("empty_advance");
     const auto defaults = load::parse_configuration(document, directory);
     BOOST_TEST(defaults.queues.payload_capacity == config.queues.payload_capacity);
     BOOST_TEST(defaults.queues.signal_capacity == config.queues.signal_capacity);
     BOOST_TEST(defaults.transport.write_capacity == config.transport.write_capacity);
     BOOST_TEST(defaults.event_capacity == config.event_capacity);
     BOOST_TEST(defaults.max_exchanges == config.max_exchanges);
+    BOOST_TEST(defaults.empty_advance);
+    document["worker"]["empty_advance"] = false;
+    BOOST_TEST(!load::parse_configuration(document, directory).empty_advance);
+    document["worker"]["empty_advance"] = "true";
+    BOOST_CHECK_THROW(load::parse_configuration(document, directory), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(qwen_role_configuration_creates_independent_models) {

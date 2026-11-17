@@ -51,6 +51,10 @@ struct Model : llm::LLMModel {
     std::optional<model_io::TokenCost> cost;
     int call_count = 1;
     bool calls = true;
+    int empty_responses = 0;
+    bool reasoning_only = false;
+    std::string answer = "done";
+    model_io::ContentType answer_type = model_io::ContentType::Text;
     bool fail_model = false;
     bool fail_projection = false;
     std::function<void(const State&)> inspect;
@@ -77,6 +81,16 @@ struct Model : llm::LLMModel {
                 query.id = "call" + std::to_string(i);
                 response.invokes->push_back(query);
             }
+        }
+        if (exchanges > empty_responses) {
+            model_io::Content content;
+            content.raw = answer;
+            content.type = answer_type;
+            response.content.push_back(std::move(content));
+        } else if (reasoning_only) {
+            model_io::Content reasoning;
+            reasoning.raw = "still thinking";
+            response.reasoning = std::move(reasoning);
         }
         co_return response;
     }
@@ -157,6 +171,7 @@ struct Fixture {
     eventbus::EventBus bus;
     State state;
     loop::ExperimentalControl experimental;
+    bool empty_advance = true;
     std::shared_ptr<Set> set = std::make_shared<Set>();
 
     /// Registers the fixture tool before any model exchange is attempted.
@@ -179,7 +194,7 @@ struct Fixture {
             state,
             has_message,
             std::move(message),
-            {budget, threshold, {}, experimental, has_message},
+            {budget, threshold, {}, experimental, has_message, false, empty_advance},
             stop);
         auto future = asio::co_spawn(io, std::move(task), asio::use_future);
         io.restart();
@@ -1263,4 +1278,108 @@ BOOST_AUTO_TEST_CASE(research_rejected_input_and_changed_policy_cannot_reset_cou
     BOOST_TEST(f.model.exchanges == count);
     BOOST_CHECK(f.run().status == loop::RunStatus::Completed);
     BOOST_TEST(loop::experimental_report(f.state)->at("steps") == 1);
+}
+
+BOOST_AUTO_TEST_CASE(empty_response_advances_without_synthetic_input_or_tool_events) {
+    for (bool reasoning : {false, true}) {
+        Fixture f;
+        f.model.calls = false;
+        f.model.empty_responses = 1;
+        f.model.reasoning_only = reasoning;
+        int committed = 0;
+        int finished = 0;
+        auto a = f.bus.subscribe<loop::ModelCommitted>([&](const auto&) { ++committed; });
+        auto b = f.bus.subscribe<loop::RunFinished>([&](const auto&) { ++finished; });
+        auto c = f.bus.subscribe<loop::BeforeToolBatch>([](const auto&) { BOOST_FAIL("unexpected tool batch"); });
+        f.model.inspect = [&](const State& state) {
+            if (f.model.exchanges == 1) {
+                BOOST_REQUIRE_EQUAL(state.turns.size(), 1u);
+                const auto& steps = state.turns.back().agent_loop_step;
+                BOOST_REQUIRE_EQUAL(steps.size(), 1u);
+                BOOST_CHECK(steps.back().model_response.content.empty());
+                BOOST_CHECK_EQUAL(steps.back().model_response.reasoning.has_value(), reasoning);
+            }
+        };
+        const auto result = f.run();
+        BOOST_CHECK(result.status == loop::RunStatus::Completed);
+        BOOST_CHECK_EQUAL(result.completed_exchanges, 2u);
+        BOOST_CHECK_EQUAL(committed, 2);
+        BOOST_CHECK_EQUAL(finished, 1);
+        BOOST_CHECK_EQUAL(f.set->tool->count, 0);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(empty_response_opt_out_and_raw_content_semantics) {
+    Fixture disabled;
+    disabled.empty_advance = false;
+    disabled.model.calls = false;
+    disabled.model.empty_responses = 10;
+    BOOST_CHECK(disabled.run().status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(disabled.model.exchanges, 1);
+    for (const auto& raw : {std::string(""), std::string(" \n")}) {
+        Fixture f;
+        f.model.calls = false;
+        f.model.answer = raw;
+        auto result = f.run(true, input(), 2);
+        BOOST_CHECK(result.status == (raw.empty()
+            ? loop::RunStatus::ExchangeLimit : loop::RunStatus::Completed));
+        BOOST_CHECK_EQUAL(result.completed_exchanges, raw.empty() ? 2u : 1u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(empty_response_obeys_stop_compact_and_experimental_boundaries) {
+    Fixture cancelled;
+    cancelled.model.calls = false;
+    cancelled.model.empty_responses = 10;
+    std::stop_source stop;
+    auto subscription = cancelled.bus.subscribe<loop::ModelCommitted>(
+        [&](const auto&) { stop.request_stop(); });
+    BOOST_CHECK(cancelled.run(true, input(), 5, stop.get_token()).status == loop::RunStatus::Cancelled);
+    BOOST_CHECK_EQUAL(cancelled.model.exchanges, 1);
+
+    Fixture cap;
+    cap.model.calls = false;
+    cap.model.empty_responses = 10;
+    auto limit = cap.run(true, input(), 2, {}, 100);
+    BOOST_CHECK(limit.status == loop::RunStatus::AutoCompactRequired);
+    BOOST_CHECK_EQUAL(limit.completed_exchanges, 2u);
+
+    Fixture tokens;
+    tokens.model.calls = false;
+    tokens.model.empty_responses = 10;
+    tokens.model.cost = model_io::TokenCost{};
+    tokens.model.cost->prompt = 101;
+    BOOST_CHECK(tokens.run(true, input(), 5, {}, 100).status == loop::RunStatus::AutoCompactRequired);
+    BOOST_CHECK_EQUAL(tokens.model.exchanges, 1);
+
+    Fixture experiment;
+    experiment.model.calls = false;
+    experiment.model.empty_responses = 10;
+    experiment.experimental.steps = 1;
+    BOOST_CHECK(experiment.run().status == loop::RunStatus::ExperimentalLimit);
+    BOOST_CHECK_EQUAL(experiment.model.exchanges, 2);
+}
+
+BOOST_AUTO_TEST_CASE(nontext_answer_completes_and_empty_tool_response_still_dispatches) {
+    Fixture nontext;
+    nontext.model.calls = false;
+    nontext.model.answer_type = model_io::ContentType::ExternalRef;
+    nontext.model.answer = "https://example.invalid/image.png";
+    BOOST_CHECK(nontext.run().status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(nontext.model.exchanges, 1);
+
+    Fixture tool;
+    tool.model.empty_responses = 1;
+    auto result = tool.run();
+    BOOST_CHECK(result.status == loop::RunStatus::Completed);
+    BOOST_CHECK_EQUAL(result.completed_exchanges, 2u);
+    BOOST_CHECK_EQUAL(tool.set->tool->count, 1);
+
+    Fixture budget;
+    budget.model.calls = false;
+    budget.model.empty_responses = 10;
+    budget.model.cost = model_io::TokenCost{10, 2, 0};
+    budget.experimental.tokens = 15;
+    BOOST_CHECK(budget.run().status == loop::RunStatus::ExperimentalLimit);
+    BOOST_CHECK_EQUAL(budget.model.exchanges, 2);
 }

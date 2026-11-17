@@ -83,6 +83,7 @@ public:
         response.type = model_io::MessageItemType::ModelResponse;
         response.role = "assistant";
         response.cost = costs.at(next++);
+        response.content.push_back({model_io::ContentType::Text, "done"});
         co_return response;
     }
 };
@@ -134,6 +135,7 @@ public:
         } else {
             response.cost = TokenCost{.prompt = 20, .generated = 3};
         }
+        response.content.push_back({model_io::ContentType::Text, "done"});
         co_return response;
     }
 

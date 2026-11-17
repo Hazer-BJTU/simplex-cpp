@@ -12,6 +12,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
 
+#include <algorithm>
 #include <set>
 #include <limits>
 #include <stdexcept>
@@ -570,7 +571,12 @@ boost::asio::awaitable<RunResult> run(
                     break;
                 }
             }
-            if (!has_calls) {
+            const bool has_answer = std::any_of(
+                response.content.begin(), response.content.end(),
+                [](const auto& content) { return !content.raw.empty(); });
+            // Commit empty responses normally, then apply the same cancellation
+            // and budget boundaries as any exchange that needs another request.
+            if (!has_calls && (!options.empty_advance || has_answer)) {
                 result.status = RunStatus::Completed;
                 break;
             }

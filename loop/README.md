@@ -27,7 +27,7 @@ auto result = co_await loop::run(
 
 All dependencies are injected explicitly. The loop does not load a model, register tools, inject skills, or read a global bus. Referenced dependencies and `state` must remain alive until `run()` returns; the input and options enter the lazy coroutine frame by value. The host owns the model, registry, and bus lifetimes.
 
-With `has_message = false`, the message argument is ignored (you may pass `{}`). The loop continues the last turn without creating user input or rerunning existing tool calls. It returns `Failed` if there is no turn. `max_exchanges`, when present, must be greater than zero; `std::nullopt` explicitly removes the cap; each model response counts as one exchange. If the final allowed response contains tool calls, the loop fully settles that batch before reporting `ExchangeLimit`.
+With `has_message = false`, the message argument is ignored (you may pass `{}`). The loop continues the last turn without creating user input or rerunning existing tool calls. It returns `Failed` if there is no turn. `max_exchanges`, when present, must be greater than zero; `std::nullopt` explicitly removes the cap; each model response counts as one exchange. If the final allowed response still requires continuation, the loop reports `ExchangeLimit` (or `AutoCompactRequired` when enabled); any tool batch fully settles first.
 
 ## State and recovery
 
@@ -35,7 +35,19 @@ With `has_message = false`, the message argument is ignored (you may pass `{}`).
 
 Each committed model response increments `LoopProgress::committed_response_sequence` and writes the sequence to its `AgentLoopStep`. The sequence survives across `run()` calls and never decreases when old steps are pruned; older JSON without a sequence reads it as zero. A hook that maintains cumulative statistics can store both its last accounted sequence and its totals in `external_status`. It can then reconcile an edit rollback and detect gaps if unaccounted responses were pruned.
 
-The normal flow is input commit → model request → response commit → registry batch → result commit → next request. A model response without tool calls completes the run.
+The normal flow is input commit → model request → response commit → registry batch → result commit → next request. A model response without tool calls completes the run when at least one
+content item has a nonempty `raw` value. With `Options::empty_advance` (default
+`true`), responses with no calls and no answer content instead advance to the
+next exchange; reasoning is not answer content. Empty content lists and lists
+of empty raw values are equivalent; whitespace is not trimmed. Set
+`empty_advance = false` to restore completion for every tool-free response.
+
+Empty exchanges are committed and counted normally, without synthetic user
+messages or tool events. Cancellation, exchange caps, automatic compaction and
+experimental budgets still apply. Reasoning replay is provider-dependent: a
+provider that does not replay it may receive an empty assistant message.
+Choose this option explicitly for such providers. Uncapped hosts should provide
+their own stopping policy; empty advancement does not guarantee a final answer.
 
 Return statuses are `Completed`, `Cancelled`, `ExchangeLimit`, `AutoCompactRequired`, and `Failed`. Diagnostics use logging; tool output and error records go into the dataclass. Logs are not a recovery source. On a normal exit, the loop stores `loop.status` and `loop.error`, runs the writable `EditOnRunFinished` hook, and synchronously publishes the read-only `RunFinished` event. Invalid parameters or a stop requested before admission do not publish run events or overwrite previous run information.
 

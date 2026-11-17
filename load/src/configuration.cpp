@@ -346,6 +346,7 @@ Configuration parse_configuration(
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);
+    result.empty_advance = flag(worker, "empty_advance", true);
     result.auto_compact_threshold = number(worker, "auto_compact_threshold", 0, true);
     result.max_auto_compactions = number(worker, "max_auto_compactions", 5);
     if (worker.contains("system_prompt")) {
