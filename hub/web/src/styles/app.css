@@ -318,23 +318,34 @@ body {
     to { transform: rotate(360deg); }
 }
 
-@keyframes activity-dot {
-    0%, 65%, 100% { opacity: 0.4; transform: translateY(0); }
-    30% { opacity: 1; transform: translateY(-3px); }
+@keyframes activity-ring {
+    0% { transform: rotate(0deg); opacity: 0.65; }
+    50% { opacity: 1; }
+    100% { transform: rotate(360deg); opacity: 0.65; }
 }
 
-/* Only the live run draws these dots. The global reduced-motion rule below
-   stops the animation while leaving the text status visible. */
-.activity-dot {
-    width: 5px;
+/* Retain the old cue's footprint; the ring fits inside its existing padding.
+   Only transform/opacity animate. Reduced motion leaves a static ring and the
+   accessible status/tooltip intact, using the global rule below. */
+.activity-ring-slot {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 23px;
     height: 5px;
-    border-radius: 50%;
-    background: var(--interactive);
-    animation: activity-dot 1.2s ease-in-out infinite;
 }
 
-.activity-dot:nth-child(2) { animation-delay: 0.15s; }
-.activity-dot:nth-child(3) { animation-delay: 0.3s; }
+.activity-ring {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--line-strong);
+    border-top-color: var(--interactive);
+    border-right-color: var(--interactive);
+    border-radius: 50%;
+    animation: activity-ring 1.8s linear infinite;
+}
 
 /*
  * A skeleton is a shape, not a spinner: it says where content will be and how

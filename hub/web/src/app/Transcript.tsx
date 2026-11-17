@@ -124,10 +124,8 @@ function RunActivity({ label }: { label: string }) {
                 className="flex w-fit animate-fade items-center gap-3 py-3 text-sm text-ink-muted"
                 tabIndex={0}
             >
-                <span aria-hidden="true" className="flex items-center gap-1">
-                    <span className="activity-dot" />
-                    <span className="activity-dot" />
-                    <span className="activity-dot" />
+                <span aria-hidden="true" className="activity-ring-slot">
+                    <span className="activity-ring" />
                 </span>
                 <span className="sr-only">{label}</span>
             </div>
