@@ -163,26 +163,28 @@ export function StatusBar({ onOpenSessions, sessionsCollapsed, onToggleSessions 
     );
 }
 
-/** One dismissible line. */
+/** One dismissible line on the existing header surface. The icon and text
+ * carry severity without another bordered/tinted frame below the title bar. */
 function Banner({ tone, onDismiss, children }: {
     tone: 'bad' | 'warn';
     onDismiss: () => void;
     children: ReactNode;
 }) {
     const tones = {
-        bad: 'bg-danger-soft text-danger border-danger-line',
-        warn: 'bg-warn-soft text-warn border-warn-line',
+        bad: 'text-danger',
+        warn: 'text-warn',
     } as const;
     return (
-        <div className={`flex animate-enter items-start gap-2 border-t px-4 py-2 text-xs
-            ${tones[tone]}`} role="alert">
+        <div className={`conversation-line flex min-w-0 items-start gap-2 px-3 pb-2 text-xs
+            sm:px-4 ${tones[tone]}`} role="alert" data-testid="panel-notice">
             <Glyph name={tone === 'bad' ? 'error' : 'warning'} className="mt-0.5" />
-            <span className="flex-1">{children}</span>
+            {/* Keep the full diagnostic readable without consuming the viewport. */}
+            <span className="min-w-0 max-h-32 flex-1 overflow-y-auto [overflow-wrap:anywhere]">{children}</span>
             <button
                 type="button"
                 onClick={onDismiss}
                 aria-label="dismiss this message"
-                className="rounded px-1 font-medium underline-offset-2 hover:underline
+                className="shrink-0 rounded px-1 font-medium underline-offset-2 hover:underline
                     focus-visible:outline-2 focus-visible:outline-offset-1"
             >
                 dismiss
@@ -195,7 +197,8 @@ function Banner({ tone, onDismiss, children }: {
 function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
     return (
         <form
-            className="flex items-center gap-2 border-t border-line bg-sunken px-4 py-2"
+            aria-label="Panel authentication"
+            className="flex flex-wrap items-center gap-2 px-3 pb-2 sm:px-4"
             onSubmit={(event) => {
                 event.preventDefault();
                 const field = event.currentTarget.elements.namedItem('token');
@@ -214,7 +217,7 @@ function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
                 name="token"
                 type="password"
                 autoComplete="off"
-                className="w-64 rounded border border-line-strong px-2 py-1 font-mono text-xs
+                className="min-w-0 w-64 max-w-64 flex-1 rounded border border-line-strong px-2 py-1 font-mono text-xs
                     focus:border-line-strong focus:outline-none"
                 placeholder="paste the token from the hub's output"
             />
@@ -225,7 +228,7 @@ function TokenPrompt({ onSubmit }: { onSubmit: (value: string) => void }) {
             >
                 use token
             </button>
-            <span className="text-xs text-ink-muted">
+            <span className="basis-full text-xs text-ink-muted">
                 The hub prints one on startup when it is not bound to loopback only.
             </span>
         </form>

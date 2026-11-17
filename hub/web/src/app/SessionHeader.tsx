@@ -199,8 +199,8 @@ export function SessionHeader() {
     }
 
     return (
-        <div data-panel-frame="surface" className="animate-enter border-b border-line bg-surface px-3 py-2 sm:px-4">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <div data-testid="session-header" data-panel-frame="surface" className="animate-enter bg-surface">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 sm:px-4">
                 <h2 data-testid="session-title" className="font-mono text-sm font-semibold text-ink">
                     {sessionId}
                 </h2>
@@ -211,9 +211,11 @@ export function SessionHeader() {
                     {session.connected ? 'worker attached' : 'worker disconnected'}
                 </Status>
                 {pendingApprovals > 0 && (
-                    <Badge tone="warn" title="tool calls waiting for a decision">
-                        {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
-                    </Badge>
+                    <span title="tool calls waiting for a decision" data-testid="session-approval-count">
+                        <Status tone="warn">
+                            {pendingApprovals} approval{pendingApprovals === 1 ? '' : 's'}
+                        </Status>
+                    </span>
                 )}
 
                 <span className="flex-1" />
@@ -326,17 +328,21 @@ export function SessionHeader() {
                     role="group"
                     aria-label={pending.title}
                     data-testid="session-confirm"
-                    className="mt-2 animate-enter"
+                    className="conversation-line px-[var(--reading-gutter)] pt-1 pb-3"
+                    style={{ paddingRight: 'calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px))' }}
                 >
-                    <div className="reading-width border-t border-line pt-2">
-                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                            <p className="max-w-prose text-xs text-ink">
+                    {/* The header already owns the surface. Leave this prompt
+                        unboxed, and match the conversation/composer gutters,
+                        including any scrollbar that narrows their reading width. */}
+                    <div className="reading-width">
+                        <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+                            <p className="min-w-0 flex-1 basis-80 text-xs leading-relaxed text-ink [overflow-wrap:anywhere]">
                                 <span className="font-medium">{pending.title}</span>{' '}
                                 <span id="session-confirm-body" className="text-ink-muted">
                                     {pending.body}
                                 </span>
                             </p>
-                            <span className="ml-auto flex items-center gap-3">
+                            <span className="ml-auto flex shrink-0 items-center gap-3">
                                 <button
                                     ref={cancelRef}
                                     type="button"

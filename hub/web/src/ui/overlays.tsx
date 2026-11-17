@@ -239,11 +239,16 @@ export function Tooltip({ label, children }: { label: string; children: ReactNod
 
 export const Tabs = TabsPrimitive.Root;
 
-export function TabsList({ children, label }: { children: ReactNode; label: string }) {
+export function TabsList({ children, label, bordered = true }: {
+    children: ReactNode;
+    label: string;
+    /** A conversation toolbar uses spacing; a drawer may still need a divider. */
+    bordered?: boolean;
+}) {
     return (
         <TabsPrimitive.List
             aria-label={label}
-            className="flex shrink-0 gap-0.5 border-b border-line px-1"
+            className={`flex shrink-0 gap-0.5 px-1${bordered ? ' border-b border-line' : ''}`}
         >
             {children}
         </TabsPrimitive.List>

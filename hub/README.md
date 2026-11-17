@@ -657,6 +657,12 @@ viewport clamping and content growth interleaved with upward reader movement.
 Existing responsiveness tests also cover approval-region resizing and the actual
 transcript retention limit.
 
+The Simplex title bar owns the main horizontal divider. Worker information and
+inline lifecycle confirmations use spacing rather than additional frames;
+connection notices share the title bar's surface. Notices and lifecycle prompts
+enter like conversation messages. Destructive actions still require an explicit
+confirmation, initially focus Cancel, and return focus to their trigger on dismissal.
+
 Overlays — menus, dialogs, popovers, tooltips, tabs — are Radix primitives, and
 the reason is specific rather than fashionable: the old panel hand-wrote a focus
 trap and a document-level key handler, and four of its interaction defects came

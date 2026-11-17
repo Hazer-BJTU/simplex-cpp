@@ -25,7 +25,7 @@ function SessionPanels({ markdown }: { markdown: string }) {
     return (
         <Tabs value={activePane} onValueChange={setPane} className="flex min-h-0 flex-1 flex-col">
             {hasPlan && (
-                <TabsList label="conversation panels">
+                <TabsList label="conversation panels" bordered={false}>
                     <TabsTrigger id="conversation-tab" value="conversation">Conversation</TabsTrigger>
                     <TabsTrigger id="plan-tab" value="plan">Plan</TabsTrigger>
                 </TabsList>
