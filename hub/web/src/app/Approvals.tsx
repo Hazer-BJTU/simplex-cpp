@@ -23,9 +23,9 @@
  *   the session that raised it, and the status bar counts what is waiting.
  *
  * The one thing the old modal did that a block cannot is take the whole screen.
- * That is replaced by a quieter cue: a new block draws its top rule in the
- * warning tone once, and the top bar keeps a count for as long as anything is
- * waiting.
+ * That is replaced by a quieter cue: a new block enters like a conversation
+ * line, its label carries the warning tone, and the top bar keeps a count for
+ * as long as anything is waiting.
  */
 import { useStore } from 'zustand';
 import { confirmationKey } from '../lib/confirmationDecisions.ts';
@@ -136,8 +136,9 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
         <article
             data-testid="approval-block"
             data-confirmation={prompt.confirmation_id}
+            data-panel-frame="decision"
             aria-label={`${prompt.call?.name ?? 'Tool call'} needs approval`}
-            className="approval-block"
+            className="decision-card approval-block"
         >
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <span className="inline-flex items-center gap-1 font-medium text-warn">
@@ -192,7 +193,7 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
                     </span>
                 </button>
 
-                <div className="-mr-2 flex w-full shrink-0 items-center justify-end gap-1
+                <div className="flex w-full shrink-0 items-center justify-end gap-1
                     sm:ml-auto sm:w-auto">
                     <span role="status" aria-live="polite" className="sr-only">
                         {waiting ? submission?.phase === 'checking'
@@ -237,7 +238,7 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
                             text-ink [overflow-wrap:anywhere]">
                         {argumentsText}
                     </pre>
-                    <dl className="mt-1 grid grid-cols-[7.5rem_1fr] gap-x-2 text-xs">
+                    <dl className="mt-1 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-2 text-xs">
                         <dt className="text-ink-faint">run</dt>
                         <dd className="break-all font-mono text-ink">{prompt.run_id}</dd>
                         <dt className="text-ink-faint">security</dt>
@@ -298,7 +299,7 @@ export function Approvals() {
         <section
             aria-label="pending approvals"
             data-testid="approvals"
-            className="approvals-shell animate-fade"
+            className="approvals-shell"
         >
             {/* One line for the count rather than a live region around the whole
                 section: the blocks change as decisions are sent, and a screen

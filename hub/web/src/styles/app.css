@@ -614,7 +614,10 @@ select option:checked {
     from { opacity: 0; transform: translateY(var(--line-enter-rise)); }
     to { opacity: 1; transform: none; }
 }
-.conversation-line { animation: line-enter 140ms var(--ease-out) both; }
+/* Stable item keys make this an arrival, not a countdown/submission animation.
+ * Animate each decision rather than its list, so later prompts enter as well. */
+.conversation-line,
+.decision-card { animation: line-enter 140ms var(--ease-out) both; }
 .conversation-space .md,
 .conversation-space [data-testid="outbox-item"] > p:first-child,
 .conversation-space [data-testid="restored-user-message"] > p {
@@ -635,7 +638,6 @@ select option:checked {
     flex-shrink: 0;
     max-height: min(45dvh, max(0px, calc(100dvh - 24rem)));
     overflow-y: auto;
-    background: var(--surface);
     color: var(--ink);
 }
 .questions-shell,
@@ -678,27 +680,20 @@ select option:checked {
     transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
 }
 
-/* Approvals sit where a question sits: in the region above the composer, in the
- * reading measure, with no surface of their own — the region's glass is the
- * surface, and the inset rule is the only thing that marks the block. */
-/* The negative margin lets the arrival cue bleed into the gutter without
- * moving the text off the reading edge. */
-.approval-block {
-    margin-inline: -0.5rem;
+/* Only a decision's bounded card paints a surface. The scroll container and
+ * section gutters stay clear, even when the pane is wider than the reading
+ * measure. Use the frame's configured glass once, without nested veils. */
+.decision-card {
+    min-width: 0;
     padding: 0.5rem;
     border-radius: 0.375rem;
+    overflow-wrap: anywhere;
+    background: var(--surface);
+}
+.approval-block {
     box-shadow: inset 0 1px 0 var(--line);
-    animation: approval-arrive 1.6s var(--ease-out) 1;
 }
 .approval-block + .approval-block { margin-top: 0.25rem; }
-/* A new prompt draws its rule in the warning tone and lets it fade back to the
- * ordinary hairline. Animating the rule rather than a background keeps the
- * text's contrast steady while the cue is running; the status bar keeps the
- * count after it ends. */
-@keyframes approval-arrive {
-    from { box-shadow: inset 0 1px 0 var(--warn); }
-    to { box-shadow: inset 0 1px 0 var(--line); }
-}
 
 /* Static, viewport-wide decoration. The image is page-level: the conversation
  * column, the decisions that belong to it, the composer and the frosted frame
@@ -720,17 +715,14 @@ select option:checked {
 /* The frame is a pane of frosted glass, not a solid control surface. It keeps a
  * veil of its own surface colour — the theme surface, or the sunken tone for the
  * session list — and blurs what lies behind it, so the wallpaper reads through
- * the status bar, the side panes and the decision region above the composer
+ * the status bar, the side panes and the decision cards above the composer
  * without its detail competing with their labels. One number per theme drives
  * both halves: the veil is its opacity, and what the veil leaves over is how
  * much blur the glass needs. At one the rule paints the ordinary surface; at
  * zero only the blur remains.
  *
- * The decision region is not chrome, but the two surfaces it holds are what the
- * operator reads while the run waits, so they take the same veil rather than
- * inventing one. Neither of them owns a background: at 96% an approval was a
- * solid card punched into a transparent column, and a question had no surface at
- * all, leaving its 12px tones straight on the wallpaper. */
+ * Decision cards take the same veil for legible labels without a separate
+ * opacity setting. Their full-width scroll container stays transparent. */
 [data-panel-frame] {
     --panel-frame-base: var(--surface);
     --panel-frame-opacity: var(--panel-frame-light-opacity, 1);
@@ -775,10 +767,6 @@ html:is([data-theme="light"][data-panel-background~="light"],
         [data-theme="dark"][data-panel-background~="dark"]) .composer-footer {
     background: transparent;
 }
-/* Nothing inside the decision region paints a surface of its own. An approval
- * and a question sit on the region's glass, so they take the same veil, the same
- * blur and the same faint-tone promotion the frame already applies, rather than
- * a second, unrelated opacity. */
 html:is([data-theme="light"][data-panel-background~="light"]) {
     --panel-card-tint: var(--panel-tool-card-light-opacity, 60%);
 }
