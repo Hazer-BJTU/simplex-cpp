@@ -39,11 +39,15 @@ Editing the file affects new sessions. Existing session snapshots keep their
 stored prompt when restored; the worker does not hot-reload prompt files.
 
 The worker appends a short, untitled `signature.runtime` Volatile section after
-other configured sections and before any restored memory: “Powered by agent runtime simplex version <version>. Greetings to <provider>.”
-For `deepseek`, `qwen`, `glm`, and `zhipu`, the greeting adds “open source AI
-technology contributor” before the provider factory name. This decorative footer is regenerated
-at startup, including on restore, using the current build version and provider.
-It is host-owned and cannot be declared in a role YAML file.
+other configured sections and before any restored memory: “Powered by agent runtime simplex version <version>.”
+When the provider factory name or the configured model id matches a known AI
+organization, the same sentence continues with “Greetings to <organization>.”,
+using a department name such as “Qwen Team” or “Zhipu GLM Team” rather than the
+vendor alias. The section always ends with a second paragraph, “All the best with
+your work, <model>.”, that names the configured model id; an unrecognized
+provider omits only the greeting. This decorative footer is regenerated at
+startup, including on restore, from the current build version, provider and
+model. It is host-owned and cannot be declared in a role YAML file.
 
 ## Compaction instruction and memory
 

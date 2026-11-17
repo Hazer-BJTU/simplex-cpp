@@ -137,6 +137,7 @@ void scenario(Mode mode, bool with_modality_assist = false, bool with_hub_remote
     config.persistence_backend = sqlite ? "sqlite" : "json";
     config.directory = scratch.root;
     config.provider = "fixture";
+    config.model = {{"model", "fixture-1"}};
     config.document = Json::object();
     config.intrinsic_tools = selection;
     const auto selected = [&](const std::string& name) {
@@ -498,7 +499,10 @@ sections:
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
             BOOST_TEST(signature.text.find("Powered by agent runtime simplex version ") == 0u);
-            BOOST_TEST(signature.text.find("Greetings to fixture.") != std::string::npos);
+            // The fixture provider and model match no known organization.
+            BOOST_TEST(signature.text.find("Greetings to ") == std::string::npos);
+            BOOST_TEST(signature.text.find("\n\nAll the best with your work, fixture-1.")
+                != std::string::npos);
             const auto environment = state.system_prompt.find("environment.runtime");
             BOOST_REQUIRE(environment != state.system_prompt.end());
             BOOST_CHECK(environment->stability == model_io::SectionStability::Volatile);
@@ -581,10 +585,17 @@ sections:
             const auto& signature = *std::prev(saved_snapshot.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
-            const auto greeting = clear
-                ? "Greetings to open source AI technology contributor " + provider + "."
-                : "Greetings to " + provider + ".";
-            BOOST_TEST(signature.text.find(greeting) != std::string::npos);
+            const std::string greeting = provider == "deepseek" ? "Greetings to DeepSeek."
+                : provider == "qwen" ? "Greetings to Qwen Team."
+                : (provider == "glm" || provider == "zhipu") ? "Greetings to Zhipu GLM Team."
+                : std::string();
+            if (greeting.empty()) {
+                BOOST_TEST(signature.text.find("Greetings to ") == std::string::npos);
+            } else {
+                BOOST_TEST(signature.text.find(greeting) != std::string::npos);
+            }
+            BOOST_TEST(signature.text.find("All the best with your work, fixture-1.")
+                != std::string::npos);
             BOOST_TEST(saved_snapshot.system_prompt.find("persona")->text == "Initial instructions.");
             const auto environment = saved_snapshot.system_prompt.find("environment.runtime");
             BOOST_REQUIRE(environment != saved_snapshot.system_prompt.end());
@@ -598,6 +609,24 @@ sections:
             }
             BOOST_CHECK(std::filesystem::current_path() == original_cwd);
         }
+        // A generic plugin is credited through the configured model id, even
+        // when an aggregator prefixes the vendor ("moonshotai/kimi-k2.6").
+        config.provider = "chat-completions";
+        config.model = {{"model", "moonshotai/kimi-k2.6"}};
+        io.restart();
+        core::Application generic(io.get_executor(), config, "test", model);
+        std::stop_source generic_stop;
+        generic_stop.request_stop();
+        auto generic_run = asio::co_spawn(
+            io, generic.run(generic_stop.get_token()), asio::use_future);
+        io.run();
+        generic_run.get();
+        const auto generic_state = snapshot();
+        const auto& generic_signature = *std::prev(generic_state.system_prompt.end());
+        BOOST_TEST(generic_signature.name == "signature.runtime");
+        BOOST_TEST(generic_signature.text.find("Greetings to Kimi Team.") != std::string::npos);
+        BOOST_TEST(generic_signature.text.find(
+            "\n\nAll the best with your work, moonshotai/kimi-k2.6.") != std::string::npos);
     }
     io.restart();
     auto twice = asio::co_spawn(io, app.run(), asio::use_future);
