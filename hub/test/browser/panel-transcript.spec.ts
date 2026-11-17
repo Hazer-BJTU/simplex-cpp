@@ -55,7 +55,7 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
 
     await emit(page, 'run_started', {});
     await expect(activity).toContainText('Waiting for model response');
-    await expect(activity.locator('.activity-dot')).toHaveCount(3);
+    await expect(activity.locator('.activity-ring')).toHaveCount(1);
 
     await emit(page, 'tool_calls', []);
     await expect(activity).toContainText('Running tools');
@@ -66,6 +66,37 @@ test('shows an honest activity cue through a live run', async ({ page }) => {
     await emit(page, 'run_finished', { status: 'completed' });
     await expect(activity).toHaveCount(0);
 });
+
+for (const theme of ['light', 'dark']) {
+    test(`activity ring uses theme colors without changing its layout in ${theme}`, async ({ page }) => {
+        await page.addInitScript(value => localStorage.setItem('simplex.panel.theme', value), theme);
+        await open(page);
+        await page.getByTestId('session-row').click();
+        await emit(page, 'run_started', {});
+        const ring = page.locator('.activity-ring');
+        await expect(ring).toBeVisible();
+        const style = await ring.evaluate(element => {
+            const css = getComputedStyle(element);
+            return {
+                width: css.width, height: css.height, name: css.animationName,
+                iterations: css.animationIterationCount,
+                top: css.borderTopColor, bottom: css.borderBottomColor,
+            };
+        });
+        expect(style.width).toBe('18px');
+        expect(style.height).toBe('18px');
+        expect(style.name).toBe('activity-ring');
+        expect(style.iterations).toBe('infinite');
+        expect(style.top).not.toBe(style.bottom);
+        const slot = await page.locator('.activity-ring-slot').boundingBox();
+        expect(slot?.width).toBe(23);
+        expect(slot?.height).toBe(5);
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await expect(ring).toBeVisible();
+        expect(await ring.evaluate(element => getComputedStyle(element).animationIterationCount)).toBe('1');
+        expect(await page.locator('.activity-ring-slot').boundingBox()).toEqual(slot);
+    });
+}
 
 test('marks an overflowing input rejected and displays retry guidance', async ({ page }) => {
     await open(page);
@@ -840,8 +871,8 @@ test('keeps the activity text and stops its motion when requested', async ({ pag
     await emit(page, 'run_started', {});
     const activity = page.getByTestId('run-activity');
     await expect(activity).toContainText('Waiting for model response');
-    const duration = await activity.locator('.activity-dot').first().evaluate(
-        (dot) => getComputedStyle(dot).animationDuration,
+    const duration = await activity.locator('.activity-ring').evaluate(
+        (ring) => getComputedStyle(ring).animationDuration,
     );
     expect(Number.parseFloat(duration)).toBeLessThan(0.01);
     // The cue itself arrives with the same fade the overlays use: it is a
