@@ -67,6 +67,8 @@ struct Configuration {
     std::chrono::milliseconds hub_remote_call_question_timeout{300000};
     std::size_t event_capacity = 1024;
     std::size_t max_exchanges = 512;
+    /// Continue ordinary exchanges with neither calls nor nonempty answer content.
+    bool empty_advance = true;
     /** Zero disables automatic compaction; otherwise also converts exchange limits. */
     std::uint64_t auto_compact_threshold = 0;
     /** Finite attempt budget per admitted request, independent of archive retention. */

@@ -1199,9 +1199,16 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
               "Front-load the user's goals, preferences and rules, current task status, important "
               "files/processes, findings or how to recover them, and concrete next steps.";
         instruction.content.push_back(std::move(content));
+        // Compact is a single request with no exchange cap. An empty summary
+        // must fail validation below, never enter an uncapped advance loop.
         auto result = co_await loop::run(
             *driver_model, no_tools, compact_events, strand, draft, true,
-            std::move(instruction), {std::nullopt, 0, {}, config.experimental, false, true}, stop);
+            std::move(instruction), {
+                .max_exchanges = std::nullopt,
+                .experimental = config.experimental,
+                .defer_experimental_boundary = true,
+                .empty_advance = false,
+            }, stop);
         loop::retain_experimental(state, draft);
         if (config.experimental.enabled()) run_saved = false;
         add_exchanges(compact_exchanges, result.completed_exchanges);
@@ -1468,7 +1475,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
                                 }
                                 break;
                         }
-                    }, config.experimental, reset_budget}, run_stop.get_token());
+                    }, config.experimental, reset_budget, false, config.empty_advance}, run_stop.get_token());
             reset_budget = false;
             add_exchanges(task_exchanges, result.completed_exchanges);
             if (result.status != loop::RunStatus::AutoCompactRequired) co_return result;

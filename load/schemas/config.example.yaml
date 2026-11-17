@@ -167,6 +167,11 @@ security:
 
 worker:
   max_exchanges: 512
+  # Advance tool-free responses with no answer content (reasoning alone is not
+  # an answer). Each exchange still counts toward budgets. Providers that do
+  # not replay reasoning may receive an empty assistant message; disable if
+  # incompatible. Compact always disables this and rejects empty summaries.
+  empty_advance: true
   # Opt-in: latest prompt + generated tokens strictly above this value triggers
   # compaction after tool settlement; exchange exhaustion also triggers it.
   # Final tool-free answers always complete normally. Zero disables automation.

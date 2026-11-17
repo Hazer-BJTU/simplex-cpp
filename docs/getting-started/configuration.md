@@ -214,6 +214,7 @@ selection and schema overrides.
 | `persistence.directory` | Direct session root, config-relative when not absolute |
 | `persistence.state`, `persistence.memory` | Relative children of the persistence root; default `state` and `memory` |
 | `worker.max_exchanges` | 512 model responses per ordinary invocation |
+| `worker.empty_advance` | `true`: continue responses with neither tool calls nor nonempty answer content |
 
 Prompt-file paths reject rooted paths and `..`; state/memory paths must also be
 nonempty relative paths without parent traversal. These lexical checks do not
@@ -223,6 +224,23 @@ The complete commented template is maintained in
 [load/schemas/config.example.yaml](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/load/schemas/config.example.yaml).
 Unknown host fields are tolerated, but malformed recognized fields are errors;
 plugin configuration has its own stricter validation rules.
+
+## Empty model responses
+
+`worker.empty_advance` defaults to `true`. A response containing only reasoning,
+or no content at all, is committed and followed by another model request.
+Answer content means at least one content item's `raw` is nonempty; whitespace
+is not trimmed. Set this option to `false` to end ordinary runs on any
+tool-free response, including an empty one.
+
+Each exchange still consumes the normal exchange and experimental budgets and
+may trigger automatic compaction. The worker neither checks nor enables
+provider reasoning replay: models that do not replay reasoning may receive an
+empty assistant message in subsequent requests. Disable this option when that
+behavior is incompatible with your provider. Compact always disables empty
+advancement and rejects an empty summary rather than repeating an uncapped
+request.
+
 
 ## Optional automatic compaction
 

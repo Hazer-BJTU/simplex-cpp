@@ -29,7 +29,11 @@ admit input → integrate user message → await model request
 A model response is committed before tool dispatch. Tool results retain call
 order even when compatible calls execute concurrently. `max_exchanges` bounds
 responses committed during this invocation; it is independent of HTTP retries.
-A response without tool calls completes an ordinary run.
+A response without tool calls completes an ordinary run when it contains
+nonempty answer content. By default, `empty_advance` continues empty or
+reasoning-only responses through the same cancellation and budget boundaries.
+Disabling it restores completion for all tool-free responses. Compact disables
+it explicitly so an empty summary fails rather than repeating its request.
 
 ## Events and hooks
 
