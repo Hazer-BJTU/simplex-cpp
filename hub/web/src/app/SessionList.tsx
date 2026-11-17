@@ -13,13 +13,14 @@ import type { ConfigList } from './Configurations.tsx';
  * second place for the rows to drift apart. Above `md` the column can be
  * collapsed from the status bar; the drawer's own state stays separate.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { SessionDescription } from '../../../ui/index.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { Dialog, DialogContent, Tooltip } from '../ui/overlays.tsx';
 import { useClient } from './ClientContext.tsx';
+import { groupSessions } from './sessionGroups.ts';
 
 /** What a session's worker process is doing. */
 function describeProcess(session: SessionDescription): { tone: string; label: string } {
@@ -51,10 +52,11 @@ function describeProcess(session: SessionDescription): { tone: string; label: st
 }
 
 /** One row. */
-function SessionRow({ session, selected, onSelect }: {
+function SessionRow({ session, selected, onSelect, children }: {
     session: SessionDescription;
     selected: boolean;
     onSelect: () => void;
+    children?: ReactNode;
 }) {
     const process = describeProcess(session);
     // An open approval is the one thing that must not go unnoticed: it blocks a
@@ -114,6 +116,7 @@ function SessionRow({ session, selected, onSelect }: {
                     {process.label}{session.kind === 'headless' ? ` · subagent of ${session.subagent?.parent} · ${session.subagent?.lifecycle}` : ''}
                 </span>
             </button>
+            {children}
         </li>
     );
 }
@@ -128,6 +131,18 @@ export function SessionList({ open, onClose, collapsed }: {
     const client = useClient();
     const sessions = usePanel((state) => state.sessions);
     const selected = usePanel((state) => state.selected);
+    const [subagentsOpen, setSubagentsOpen] = useState(false);
+    const [focusedFamily, setFocusedFamily] = useState<string | null>(null);
+    const familyList = useRef<HTMLDivElement>(null);
+    // Only explicit navigation opens/scrolls the section; event updates never do.
+    useEffect(() => {
+        if (!subagentsOpen || !focusedFamily) return;
+        const group = [...(familyList.current?.querySelectorAll<HTMLElement>('[data-family]') ?? [])]
+            .find(element => element.dataset.family === focusedFamily);
+        group?.scrollIntoView({ block: 'nearest' });
+        group?.focus({ preventScroll: true });
+        setFocusedFamily(null);
+    }, [subagentsOpen, focusedFamily]);
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState('');
     const [configuring, setConfiguring] = useState(false);
@@ -147,10 +162,11 @@ export function SessionList({ open, onClose, collapsed }: {
         return () => { disposed = true; };
     }, [creating, client]);
 
-    const ordered = [...sessions.values()].sort((a, b) => (
-        (b.created_at ?? '').localeCompare(a.created_at ?? '')
-        || a.session_id.localeCompare(b.session_id)
-    ));
+    const { main, groups } = groupSessions(sessions, selected);
+    const familiesByRoot = new Map(groups.map(group => [group.root, group]));
+    const subagents = groups.flatMap(group => group.sessions);
+    const pendingSubagents = groups.reduce((sum, group) => sum + group.pending, 0);
+    const runningSubagents = subagents.filter(session => session.process?.state === 'running').length;
 
     async function create(event: FormEvent<HTMLFormElement>): Promise<void> {
         event.preventDefault();
@@ -234,34 +250,90 @@ export function SessionList({ open, onClose, collapsed }: {
                     </IconButton>
                 </div>
 
-                {ordered.length === 0 ? (
-                    <div className="px-4 py-6 text-center" data-testid="sessions-empty">
-                        <Glyph name="empty-list" size="lg" className="mx-auto text-ink-faint" />
-                        <p className="mt-2 text-sm font-medium text-ink">No sessions yet</p>
-                        <p className="mt-1 text-xs text-ink-muted">
-                            A session is one worker and its transcript. Create one, then start its
-                            worker to talk to it.
-                        </p>
-                        <Button
-                            variant="primary"
-                            size="md"
-                            className="mt-3"
-                            onClick={() => setCreating(true)}
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                    {main.length === 0 ? (
+                        <div className="px-4 py-6 text-center" data-testid="sessions-empty">
+                            <Glyph name="empty-list" size="lg" className="mx-auto text-ink-faint" />
+                            <p className="mt-2 text-sm font-medium text-ink">No main sessions yet</p>
+                            <p className="mt-1 text-xs text-ink-muted">
+                                A session is one worker and its transcript. Create one, then start its
+                                worker to talk to it.
+                            </p>
+                            <Button
+                                variant="primary"
+                                size="md"
+                                className="mt-3"
+                                onClick={() => setCreating(true)}
+                            >
+                                Create a session
+                            </Button>
+                        </div>
+                    ) : (
+                        <ul className="space-y-1 px-2 pb-2" data-testid="main-sessions">
+                            {main.map((session) => {
+                                const family = familiesByRoot.get(session.session_id);
+                                return (
+                                    <SessionRow
+                                        key={session.session_id}
+                                        session={session}
+                                        selected={session.session_id === selected}
+                                        onSelect={() => { onClose(); client.select(session.session_id); }}
+                                    >
+                                        {family && (
+                                            <button
+                                                type="button"
+                                                className="ml-2.5 rounded px-1 py-1 text-xs text-ink-muted hover:bg-subtle"
+                                                aria-label={`Show subagents of ${session.session_id}`}
+                                                onClick={() => {
+                                                    setSubagentsOpen(true);
+                                                    setFocusedFamily(session.session_id);
+                                                }}
+                                            >
+                                                {family.sessions.length} subagents
+                                                {family.pending > 0
+                                                    && <span className="ml-1 text-warn">· {family.pending} awaiting approval</span>}
+                                            </button>
+                                        )}
+                                    </SessionRow>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </div>
+                {subagents.length > 0 && (
+                    <section className="flex min-h-0 max-h-[45%] shrink-0 flex-col border-t border-line" aria-label="Subagents">
+                        <button
+                            type="button"
+                            aria-expanded={subagentsOpen}
+                            aria-controls="subagent-families"
+                            className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-3 text-left text-xs text-ink-muted hover:bg-subtle"
+                            onClick={() => setSubagentsOpen(value => !value)}
                         >
-                            Create a session
-                        </Button>
-                    </div>
-                ) : (
-                    <ul className="flex-1 space-y-1 overflow-y-auto px-2 pb-2">
-                        {ordered.map((session) => (
-                            <SessionRow
-                                key={session.session_id}
-                                session={session}
-                                selected={session.session_id === selected}
-                                onSelect={() => { onClose(); client.select(session.session_id); }}
-                            />
-                        ))}
-                    </ul>
+                            <Glyph name={subagentsOpen ? 'chevron-down' : 'chevron-right'} size="sm" />
+                            <span className="font-semibold">Subagents · {subagents.length}</span>
+                            <span>{runningSubagents} running</span>
+                            {pendingSubagents > 0 && <span className="text-warn">{pendingSubagents} awaiting approval</span>}
+                        </button>
+                        <div id="subagent-families" ref={familyList} hidden={!subagentsOpen}
+                            className="min-h-0 overflow-y-auto px-2 pb-2">
+                            {groups.map(group => (
+                                <div key={group.root} data-family={group.root} tabIndex={-1}
+                                    className="mb-2 rounded focus:outline-none focus:ring-1 focus:ring-line-strong">
+                                    <h3 className="break-all px-2.5 py-2 text-xs font-semibold text-ink-muted">
+                                        {group.root}
+                                        {!sessions.has(group.root) && ' · parent unavailable'}
+                                    </h3>
+                                    <ul className="space-y-1">
+                                        {group.sessions.map(session => (
+                                            <SessionRow key={session.session_id} session={session}
+                                                selected={session.session_id === selected}
+                                                onSelect={() => { onClose(); client.select(session.session_id); }} />
+                                        ))}
+                                    </ul>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
                 )}
             </aside>
             <Configurations open={configuring} onClose={() => setConfiguring(false)} />
