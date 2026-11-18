@@ -3,14 +3,15 @@
  *
  * A question is answered *inside* the running loop, and the model is waiting
  * for it: the card therefore belongs to the conversation, not to a dialog.
- * It never steals focus, never covers the transcript, and disappears when the
- * hub settles it. Options are shortcuts; the text field is always available,
+ * It floats over the reading pane and never steals focus. It closes when the
+ * Hub settles it. Options are shortcuts; the text field is always available,
  * because the model's choices are suggestions rather than a closed set.
  */
 import { useEffect, useState } from 'react';
 import type { OperatorQuestion } from '../../../ui/index.ts';
 import { usePanel } from '../state/usePanel.ts';
 import { useClient } from './ClientContext.tsx';
+import { DecisionMotion, useDecisionEntries } from './DecisionRegion.tsx';
 
 const EMPTY: readonly OperatorQuestion[] = [];
 
@@ -69,7 +70,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
             aria-label="Operator question"
             data-question={question.question_id}
             data-panel-frame="decision"
-            className="decision-card border-t border-line first:border-t-0"
+            className="decision-card"
         >
             <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                 <span aria-hidden className="size-1.5 rounded-full bg-accent" />
@@ -148,17 +149,23 @@ function QuestionCard({ session, question }: { session: string; question: Operat
     );
 }
 
-/** Inline strip above the composer; renders nothing when no question is pending. */
+/** Reset drafts and exit animations when the operator switches sessions. */
 export function OperatorQuestions() {
     const selected = usePanel(state => state.selected);
-    const questions = usePanel(state => (state.selected
-        ? state.questions.get(state.selected) ?? EMPTY : EMPTY));
-    if (!selected || questions.length === 0) return null;
+    return selected ? <SessionQuestions key={selected} session={selected} /> : null;
+}
+
+function SessionQuestions({ session }: { session: string }) {
+    const questions = usePanel(state => state.questions.get(session) ?? EMPTY);
+    const { entries, finishExit } = useDecisionEntries(questions, question => question.question_id);
+    if (entries.length === 0) return null;
     return (
-        <section aria-label="Pending operator questions" className="questions-shell">
-            <div className="reading-width flex flex-col gap-3">
-                {questions.map(question => (
-                    <QuestionCard key={question.question_id} session={selected} question={question} />
+        <section aria-label="Pending operator questions" aria-hidden={questions.length === 0} className="questions-shell">
+            <div className="reading-width flex flex-col gap-1">
+                {entries.map(({ key, item, leaving }) => (
+                    <DecisionMotion key={key} entryKey={key} leaving={leaving} finishExit={finishExit}>
+                        <QuestionCard session={session} question={item} />
+                    </DecisionMotion>
                 ))}
             </div>
         </section>

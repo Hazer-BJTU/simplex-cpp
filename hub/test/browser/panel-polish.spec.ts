@@ -335,7 +335,7 @@ test.describe('motion and placement', () => {
         await expect(page.getByRole('button', { name: 'More actions' })).toBeFocused();
     });
 
-    test('a new approval says so in the top bar and enters like a message', async ({ page }) => {
+    test('a new approval has a top-bar count and its own entrance', async ({ page }) => {
         await open(page);
         await page.locator('[data-testid="session-row"][data-session="demo"]').click();
         await page.request.post(`${STUB}/__stub/confirm`, {
@@ -347,15 +347,14 @@ test.describe('motion and placement', () => {
         });
         const block = page.getByTestId('approval-block');
         await expect(block).toBeVisible();
-        // The old modal was impossible to miss because it covered the page. The
-        // replacement is a count in the one bar that is always on screen, plus
-        // the same short entrance as a conversation line.
+        // The count stays visible in the top bar, even when the reading pane
+        // is busy. The floating card has its own short entrance.
         await expect(page.getByText('1 approval waiting', { exact: true })).toBeVisible();
-        const cue = await block.evaluate(node => {
+        const cue = await block.locator('..').evaluate(node => {
             const style = getComputedStyle(node);
             return { name: style.animationName, count: style.animationIterationCount };
         });
-        expect(cue.name).toBe('line-enter');
+        expect(cue.name).toBe('decision-enter');
         expect(cue.count).toBe('1');
 
         await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'c-polish' } });

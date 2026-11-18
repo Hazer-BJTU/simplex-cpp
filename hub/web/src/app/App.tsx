@@ -27,7 +27,6 @@ import { ConversationPanels } from './ConversationPanels.tsx';
 import { Approvals } from './Approvals.tsx';
 import { CommandPalette } from './CommandPalette.tsx';
 import { Composer } from './Composer.tsx';
-import { OperatorQuestions } from './OperatorQuestions.tsx';
 import { Inspector } from './Inspector.tsx';
 import { SessionHeader } from './SessionHeader.tsx';
 import { SessionList } from './SessionList.tsx';
@@ -77,23 +76,14 @@ export function App() {
                             className="panel-page-surface flex min-w-0 flex-1 flex-col bg-surface focus:outline-none"
                         >
                             {!headless && <SessionHeader />}
-                            {/* Approvals and questions are both decisions the
-                                run is waiting on. They share one region above
-                                the composer so their heights are budgeted
-                                together; a headless session has no composer and
-                                gets the same region under its own panel. */}
                             {headless && session ? (
                                 <>
                                     <HeadlessPanel session={session} />
-                                    <DecisionRegion><Approvals /></DecisionRegion>
+                                    <DecisionRegion inline><Approvals /></DecisionRegion>
                                 </>
                             ) : (
                                 <>
                                     <ConversationPanels />
-                                    <DecisionRegion>
-                                        <Approvals />
-                                        <OperatorQuestions />
-                                    </DecisionRegion>
                                     <Composer />
                                 </>
                             )}

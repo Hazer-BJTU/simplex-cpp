@@ -550,12 +550,12 @@ updates. Changed previews, new prompts and settlements update that projection
 before subscribers are notified, without a frame or timer delay. These caches
 do not change the display budgets or approval authority.
 
-Approvals and operator questions share one scrolling height budget above the
-composer. Their backgrounds and blur stay inside the conversation's reading
-width; the outer region and its gutters remain transparent. Each new decision
-uses the same short fade and rise as a message. Countdown, disclosure and
-submission updates keep the existing card mounted without replaying its entrance.
-Reduced-motion preferences apply to both messages and decisions.
+Approvals and operator questions float over the top of the reading pane in one
+bounded scrolling region. Opening, expanding, and settling a card leaves the
+history viewport and composer in place. Each card slides in and fades out
+independently. A settled card becomes inert before its exit starts. Countdown,
+disclosure, and submission updates retain the card's identity. The gutters stay
+transparent, and the floating region respects reduced-motion preferences.
 
 Transcript scrolling keeps reader intent separate from automatic movement. It
 remembers the browser's accepted scroll position instead of clearing write
@@ -661,7 +661,7 @@ input positions over 150 rounds and over 256 nested tool cards. Regression
 checks bound lookup work without asserting elapsed time, and cover nested
 retention/disclosure, keyboard/scrollbar input, hidden-pane restoration,
 viewport clamping and content growth interleaved with upward reader movement.
-Existing responsiveness tests also cover approval-region resizing and the actual
+Existing responsiveness tests also cover decision overlays and the actual
 transcript retention limit.
 
 The Simplex title bar owns the main horizontal divider. Worker information and

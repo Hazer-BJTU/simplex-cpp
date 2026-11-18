@@ -1,11 +1,9 @@
 /**
  * @file pending tool approvals.
  *
- * An approval is a decision the run is waiting on, not an interruption. The
- * call it belongs to is already in the transcript above; the operator is
- * usually typing in the composer below. So the block lives where an `ask_user`
- * question lives — above the composer, inside the reading measure — and never
- * covers the conversation, dims the page, or takes focus.
+ * Pending approvals float with `ask_user` questions inside the reading measure.
+ * They leave the composer and uncovered conversation available and take no
+ * focus on arrival.
  *
  * The properties this is built to keep, each a decision rather than a detail:
  *
@@ -22,10 +20,8 @@
  * - **An approval from another session is still visible** (A1). The block names
  *   the session that raised it, and the status bar counts what is waiting.
  *
- * The one thing the old modal did that a block cannot is take the whole screen.
- * That is replaced by a quieter cue: a new block enters like a conversation
- * line, its label carries the warning tone, and the top bar keeps a count for
- * as long as anything is waiting.
+ * A new block has a short entrance. Its label carries the warning tone, and
+ * the top bar keeps a count for as long as anything is waiting.
  */
 import { useStore } from 'zustand';
 import { confirmationKey } from '../lib/confirmationDecisions.ts';
@@ -38,6 +34,7 @@ import { Badge } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
 import { useClient } from './ClientContext.tsx';
 import { compactJson } from './content.ts';
+import { DecisionMotion, useDecisionEntries } from './DecisionRegion.tsx';
 
 /** The most recognisable form of a proposed call. */
 function describeCall(prompt: ConfirmationPrompt): string {
@@ -138,7 +135,7 @@ const Approval = memo(function Approval({ prompt }: { prompt: ConfirmationPrompt
             data-confirmation={prompt.confirmation_id}
             data-panel-frame="decision"
             aria-label={`${prompt.call?.name ?? 'Tool call'} needs approval`}
-            className="decision-card approval-block"
+            className="decision-card"
         >
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <span className="inline-flex items-center gap-1 font-medium text-warn">
@@ -287,17 +284,19 @@ function DecisionLabel({ waiting, children }: { waiting: boolean; children: stri
     </span>;
 }
 
-/** Inline strip above the composer; renders nothing when nothing is open. */
+/** Global approvals remain available while reading any session or Plan. */
 export function Approvals() {
     profileCount('approvals');
     // Read the pre-indexed projection: unrelated events do no prompt scan/sort.
     // Actual prompt changes still reach the panel synchronously.
     const prompts = useVisiblePanel(true, state => viewProjection(state.views).prompts);
-    if (prompts.length === 0) return null;
+    const { entries, finishExit } = useDecisionEntries(prompts, confirmationKey);
+    if (entries.length === 0) return null;
 
     return (
         <section
             aria-label="pending approvals"
+            aria-hidden={prompts.length === 0}
             data-testid="approvals"
             className="approvals-shell"
         >
@@ -308,9 +307,11 @@ export function Approvals() {
             <p role="status" aria-atomic="true" className="sr-only">
                 {prompts.length} approval{prompts.length === 1 ? '' : 's'} waiting for a decision
             </p>
-            <div className="reading-width">
-                {prompts.map((prompt) => (
-                    <Approval key={confirmationKey(prompt)} prompt={prompt} />
+            <div className="reading-width flex flex-col gap-1">
+                {entries.map(({ key, item, leaving }) => (
+                    <DecisionMotion key={key} entryKey={key} leaving={leaving} finishExit={finishExit}>
+                        <Approval prompt={item} />
+                    </DecisionMotion>
                 ))}
             </div>
         </section>

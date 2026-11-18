@@ -614,41 +614,51 @@ select option:checked {
     from { opacity: 0; transform: translateY(var(--line-enter-rise)); }
     to { opacity: 1; transform: none; }
 }
-/* Stable item keys make this an arrival, not a countdown/submission animation.
- * Animate each decision rather than its list, so later prompts enter as well. */
-.conversation-line,
-.decision-card { animation: line-enter 140ms var(--ease-out) both; }
+.conversation-line { animation: line-enter 140ms var(--ease-out) both; }
 .conversation-space .md,
 .conversation-space [data-testid="outbox-item"] > p:first-child,
 .conversation-space [data-testid="restored-user-message"] > p {
     font-size: var(--conversation-font-size);
     line-height: var(--conversation-line-height);
 }
-/* The decisions above the composer share one height budget. Independent caps
- * let approvals and questions each take 45dvh, which on a short viewport pushes
- * the composer past the bottom of the window. The region is what scrolls, and
- * its own scrollbar is subtracted so both sections keep the conversation edge.
- * The second term reserves the status bar, the session header and the tallest
- * composer before the decisions take their share; the zero floor is deliberate,
- * because on a window that small the composer is the only thing worth keeping
- * on screen. */
+/* Float below the tabs at the top of the reading pane. The layer has no hit
+ * target of its own. The bounded list scrolls independently, with its scrollbar
+ * in the gutter so growing the list does not narrow the cards. */
+.decisions-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    overflow: clip;
+    pointer-events: none;
+    padding-inline: var(--reading-gutter);
+    padding-right: calc(var(--reading-gutter) + var(--conversation-scrollbar, 0px));
+}
 .decisions-shell {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    max-height: min(45dvh, max(0px, calc(100dvh - 24rem)));
+    width: calc(100% + var(--decision-scrollbar, 0px));
+    max-height: min(45dvh, 70%);
     overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior-y: contain;
     color: var(--ink);
 }
+.decisions-inline { position: static; flex-shrink: 0; }
+.decisions-inline .reading-width { height: auto; }
+.decisions-inline .decisions-shell { max-height: 45dvh; }
+.decisions-shell:has(.decision-motion[data-state="open"]) { pointer-events: auto; }
 .questions-shell,
-.approvals-shell {
-    flex-shrink: 0;
-    padding-inline: var(--reading-gutter);
-    padding-right: max(0px, calc(var(--reading-gutter)
-        + var(--conversation-scrollbar, 0px) - var(--decision-scrollbar, 0px)));
+.approvals-shell { padding-block: 0.375rem; }
+.approvals-shell + .questions-shell { padding-top: 0; }
+
+@keyframes decision-enter {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: none; }
 }
-.questions-shell { padding-block: 0.25rem 0; }
-.approvals-shell { padding-block: 0.5rem 0.25rem; }
+@keyframes decision-exit {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: translateY(-6px); }
+}
+.decision-motion[data-state="open"] { animation: decision-enter 160ms var(--ease-out); }
+.decision-motion[data-state="leaving"] { animation: decision-exit 120ms ease-in forwards; }
 .composer-shell {
     flex-shrink: 0;
     padding: 0.5rem var(--reading-gutter) max(0.75rem, env(safe-area-inset-bottom));
@@ -689,11 +699,8 @@ select option:checked {
     border-radius: 0.375rem;
     overflow-wrap: anywhere;
     background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
 }
-.approval-block {
-    box-shadow: inset 0 1px 0 var(--line);
-}
-.approval-block + .approval-block { margin-top: 0.25rem; }
 
 /* Static, viewport-wide decoration. The image is page-level: the conversation
  * column, the decisions that belong to it, the composer and the frosted frame
@@ -715,7 +722,7 @@ select option:checked {
 /* The frame is a pane of frosted glass, not a solid control surface. It keeps a
  * veil of its own surface colour — the theme surface, or the sunken tone for the
  * session list — and blurs what lies behind it, so the wallpaper reads through
- * the status bar, the side panes and the decision cards above the composer
+ * the status bar, the side panes and the floating decision cards
  * without its detail competing with their labels. One number per theme drives
  * both halves: the veil is its opacity, and what the veil leaves over is how
  * much blur the glass needs. At one the rule paints the ordinary surface; at

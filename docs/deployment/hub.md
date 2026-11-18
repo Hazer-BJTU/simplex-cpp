@@ -106,7 +106,7 @@ Generated configurations do not add disabled background settings.
   `{ "light", "dark" }` pair. Defaults are 0.3 and 0.45. It sets how much of its
   own surface the frame keeps — the status bar, the session list, the session
   header and the inspector — so the image reads through the chrome instead of
-  stopping at the conversation. Approval and question cards above the composer
+  stopping at the conversation. Floating approval and question cards
   use the same setting within the conversation's reading width; their outer
   scrolling region and gutters stay transparent. One restores the solid frame;
   zero leaves only the blur, which is derived from the
@@ -128,8 +128,8 @@ Restart Hub after changing the settings or image. Hub retains one immutable
 image snapshot until restart. The authenticated panel fetches it through a fixed
 endpoint; no local pathname or credential appears in image URLs or metadata.
 The image covers the viewport without scrolling, tiling or animation. The
-conversation column, the composer, the frosted frame and the decisions above the
-composer let it through; dialogs and menus keep solid surfaces for hierarchy and
+conversation column, the composer, the frosted frame and the floating decision
+cards let it through; dialogs and menus keep solid surfaces for hierarchy and
 focus. Message bubbles keep a 60 percent tint; tool cards use
 `toolCardOpacity` (0.6 by default), and markdown headers, inline code and
 code-block headers share that tint. Markdown code bodies are transparent.
@@ -189,9 +189,11 @@ may still finish before an interruptible boundary; this does not stop the worker
 process. The session header's **Stop** controls that process separately. A lost
 connection does not establish that execution stopped.
 
-Approval dialogs identify their source session and, for subagents, their parent.
-Long arguments scroll while decision buttons stay reachable. A locally expired
-approval disables those buttons while awaiting the Hub's authoritative outcome.
+Approvals and operator questions float over the top of the reading pane, leaving
+the history scroll position and composer in place. Approval cards identify their
+source session and, for subagents, their parent. Long arguments scroll while
+decision buttons stay reachable. A locally expired approval disables those
+buttons while awaiting the Hub's authoritative outcome.
 Light/dark themes, keyboard focus and reduced-motion settings apply throughout.
 
 ## Advertised endpoints and reverse proxies

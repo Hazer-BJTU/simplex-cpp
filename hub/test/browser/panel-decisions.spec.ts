@@ -1,4 +1,4 @@
-/** Reading-width surfaces and message-like arrivals for approvals and questions. */
+/** Reading-width overlays and independent motion for approvals and questions. */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { OperatorQuestion } from '../../ui/index.ts';
 import { STUB, emit, modelResponse, open } from './harness.ts';
@@ -32,7 +32,7 @@ async function approval(page: Page, id: string, long = false): Promise<void> {
 
 /** Finish CSS arrivals before comparing layout; no arbitrary timeout is needed. */
 async function finishArrival(card: Locator): Promise<void> {
-    await card.evaluate(async node => {
+    await card.locator('..').evaluate(async node => {
         await Promise.all(node.getAnimations().map(animation => animation.finished));
     });
 }
@@ -92,8 +92,14 @@ for (const theme of ['light', 'dark'] as const) {
             if (viewport.width === 1440 && !viewport.inspector) {
                 // Capture ordinary-sized decisions together after the stress checks.
                 await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'bounds' } });
+                await expect(page.locator('[data-confirmation="bounds"]')).toHaveCount(0);
+                await emit(page, 'model_response', modelResponse(
+                    'This response stays in place while the operator reviews a request.\n\n'.repeat(12),
+                ));
                 await approval(page, 'review');
                 await questions(page, [question('review-question')]);
+                await expect(page.locator('[data-question="bounds-question"]')).toHaveCount(0);
+                await expect(page.locator('[data-question="review-question"]')).toBeVisible();
                 for (const card of await cards.all()) await finishArrival(card);
                 const path = testInfo.outputPath('bounded-decisions.png');
                 await page.screenshot({ path, animations: 'disabled' });
@@ -106,25 +112,20 @@ for (const theme of ['light', 'dark'] as const) {
 }
 
 /** Record actual entrance events, including short animations that finish before an assertion. */
-type MotionWindow = { decisionEntries: string[] };
+type MotionWindow = { decisionAnimations: string[] };
 
-test('each new decision enters once like a message; updates and submissions keep its identity', async ({ page }) => {
+test('each new decision enters once; updates and submissions keep its identity', async ({ page }) => {
     await page.addInitScript(() => {
-        (window as unknown as MotionWindow).decisionEntries = [];
+        (window as unknown as MotionWindow).decisionAnimations = [];
         document.addEventListener('animationstart', event => {
             const node = event.target;
-            if (node instanceof HTMLElement && node.matches('[data-panel-frame="decision"]')) {
-                (window as unknown as MotionWindow).decisionEntries.push(`${node.dataset.confirmation ?? node.dataset.question}:${event.animationName}`);
+            if (node instanceof HTMLElement && node.matches('.decision-motion')) {
+                const card = node.querySelector<HTMLElement>('[data-panel-frame="decision"]')!;
+                (window as unknown as MotionWindow).decisionAnimations.push(`${card.dataset.confirmation ?? card.dataset.question}:${event.animationName}`);
             }
         });
     });
     await open(page, '?session=demo');
-    await emit(page, 'model_response', modelResponse('An ordinary message'));
-    const line = page.getByTestId('conversation-line').last();
-    const messageMotion = await line.evaluate(node => {
-        const css = getComputedStyle(node);
-        return { name: css.animationName, duration: css.animationDuration, easing: css.animationTimingFunction };
-    });
 
     await approval(page, 'first');
     const first = page.locator('[data-confirmation="first"]');
@@ -142,10 +143,7 @@ test('each new decision enters once like a message; updates and submissions keep
     await expect(cards).toHaveCount(4);
     for (const card of await cards.all()) {
         await finishArrival(card);
-        expect(await card.evaluate(node => {
-            const css = getComputedStyle(node);
-            return { name: css.animationName, duration: css.animationDuration, easing: css.animationTimingFunction };
-        })).toEqual(messageMotion);
+        await expect(card.locator('..')).toHaveCSS('animation-name', 'decision-enter');
     }
     // Neither section nor the region adds a second animation around the cards.
     for (const selector of ['.approvals-shell', '.questions-shell', '.decisions-shell']) {
@@ -159,12 +157,17 @@ test('each new decision enters once like a message; updates and submissions keep
     await emit(page, 'model_response', modelResponse('Unrelated output'));
     await expect(page.locator('[data-question="question-first"]')).toContainText('The same pending question, refreshed');
     await expect(page.getByTestId('transcript')).toContainText('Unrelated output');
-    await expect.poll(() => page.evaluate(() => (window as unknown as MotionWindow).decisionEntries)).toEqual([
-        'first:line-enter', 'second:line-enter', 'question-first:line-enter', 'question-second:line-enter',
+    await expect.poll(() => page.evaluate(() => (window as unknown as MotionWindow).decisionAnimations)).toEqual([
+        'first:decision-enter', 'second:decision-enter', 'question-first:decision-enter', 'question-second:decision-enter',
     ]);
     // A stable keyed component also preserves its open disclosure across updates.
     await expect(first.getByTestId('approval-disclosure')).toHaveAttribute('aria-expanded', 'true');
     await expect(first.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
+    await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'first' } });
+    await questions(page, [question('question-second')]);
+    await expect(cards).toHaveCount(2);
+    const animations = await page.evaluate(() => (window as unknown as MotionWindow).decisionAnimations);
+    expect(animations.slice(4).sort()).toEqual(['first:decision-exit', 'question-first:decision-exit']);
 });
 
 test('reduced motion leaves decisions visible and usable, and settlement leaves no empty strip', async ({ page }) => {
@@ -179,9 +182,10 @@ test('reduced motion leaves decisions visible and usable, and settlement leaves 
     await expect(input).toBeFocused();
     for (const card of await cards.all()) {
         await finishArrival(card);
-        expect(await card.evaluate(node => Number.parseFloat(getComputedStyle(node).animationDuration))).toBeLessThan(0.05);
-        await expect(card).toHaveCSS('opacity', '1');
-        expect(await card.evaluate(node => {
+        const motion = card.locator('..');
+        expect(await motion.evaluate(node => Number.parseFloat(getComputedStyle(node).animationDuration))).toBeLessThan(0.05);
+        await expect(motion).toHaveCSS('opacity', '1');
+        expect(await motion.evaluate(node => {
             const transform = getComputedStyle(node).transform;
             return transform === 'none' || new DOMMatrixReadOnly(transform).isIdentity;
         })).toBe(true);
@@ -193,3 +197,66 @@ test('reduced motion leaves decisions visible and usable, and settlement leaves 
     await expect(input).toHaveValue('Keep my draft and focus');
     await expect(input).toBeFocused();
 });
+
+for (const readingOlder of [false, true]) {
+    test(`decisions leave the transcript geometry fixed while ${readingOlder ? 'reading older messages' : 'following the latest reply'}`, async ({ page }) => {
+        await open(page, '?session=demo');
+        await emit(page, 'input_admitted', { operation: 'message' });
+        await emit(page, 'model_response', modelResponse('A line to read.\n\n'.repeat(120)));
+        const scroller = page.getByTestId('transcript');
+        await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+        if (readingOlder) {
+            await scroller.hover();
+            await page.mouse.wheel(0, -600);
+            await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
+        }
+
+        const geometry = () => page.evaluate(() => {
+            const transcript = document.querySelector<HTMLElement>('[data-testid="transcript"]')!;
+            return {
+                transcript: transcript.getBoundingClientRect().toJSON(),
+                scrollTop: transcript.scrollTop,
+                scrollHeight: transcript.scrollHeight,
+                composer: document.querySelector('[data-testid="composer-surface"]')!.getBoundingClientRect().toJSON(),
+            };
+        });
+        const before = await geometry();
+        await approval(page, 'overlay', true);
+        await questions(page, [question('overlay-question')]);
+        const first = page.locator('[data-confirmation="overlay"]');
+        const second = page.locator('[data-question="overlay-question"]');
+        await expect(second).toBeVisible();
+        await finishArrival(first);
+        await finishArrival(second);
+        expect(await geometry()).toEqual(before);
+        const region = page.locator('.decisions-shell');
+        const box = (await region.boundingBox())!;
+        expect(box.y).toBe(before.transcript.top);
+        expect(box.y + box.height).toBeLessThan(before.transcript.bottom);
+        await first.getByTestId('approval-disclosure').click();
+        await expect(first.getByTestId('approval-arguments')).toBeVisible();
+        expect(await geometry()).toEqual(before);
+
+        // Hold the CSS exit so inert controls and empty-layer hit testing can
+        // be observed reliably before the animation finishes.
+        const paused = await page.addStyleTag({ content: `
+            .decision-motion[data-state="leaving"] { animation-play-state: paused; }
+        ` });
+        await page.request.post(`${STUB}/__stub/settle`, { data: { confirmation_id: 'overlay' } });
+        await questions(page, []);
+        for (const card of [first, second]) {
+            await expect(card.locator('..')).toHaveAttribute('inert', '');
+            await expect(card.locator('..')).toHaveCSS('animation-name', 'decision-exit');
+        }
+        await expect(region).toHaveCSS('pointer-events', 'none');
+        expect(await geometry()).toEqual(before);
+        await paused.evaluate(node => node.parentNode?.removeChild(node));
+        await expect(first).toHaveCount(0);
+        await expect(second).toHaveCount(0);
+        expect(await geometry()).toEqual(before);
+        if (readingOlder) {
+            await page.getByRole('button', { name: 'jump to latest' }).click();
+            await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+        }
+    });
+}
