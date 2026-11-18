@@ -61,6 +61,43 @@ def failure_code(exc):
     return "runtime_error"
 
 
+def normalize_legacy_interrupted(response: dict) -> dict:
+    """Complete the envelope written by recover() before v1.3.2.
+
+    Only that exact old interrupted shape is repaired. Any other receipt that
+    omits or misstates fields remains untouched so validation can still reject it.
+    """
+    legacy = {
+        "protocol",
+        "execution_id",
+        "epoch",
+        "session_id",
+        "revision",
+        "status",
+        "committed",
+        "error",
+    }
+    if (
+        set(response) != legacy
+        or type(response["protocol"]) is not int
+        or response["protocol"] != 1
+        or not all(
+            isinstance(response[key], str) for key in ("execution_id", "epoch", "session_id")
+        )
+        or type(response["revision"]) is not int
+        or response["revision"] < 0
+        or response["status"] != "failed"
+        or response["committed"] is not False
+        or not isinstance(response["error"], dict)
+        or response["error"].get("code") != "interrupted"
+        or not isinstance(response["error"].get("message"), str)
+    ):
+        return response
+    completed = dict(response)
+    completed.update(result=None, output="", output_omitted_bytes=0)
+    return completed
+
+
 class Session:
     """Manage one trusted POSIX directory; all operations hold its exclusive lock."""
 
@@ -125,6 +162,10 @@ class Session:
                 or not isinstance(receipt["response"], dict)
             ):
                 raise ValueError("receipt")
+            if receipt is not None:
+                # An old recovery receipt is repaired only in memory; the durable
+                # execution identity, revision and uncertain-effects status stay.
+                receipt["response"] = normalize_legacy_interrupted(receipt["response"])
         except (KeyError, ValueError, TypeError) as exc:
             raise PTCError("corrupt_state", "invalid checkpoint metadata or dump") from exc
         return value
