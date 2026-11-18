@@ -318,34 +318,40 @@ body {
     to { transform: rotate(360deg); }
 }
 
-@keyframes activity-ring {
-    0% { transform: rotate(0deg); opacity: 0.65; }
-    50% { opacity: 1; }
-    100% { transform: rotate(360deg); opacity: 0.65; }
+@keyframes run-activity-wave {
+    0%, 100% { transform: scaleY(0.45); opacity: 0.5; }
+    45% { transform: scaleY(1); opacity: 1; }
 }
 
-/* Retain the old cue's footprint; the ring fits inside its existing padding.
-   Only transform/opacity animate. Reduced motion leaves a static ring and the
-   accessible status/tooltip intact, using the global rule below. */
-.activity-ring-slot {
-    position: relative;
+/* The run indicator has a fixed footprint in the transcript. Offset the peaks
+ * across the bars using transforms and opacity so each cycle leaves the line
+ * height and scroll geometry alone. */
+.run-activity-wave {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
+    flex: none;
+    gap: 2px;
     width: 23px;
     height: 5px;
+    color: var(--interactive);
 }
 
-.activity-ring {
-    position: absolute;
-    width: 18px;
-    height: 18px;
-    border: 2px solid var(--line-strong);
-    border-top-color: var(--interactive);
-    border-right-color: var(--interactive);
-    border-radius: 50%;
-    animation: activity-ring 1.8s linear infinite;
+.run-activity-wave > span {
+    flex: none;
+    width: 3px;
+    height: 8px;
+    border-radius: 9999px;
+    background: currentColor;
+    animation: run-activity-wave 1.6s ease-in-out infinite;
 }
+
+.run-activity-wave > :nth-child(2),
+.run-activity-wave > :nth-child(4) { height: 13px; }
+.run-activity-wave > :nth-child(3) { height: 18px; }
+.run-activity-wave > :nth-child(1) { animation-delay: -600ms; }
+.run-activity-wave > :nth-child(2) { animation-delay: -450ms; }
+.run-activity-wave > :nth-child(3) { animation-delay: -300ms; }
+.run-activity-wave > :nth-child(4) { animation-delay: -150ms; }
 
 /*
  * A skeleton is a shape, not a spinner: it says where content will be and how
@@ -546,6 +552,8 @@ body {
         transition-duration: 0.01ms !important;
         scroll-behavior: auto !important;
     }
+
+    .run-activity-wave > span { animation-name: none; }
 }
 
 /* A print of the conversation is a reasonable thing to want; the chrome is not. */
