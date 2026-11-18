@@ -1,8 +1,8 @@
 /** Read-only skill library. Source files are operator-owned, bounded UTF-8 YAML. */
 import { constants } from 'node:fs';
-import { mkdir, lstat, open, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, lstat, open, readdir, readFile, writeFile, link, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { hubRoot } from '../config.ts';
 import { configError } from '../configurations/store.ts';
@@ -58,14 +58,25 @@ export function parseSkill(id: string, bytes: Uint8Array): SkillDocument {
         revision: createHash('sha256').update(bytes).digest('hex') };
 }
 
+/** Best-effort packaged seeding must not hide an otherwise readable library. */
+function failureMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
 /** No request can select a file outside this library or follow a file symlink. */
 export class SkillStore {
     readonly directory: string;
-    private initialization: Promise<void> | undefined;
-    constructor(dataDir: string) { this.directory = join(dataDir, 'skills'); }
+    private readonly packaged: string;
+    private initialization: Promise<boolean> | undefined;
+    private seedFailures = new Map<string, string>();
+
+    constructor(dataDir: string, packagedDirectory = PACKAGED) {
+        this.directory = join(dataDir, 'skills');
+        this.packaged = packagedDirectory;
+    }
 
     async template(): Promise<string> {
-        return readFile(join(PACKAGED, 'code-review.yaml'), 'utf8');
+        return readFile(join(this.packaged, 'code-review.yaml'), 'utf8');
     }
 
     /** Initialize lazily so malformed local skill files never prevent Hub startup. */
@@ -75,28 +86,67 @@ export class SkillStore {
         if (!stat.isDirectory() || stat.isSymbolicLink()) {
             throw configError('Skill directory must be a regular directory');
         }
-        // Concurrent picker/list reads share publication of the packaged examples.
-        this.initialization ??= this.seedPackaged();
+        // Concurrent reads share one attempt. A failed seed is not cached: the
+        // next read retries it after the missing directory or permission returns.
+        if (!this.initialization) {
+            const attempt = this.seedPackaged();
+            this.initialization = attempt;
+            void attempt.then((complete) => {
+                if (!complete && this.initialization === attempt) this.initialization = undefined;
+            });
+        }
         await this.initialization;
     }
 
-    /** Seed packaged examples without replacing operator-owned files. */
-    private async seedPackaged(): Promise<void> {
-        for (const id of skillIds(await readdir(PACKAGED))) {
-            const bytes = await readFile(join(PACKAGED, `${id}.yaml`));
-            parseSkill(id, bytes); // A corrupt installation must not seed unusable files.
-            try {
-                await writeFile(join(this.directory, `${id}.yaml`), bytes,
-                    { flag: 'wx', mode: 0o600 });
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    /** Write validated bytes to a fresh temporary file; tests may fail mid-write. */
+    protected async writeTemporary(path: string, bytes: Uint8Array): Promise<void> {
+        await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+    }
+
+    /** Seed packaged examples without replacing operator-owned files.
+     * A failed example is reported by list() and must not hide readable files. */
+    private async seedPackaged(): Promise<boolean> {
+        const failures = new Map<string, string>();
+        try {
+            for (const id of skillIds(await readdir(this.packaged))) {
+                try {
+                    const bytes = await readFile(join(this.packaged, `${id}.yaml`));
+                    parseSkill(id, bytes); // A corrupt installation must not seed unusable files.
+                    const destination = join(this.directory, `${id}.yaml`);
+                    const temporary = join(this.directory, `.${id}-${randomUUID()}.tmp`);
+                    try {
+                        await this.writeTemporary(temporary, bytes);
+                        try {
+                            // Atomic create-if-absent: an existing destination is
+                            // operator-owned and must keep its exact contents.
+                            await link(temporary, destination);
+                        } catch (error) {
+                            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+                        }
+                    } finally {
+                        // A failed or partial temporary write is never visible as
+                        // a skill; the next read retries the whole seed.
+                        await rm(temporary, { force: true }).catch(() => {});
+                    }
+                } catch (error) {
+                    failures.set(id, `packaged example: ${failureMessage(error)}`);
+                }
             }
+        } catch (error) {
+            failures.set('packaged examples', failureMessage(error));
         }
+        this.seedFailures = failures;
+        return failures.size === 0;
     }
 
     async read(id: string): Promise<SkillDocument> {
         if (!ID.test(id) || id === 'template') throw configError('Invalid skill ID');
         await this.prepare();
+        return this.readPrepared(id);
+    }
+
+    /** Read a validated id after prepare(); list() shares one seeding attempt. */
+    private async readPrepared(id: string): Promise<SkillDocument> {
         let file;
         try {
             const entry = await lstat(join(this.directory, `${id}.yaml`));
@@ -130,11 +180,19 @@ export class SkillStore {
         if (ids.length > 256) throw configError('Skill library exceeds 256 files');
         for (const id of ids) {
             try {
-                const { text: _text, ...summary } = await this.read(id);
+                const { text: _text, ...summary } = await this.readPrepared(id);
                 result.skills.push(summary);
             } catch (error) {
                 result.errors.push({ id, message: error instanceof Error ? error.message : 'Invalid skill' });
             }
+        }
+        // A failed packaged example is a diagnostic, not a library-wide failure.
+        // Do not repeat it when the same id is already readable or already reported.
+        const available = new Set(result.skills.map(skill => skill.id));
+        const reported = new Set(result.errors.map(error => error.id));
+        for (const [id, message] of this.seedFailures) {
+            if (available.has(id) || reported.has(id)) continue;
+            result.errors.push({ id, message });
         }
         return result;
     }

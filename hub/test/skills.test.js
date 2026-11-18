@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, symlink, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, writeFile, rm, symlink, mkdir, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SkillStore, parseSkill } from '../src/skills/store.ts';
@@ -8,6 +9,7 @@ import { expandSkills, skillMarkers, skillCompletion, referencedSkillIds } from 
 import { createPanelStore } from '../web/src/state/store.ts';
 
 const source = 'name: review\ntitle: Review\ndescription: Review changes.\ntext: |\n  First instruction.\n  Second instruction.\n';
+const own = 'name: own\ntitle: Own\ndescription: Own skill.\ntext: |\n  Own instructions.\n';
 const parsed = text => parseSkill('review', Buffer.from(text));
 
 test('skill library seeds packaged examples once, reads changes, isolates errors and bounds files', async t => {
@@ -31,6 +33,99 @@ test('skill library seeds packaged examples once, reads changes, isolates errors
     await assert.rejects(store.read('../review'), /Invalid skill ID/);
     await assert.rejects(store.read('missing'), /not found/);
     await assert.rejects(store.read('link'), /regular file/);
+});
+
+test('concurrent packaged seed failures stay diagnosable and retry after recovery', async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'simplex-skills-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const data = join(dir, 'data');
+    const packaged = join(dir, 'packaged');
+    await mkdir(join(data, 'skills'), { recursive: true });
+    await writeFile(join(data, 'skills', 'own.yaml'), own);
+    const store = new SkillStore(data, packaged);
+
+    // Every concurrent first read shares one failed seeding attempt. The
+    // operator-owned skill remains readable and the failure is reported.
+    const missing = await Promise.all(Array.from({ length: 8 }, () => store.list()));
+    for (const result of missing) {
+        assert.deepEqual(result.skills.map(skill => skill.id), ['own']);
+        assert.deepEqual(result.errors.map(error => error.id), ['packaged examples']);
+        assert.match(result.errors[0].message, /ENOENT/);
+    }
+    assert.equal((await store.read('own')).name, 'own');
+
+    // Restoring the packaged examples retries the failed attempt. A later
+    // concurrent read sees the seeded library rather than the cached failure.
+    await mkdir(packaged);
+    await writeFile(join(packaged, 'code-review.yaml'), source);
+    await writeFile(join(packaged, 'markdown.yaml'), source.replaceAll('review', 'markdown'));
+    const recovered = await Promise.all(Array.from({ length: 8 }, () => store.list()));
+    for (const result of recovered) {
+        assert.deepEqual(result.skills.map(skill => skill.id),
+            ['code-review', 'markdown', 'own']);
+        assert.deepEqual(result.errors, []);
+    }
+});
+
+test('an invalid packaged example is isolated from valid packaged and operator skills', async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'simplex-skills-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const data = join(dir, 'data');
+    const packaged = join(dir, 'packaged');
+    await mkdir(join(data, 'skills'), { recursive: true });
+    await mkdir(packaged);
+    await writeFile(join(data, 'skills', 'own.yaml'), own);
+    await writeFile(join(packaged, 'code-review.yaml'), source);
+    await writeFile(join(packaged, 'broken.yaml'), 'text: [');
+    const store = new SkillStore(data, packaged);
+
+    const result = await store.list();
+    assert.deepEqual(result.skills.map(skill => skill.id), ['code-review', 'own']);
+    assert.deepEqual(result.errors.map(error => error.id), ['broken']);
+    assert.equal(result.errors[0].message, 'packaged example: Invalid skill YAML');
+    assert.equal((await store.read('code-review')).id, 'code-review');
+    assert.equal((await store.read('own')).name, 'own');
+});
+
+test('a partial packaged write is never published and retries without touching operator files', async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'simplex-skills-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const data = join(dir, 'data');
+    const packaged = join(dir, 'packaged');
+    const skills = join(data, 'skills');
+    await mkdir(skills, { recursive: true });
+    await mkdir(packaged);
+    await writeFile(join(packaged, 'code-review.yaml'), source);
+    await writeFile(join(packaged, 'markdown.yaml'), source.replaceAll('review', 'markdown'));
+    const operator = 'name: operator\ntitle: Operator\ndescription: Operator skill.\ntext: |\n  Keep this file.\n';
+    await writeFile(join(skills, 'markdown.yaml'), operator);
+
+    class PartialWriteStore extends SkillStore {
+        failures = 1;
+        async writeTemporary(path, bytes) {
+            if (this.failures > 0) {
+                this.failures -= 1;
+                await writeFile(path, bytes.subarray(0, 12));
+                throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+            }
+            await super.writeTemporary(path, bytes);
+        }
+    }
+
+    const store = new PartialWriteStore(data, packaged);
+    const failed = await store.list();
+    assert.deepEqual(failed.skills.map(skill => skill.id), ['markdown']);
+    assert.deepEqual(failed.errors.map(error => error.id), ['code-review']);
+    assert.equal(existsSync(join(skills, 'code-review.yaml')), false);
+    assert.deepEqual((await readdir(skills)).filter(name => name.endsWith('.tmp')), []);
+    assert.equal(await readFile(join(skills, 'markdown.yaml'), 'utf8'), operator);
+
+    // The same store retries the failed example after the write recovers, and
+    // the existing operator-owned file keeps its exact contents.
+    const retried = await store.list();
+    assert.deepEqual(retried.skills.map(skill => skill.id), ['code-review', 'markdown']);
+    assert.deepEqual(retried.errors, []);
+    assert.equal(await readFile(join(skills, 'markdown.yaml'), 'utf8'), operator);
 });
 
 test('skill library refuses a symlink directory without writing a template', async t => {
