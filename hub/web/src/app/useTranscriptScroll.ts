@@ -135,10 +135,26 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
          * the loading marker are not lines: history or replay that arrives *above*
          * the end leaves this element unchanged, which is how a restore is told
          * apart from a message without asking why it arrived.
+         *
+         * Walk backwards from the last child instead of enumerating every line:
+         * the tail is bounded by the few elements that follow the last line, not
+         * by the retained history.
          */
         function currentArrival(): Element | null {
-            const lines = content!.querySelectorAll('[data-testid="conversation-line"]');
-            return lines[lines.length - 1] ?? null;
+            let node = content!.lastElementChild;
+            while (node) {
+                if (node.matches('[data-testid="conversation-line"]')) return node;
+                if (node.lastElementChild) {
+                    node = node.lastElementChild;
+                    continue;
+                }
+                while (node && node !== content && !node.previousElementSibling) {
+                    node = node.parentElement;
+                }
+                if (!node || node === content) return null;
+                node = node.previousElementSibling;
+            }
+            return null;
         }
         function schedule() {
             if (disposed || frame || !node!.clientHeight) return;
@@ -184,7 +200,11 @@ export function useTranscriptScroll(scroller: RefObject<HTMLDivElement | null>, 
             // that lands above it is a restore: the reader is already looking at
             // the end, and sweeping the viewport down to it would be a lie.
             const arrival = currentArrival();
-            const appended = lastArrival !== null && arrival !== null && arrival !== lastArrival;
+            // A different tail is a live append only while the previous tail is
+            // still mounted. A replay or history replacement that swaps the last
+            // element is a restore, not a message, and must land without gliding.
+            const appended = lastArrival !== null && arrival !== null
+                && arrival !== lastArrival && lastArrival.isConnected;
             lastArrival = arrival;
             if (!follows.current) {
                 stop();

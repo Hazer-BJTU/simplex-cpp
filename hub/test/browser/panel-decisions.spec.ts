@@ -3,6 +3,12 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { OperatorQuestion } from '../../ui/index.ts';
 import { STUB, emit, modelResponse, open } from './harness.ts';
 
+/** Finish the next two animation frames so scroll reconciliation settles. */
+async function frames(page: Page): Promise<void> {
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() =>
+        requestAnimationFrame(() => resolve()))));
+}
+
 /** Exercise real scrollbar compensation, including when only one pane overflows. */
 test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } });
 
@@ -260,3 +266,115 @@ for (const readingOlder of [false, true]) {
         }
     });
 }
+
+test('a covered reading control yields focus to the visible pane and settles back', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 480 });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse(
+        '[Covered link](https://example.com)\n\n' + 'Reading text.\n\n'.repeat(20)));
+    const link = page.getByRole('link', { name: 'Covered link' });
+    const scroller = page.getByTestId('transcript');
+    await scroller.hover();
+    await page.mouse.wheel(0, -200);
+    await link.scrollIntoViewIfNeeded();
+    await link.focus();
+    await expect(link).toBeFocused();
+    await questions(page, [question('focus-question')]);
+    const card = page.locator('[data-question="focus-question"]');
+    await expect(card).toBeVisible();
+    // The arriving card must not take focus, and the covered link must not keep it.
+    await expect(page.getByTestId('transcript')).toBeFocused();
+    // Tab skips the covered history and enters the open decision, rather than
+    // bouncing back to the same reading surface.
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() =>
+        document.activeElement?.closest('[data-question="focus-question"]') !== null)).toBe(true);
+    await expect(card.getByRole('textbox', { name: 'Answer' })).not.toBeFocused();
+    // A settled card releases focus back to the pane instead of dropping it on body.
+    await card.getByRole('textbox', { name: 'Answer' }).focus();
+    await questions(page, []);
+    await expect(card).toHaveCount(0);
+    await expect(page.getByTestId('transcript')).toBeFocused();
+});
+
+test('the Plan pane yields focus under a floating decision', async ({ page }) => {
+    await open(page, '?session=demo');
+    await page.request.post(`${STUB}/__stub/plan`, { data: { plan: {
+        markdown: '[Plan link](https://example.com)\n\n' + 'Plan line.\n\n'.repeat(40),
+        revision: 1, updated_at: null,
+    } } });
+    await page.getByRole('tab', { name: 'Plan', exact: true }).click();
+    const plan = page.getByTestId('plan-content');
+    const link = plan.getByRole('link', { name: 'Plan link' });
+    await link.focus();
+    await expect(link).toBeFocused();
+    await questions(page, [question('plan-focus')]);
+    await expect(page.locator('[data-question="plan-focus"]')).toBeVisible();
+    await expect(plan).toBeFocused();
+});
+
+test('a control below the floating card keeps focus', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse(
+        '[Top link](https://example.com/top)\n\n' + 'Reading text.\n\n'.repeat(40)
+        + '[Bottom link](https://example.com/bottom)'));
+    const bottom = page.getByRole('link', { name: 'Bottom link' });
+    await bottom.scrollIntoViewIfNeeded();
+    await bottom.focus();
+    await questions(page, [question('below-question')]);
+    await expect(page.locator('[data-question="below-question"]')).toBeVisible();
+    await expect(bottom).toBeFocused();
+});
+
+test('a text-only Plan keeps its keyboard entry point', async ({ page }) => {
+    await open(page, '?session=demo');
+    await page.request.post(`${STUB}/__stub/plan`, { data: { plan: {
+        markdown: '# Plan\n\n' + 'Plan text.\n\n'.repeat(40),
+        revision: 1, updated_at: null,
+    } } });
+    await page.getByRole('tab', { name: 'Plan', exact: true }).click();
+    await page.keyboard.press('Tab');
+    await expect(page.getByTestId('plan-content')).toBeFocused();
+});
+
+test('only the visible clipped part of a decision card governs focus', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 480 });
+    await open(page, '?session=demo');
+    await page.request.post(`${STUB}/__stub/plan`, { data: { plan: {
+        markdown: '# Plan\n\n' + 'Plan body.\n\n'.repeat(30) + '[Below card](https://example.com)',
+        revision: 1, updated_at: null,
+    } } });
+    await page.getByRole('tab', { name: 'Plan', exact: true }).click();
+    await questions(page, [question('clipped', true)]);
+    const card = page.locator('[data-question="clipped"]');
+    await expect(card).toBeVisible();
+    const plan = page.getByTestId('plan-content');
+    const link = plan.getByRole('link', { name: 'Below card' });
+    await link.evaluate(node => node.scrollIntoView({ block: 'end' }));
+    const geometry = await page.evaluate(() => {
+        const card = document.querySelector('[data-question="clipped"]')!.getBoundingClientRect();
+        const shell = document.querySelector('.decisions-shell')!.getBoundingClientRect();
+        const link = document.querySelector('[data-testid="plan-content"] a[href="https://example.com"]')!
+            .getBoundingClientRect();
+        return { cardBottom: card.bottom, shellBottom: shell.bottom, linkTop: link.top };
+    });
+    // The card's content box extends below its scrollport; this link is visible
+    // below the clip and must remain the reader's focus target.
+    expect(geometry.cardBottom).toBeGreaterThan(geometry.shellBottom);
+    expect(geometry.linkTop).toBeGreaterThan(geometry.shellBottom);
+    await link.focus();
+    await expect(link).toBeFocused();
+
+    // Scrolling the Plan moves the same link under the visible card. The scroll
+    // recheck must move focus to the Plan pane without scrolling it further.
+    const delta = Math.max(1, geometry.linkTop - geometry.shellBottom + 12);
+    const before = await plan.evaluate(node => node.scrollTop);
+    await plan.evaluate((node, amount) => { node.scrollTop += amount; }, delta);
+    await frames(page);
+    await expect(plan).toBeFocused();
+    // Moving focus must not add another scroll: only the requested delta (with
+    // normal fractional/clamped scrollTop rounding) may be present.
+    const after = await plan.evaluate(node => node.scrollTop);
+    expect(Math.abs(after - before - delta)).toBeLessThanOrEqual(2);
+});

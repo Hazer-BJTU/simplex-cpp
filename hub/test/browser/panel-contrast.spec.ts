@@ -134,6 +134,51 @@ test.describe('contrast', () => {
     });
 
     for (const theme of ['light', 'dark'] as const) {
+        test(`a question over Plan content keeps a readable surface in the ${theme} theme`, async ({ page }) => {
+            await page.emulateMedia({ colorScheme: theme });
+            await open(page, '?session=demo');
+            await page.request.post(`${STUB}/__stub/plan`, { data: { plan: {
+                markdown: '# Plan\n\n' + 'Plan body.\n\n'.repeat(40),
+                revision: 1, updated_at: null,
+            } } });
+            await page.getByRole('tab', { name: 'Plan', exact: true }).click();
+            await page.request.post(`${STUB}/__stub/message`, { data: {
+                type: 'questions', session: 'demo', questions: [{
+                    question_id: 'contrast-question',
+                    question: 'Which approach should I use?',
+                    options: ['First', 'Second'],
+                    deadline_at: Date.now() + 600_000,
+                    asked_at: Date.now(),
+                }],
+            } });
+            const card = page.locator('[data-question="contrast-question"]');
+            await card.waitFor();
+            await card.evaluate(async node => {
+                await Promise.all(node.getAnimations().map(animation => animation.finished));
+            });
+            // The card covers real Plan content. Its own surface must be opaque,
+            // so the backdrop cannot consume the contrast of its labels.
+            const surface = await card.evaluate(node => {
+                const color = getComputedStyle(node).backgroundColor;
+                const canvas = document.createElement('canvas');
+                canvas.width = 1;
+                canvas.height = 1;
+                const context = canvas.getContext('2d')!;
+                context.fillStyle = '#000000';
+                context.fillStyle = color;
+                context.fillRect(0, 0, 1, 1);
+                return { color, alpha: context.getImageData(0, 0, 1, 1).data[3] };
+            });
+            expect(surface.alpha, surface.color).toBe(255);
+            await card.getByRole('textbox', { name: 'Answer' }).fill('A response');
+            const answer = await ratio(
+                page, '[data-question="contrast-question"] button.text-accent',
+            );
+            expect(answer.ratio).toBeGreaterThanOrEqual(4.5);
+        });
+    }
+
+    for (const theme of ['light', 'dark'] as const) {
         test(`the danger text action is readable in the ${theme} theme`, async ({ page }) => {
             await page.emulateMedia({ colorScheme: theme });
             await open(page);
