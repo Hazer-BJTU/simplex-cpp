@@ -66,8 +66,9 @@ immediate protocol ingestion from visual publication:
   creating an `Intl.DateTimeFormat` for every historical event on every update.
 - One scroll owner coalesces layout reads/writes after commits and resizes.
   Reader input controls following; content growth cannot turn it back on. A
-  visible anchor retains the reader's offset, including across pane switches
-  and approval-region resizing, without treating entrance transforms as growth.
+  visible anchor retains the reader's offset across pane switches. Floating
+  approvals and questions have their own motion and leave the scroll viewport
+  and its anchor unchanged.
 
 Approval submission state belongs to the transport supervisor, scoped by
 session, worker, run and prompt creation. Closing a dialog does not unlock a

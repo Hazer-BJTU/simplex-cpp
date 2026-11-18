@@ -98,7 +98,9 @@ test('submission feedback keeps the action geometry and locks only its own promp
     await open(page, '?session=demo');
     await approval(page);
     const block = page.getByTestId('approval-block');
-    await block.evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished)); });
+    await block.locator('..').evaluate(async node => {
+        await Promise.all(node.getAnimations().map(animation => animation.finished));
+    });
     const approve = block.getByRole('button', { name: 'Approve', exact: true });
     const deny = block.getByRole('button', { name: 'Deny', exact: true });
     const before = await approve.boundingBox();
@@ -213,7 +215,7 @@ test('an unknown approval outcome can be checked in the block without sending an
     expect((await (await page.request.get(`${STUB}/__stub/decisions`)).json()).decisions).toHaveLength(1);
 });
 
-test('a reader retains their anchor and offset across Plan and approval-region resizing', async ({ page }) => {
+test('a reader retains their anchor and offset across Plan and decision overlays', async ({ page }) => {
     await open(page, '?session=demo');
     await page.request.post(`${STUB}/__stub/plan`, { data: { plan: { markdown: '# Work', revision: 1, updated_at: null } } });
     await emit(page, 'input_admitted', { operation: 'message' });
@@ -230,8 +232,7 @@ test('a reader retains their anchor and offset across Plan and approval-region r
     await expect(scroller).toContainText('Arrived in Plan');
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await approval(page);
-    // The strip appears above the composer, not over the transcript, so the
-    // reader's anchor must survive it arriving and leaving.
+    // The floating cards leave the reader's scroll viewport and anchor alone.
     expect(Math.abs(await scroller.evaluate(node => node.scrollTop) - before)).toBeLessThanOrEqual(2);
     await page.request.post(`${STUB}/__stub/message`, { data: {
         type: 'questions', session: 'demo', questions: [{
