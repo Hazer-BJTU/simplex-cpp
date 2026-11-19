@@ -367,3 +367,32 @@ BOOST_AUTO_TEST_CASE(research_configuration_is_disabled_by_default_and_validates
     value["experimental"]["cumulative_token_control"]["type"] = "reasoning";
     BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
 }
+
+BOOST_AUTO_TEST_CASE(model_visible_budget_thresholds_require_the_corresponding_control) {
+    auto value = configuration();
+    const auto defaults = load::parse_configuration(value, "/tmp");
+    BOOST_TEST(defaults.model_visible_budget.after_exchanges == 0u);
+    BOOST_TEST(defaults.model_visible_budget.token_percent == 0u);
+    auto& research = value["experimental"];
+    research["cumulative_step_control"] = 12;
+    research["cumulative_token_control"] = {{"type", "generated"}, {"threshold", 90}};
+    auto& visible = research["model_visible_budget"];
+    visible = {{"after_exchanges", 12}, {"token_percent", 100}};
+    const auto config = load::parse_configuration(value, "/tmp");
+    BOOST_TEST(config.model_visible_budget.after_exchanges == 12u);
+    BOOST_TEST(config.model_visible_budget.token_percent == 100u);
+    for (const auto& invalid : std::vector<Json>{
+            {{"after_exchanges", 13}}, {{"after_exchanges", -1}},
+            {{"token_percent", 101}}, {{"token_percent", 0.5}}, {{"token_percent", true}}}) {
+        visible = invalid;
+        BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    }
+    research.erase("cumulative_step_control");
+    research.erase("cumulative_token_control");
+    visible = {{"after_exchanges", 1}};
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    visible = {{"token_percent", 1}};
+    BOOST_CHECK_THROW(load::parse_configuration(value, "/tmp"), std::invalid_argument);
+    visible = {{"after_exchanges", 0}, {"token_percent", 0}};
+    BOOST_CHECK_NO_THROW(load::parse_configuration(value, "/tmp"));
+}

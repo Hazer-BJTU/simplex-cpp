@@ -343,6 +343,16 @@ Configuration parse_configuration(
     else if (token_type == "generated") result.experimental.token_type = TokenType::Generated;
     else if (token_type == "cache_hit") result.experimental.token_type = TokenType::CacheHit;
     else throw std::invalid_argument("experimental token type must be prompt, generated, total or cache_hit");
+    const auto& visible = object(experiment, "model_visible_budget");
+    auto& notice = result.model_visible_budget;
+    notice.after_exchanges = research_limit(visible, "after_exchanges");
+    notice.token_percent = research_limit(visible, "token_percent");
+    if (notice.after_exchanges > result.experimental.steps) {
+        throw std::invalid_argument("model_visible_budget.after_exchanges exceeds cumulative_step_control");
+    }
+    if (notice.token_percent > 100 || (notice.token_percent && !result.experimental.tokens)) {
+        throw std::invalid_argument("model_visible_budget.token_percent requires 1..100 and a token budget, or 0");
+    }
     const auto& worker = object(document, "worker");
     result.event_capacity = number(worker, "event_capacity", 1024);
     result.max_exchanges = number(worker, "max_exchanges", 512);

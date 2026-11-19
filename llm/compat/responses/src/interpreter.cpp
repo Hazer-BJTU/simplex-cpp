@@ -1,6 +1,7 @@
 // responses/interpreter.cpp — AgentInputState -> POST /responses body.
 // Pure data mapping, no I/O; see interpreter.hpp for the layout contract.
 
+#include "llm/tool_result_notice.hpp"
 #include "llm/compat/responses/interpreter.hpp"
 
 #include <algorithm>
@@ -539,6 +540,7 @@ endpoint::ModelRequestInterpreter::HttpRequest ResponsesInterpreter::build_reque
     }
 
     _dialect->transform_request(body);
+    append_tool_result_notice(conversation, body, ToolResultFormat::Responses);
 
     HttpRequest request{http::verb::post, where.target, 11};
     // RFC 9110 §7.2: the Host authority carries the port when non-default —
