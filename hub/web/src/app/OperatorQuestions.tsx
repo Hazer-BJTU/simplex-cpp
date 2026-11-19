@@ -36,6 +36,8 @@ function countdown(deadline: number, now: number): string {
 function QuestionCard({ session, question }: { session: string; question: OperatorQuestion }) {
     const client = useClient();
     const failure = usePanel(state => state.questionFailures.get(question.question_id));
+    const ready = usePanel(state => state.connection.state === 'open' && state.questionSnapshots.has(session));
+    const noteFailure = usePanel(state => state.noteQuestionFailure);
     const clearFailure = usePanel(state => state.clearQuestionFailure);
     const [text, setText] = useState('');
     const [sending, setSending] = useState(false);
@@ -52,12 +54,13 @@ function QuestionCard({ session, question }: { session: string; question: Operat
 
     const value = text.trim();
     const tooLong = new TextEncoder().encode(value).length > MAX_ANSWER_BYTES;
-    const canSend = value.length > 0 && !tooLong && !sending;
+    const canSend = value.length > 0 && !tooLong && !sending && ready;
 
     function submit(answer: { text?: string; option_index?: number }): void {
-        if (sending) return;
+        if (sending || !ready) return;
         clearFailure(question.question_id);
         if (client.answerQuestion(session, question.question_id, answer)) setSending(true);
+        else noteFailure(question.question_id, 'The answer could not be sent.');
     }
 
     function submitText(): void {
@@ -76,7 +79,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
                 <span aria-hidden className="size-1.5 rounded-full bg-accent" />
                 <span className="font-medium text-ink">Question from the agent</span>
                 <span className="ml-auto tabular-nums">
-                    {sending ? 'sending…' : `${countdown(question.deadline_at, now)} left`}
+                    {!ready ? 'Waiting for reconnection…' : sending ? 'sending…' : `${countdown(question.deadline_at, now)} left`}
                 </span>
             </div>
             <p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap text-base
@@ -86,7 +89,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
             {question.options.length > 0 && (
                 <div className="mt-1 flex flex-col">
                     {question.options.map((option, index) => (
-                        <button key={option} type="button" disabled={sending}
+                        <button key={option} type="button" disabled={sending || !ready}
                             onClick={() => submit({ option_index: index })}
                             className="group flex items-start gap-2 rounded-md px-2 py-1 text-left
                                 text-sm text-ink hover:bg-subtle focus-visible:bg-subtle
@@ -138,7 +141,7 @@ function QuestionCard({ session, question }: { session: string; question: Operat
             )}
             {failure !== undefined && (
                 <p role="status" className="mt-1 text-xs text-danger">
-                    {failure.message} Edit the answer and try again.
+                    {failure.message}
                 </p>
             )}
             <p className="mt-1 text-xs text-ink-faint">

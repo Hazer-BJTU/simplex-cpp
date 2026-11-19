@@ -391,6 +391,7 @@ const server = createServer((req, res) => {
                     return;
                 }
                 case '/__stub/message': {
+                    if (payload.type === 'questions') describe(payload.session).questions = payload.questions;
                     broadcast(payload);
                     json(res, 200, { ok: true });
                     return;
@@ -553,6 +554,7 @@ function handle(ws, message) {
             const since = Number(message.since) || 0;
             send(ws, {
                 type: 'subscribed',
+                questions: describe(id)?.questions ?? [],
                 plan: describe(id)?.plan ?? { markdown: '', revision: 0, updated_at: null },
                 session: describe(id),
                 transcript: transcriptOf(id).filter((e) => e.hub_sequence > since),

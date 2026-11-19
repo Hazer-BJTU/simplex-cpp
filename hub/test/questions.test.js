@@ -116,6 +116,7 @@ async function setup(overrides = {}) {
     await panel.waitFor((message) => message.type === 'subscribed');
     // One admitted run is enough; every call below reuses run-1.
     emit('input_admitted');
+    await until(() => session.activeRunId === 'run-1');
     const call = async (arguments_, requestId) => {
         const url = new URL(endpoints.tools);
         url.pathname += '/ask_user/ask';
@@ -124,7 +125,7 @@ async function setup(overrides = {}) {
             worker_id: 'worker-1', session_id: 'demo', run_id: 'run-1',
             request_id: requestId, arguments: arguments_,
         } });
-        const response = await peer.waitFor((value) => value.type === 'tool_response');
+        const response = await peer.waitFor((value) => value.type === 'tool_response', { timeout: 12000 });
         await peer.waitForClose();
         return response.data;
     };
@@ -274,4 +275,42 @@ it('rejects oversized or malformed requests without publishing them', async () =
     assert.equal(response.error.code, 'invalid_arguments');
     const tooShort = await ctx.call({ question: 'Why?', timeout_ms: 0 }, 'question-6');
     assert.equal(tooShort.error.code, 'invalid_arguments');
+});
+
+it('binds pending and late questions to the cancelled run', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Keep this?', timeout_ms: 3000 }, 'owned');
+    await ctx.panel.waitFor(m => m.type === 'questions' && m.questions.length === 1);
+    ctx.panel.send({ type: 'signal', session: 'demo', operation: 'cancel', run_id: 'older' });
+    await ctx.panel.waitFor(m => m.type === 'accepted' && m.operation === 'cancel');
+    const secondPanel = await ctx.subscribe();
+    secondPanel.send({ type: 'question_answer', session: 'demo', question_id: 'owned',
+        answer: { text: 'still pending' } });
+    assert.equal((await pending).result.reply.text, 'still pending');
+    const mark = ctx.panel.messages.length;
+    ctx.panel.send({ type: 'signal', session: 'demo', operation: 'cancel', run_id: 'run-1' });
+    await waitAfter(ctx.panel, mark, m => m.type === 'accepted' && m.operation === 'cancel');
+    const late = await ctx.call({ question: 'Too late?', timeout_ms: 1000 }, 'late');
+    assert.equal(late.error.code, 'run_cancelled');
+    assert.equal(ctx.panel.messages.slice(mark).some(m => m.questions?.length > 0), false);
+});
+
+it('keeps the granted operator window after delayed run authorization', async () => {
+    const ctx = await setup({ limits: { confirmIdentityHoldMs: 9000 } });
+    ctx.emit('run_finished');
+    await until(() => !ctx.session.activeRunId);
+    const pending = ctx.call({ question: 'Waiting?', timeout_ms: 1000 }, 'delayed');
+    await new Promise(resolve => setTimeout(resolve, 5400));
+    ctx.emit('run_started');
+    const reply = await pending;
+    assert.equal(reply.result.outcome, 'timeout');
+    assert.equal(reply.result.timeout_ms, 1000);
+});
+
+it('settles the tool RPC when only the worker event connection closes', async () => {
+    const ctx = await setup();
+    const pending = ctx.call({ question: 'Connected?', timeout_ms: 60000 }, 'lost-events');
+    await ctx.panel.waitFor(m => m.type === 'questions' && m.questions.length === 1);
+    await ctx.event.close();
+    assert.equal((await pending).result.reason, 'worker_disconnected');
 });

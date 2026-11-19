@@ -101,12 +101,14 @@ export function createWorkerToolRoute({ registry, config, log, plans, questions,
             // A question waits for an operator, which legitimately outlives the
             // generic request deadline. The route grants min(requested, ceiling),
             // so the fence must cover that granted wait, not the requested one.
+            const questionHold = Math.min(config.limits.confirmIdentityHoldMs,
+                config.toolRequests.timeoutMs, 15000);
             if (route === 'ask_user/ask') {
                 const asked = request.arguments.timeout_ms;
                 if (Number.isSafeInteger(asked) && (asked as number) >= 1000) {
                     const granted = Math.min(asked as number,
                         config.toolRequests.questionTimeoutMs);
-                    arm(Math.min(granted + 5000, MAX_TIMER_MS));
+                    arm(Math.min(questionHold + granted + 5000, MAX_TIMER_MS));
                 }
             }
             const dispatch = async (): Promise<void> => {
@@ -124,8 +126,7 @@ export function createWorkerToolRoute({ registry, config, log, plans, questions,
                     void pending.then(cleanup, cleanup);
                     response = await pending;
                 } else if (route === 'ask_user/ask') {
-                    response = await dispatchQuestion(route, request, registry, questions, token,
-                        Math.min(config.limits.confirmIdentityHoldMs, config.toolRequests.timeoutMs),
+                    response = await dispatchQuestion(route, request, registry, questions, token, questionHold,
                         abort.signal, config.toolRequests.questionTimeoutMs, onQuestionsChanged);
                 } else if (handlers?.has(route)) {
                     try {

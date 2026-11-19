@@ -186,11 +186,22 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
     type LegacySubscription = { cursor: number; generation: number; cancelled: boolean };
     const legacySubscriptions = new Map<SessionId, LegacySubscription>();
     const queuedLegacySubscriptions = new Map<SessionId, LegacySubscription>();
+    const pendingAnswers = new Map<string, SessionId>();
+    function invalidateAnswers(session: SessionId): void {
+        store.getState().invalidateQuestionSnapshot(session);
+        for (const [id, owner] of pendingAnswers) {
+            if (owner !== session) continue;
+            pendingAnswers.delete(id);
+            store.getState().noteQuestionFailure(id,
+                'Answer delivery is unknown. Retry if the question is still pending.');
+        }
+    }
     const socket: PanelSocket = createPanelSocket({
         location: loc,
         token: () => tokens.get(),
         onState: (status) => {
             if (status.state !== 'open') {
+                for (const id of store.getState().questionSnapshots) invalidateAnswers(id);
                 for (const sessionId of store.getState().pendingExecutions.keys()) {
                     store.getState().setPendingExecution(sessionId, null);
                 }
@@ -238,6 +249,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
 
     function subscribe(sessionId: SessionId, since?: number, replace = false): boolean {
         if (store.getState().sessions.get(sessionId)?.kind === 'headless') return false;
+        invalidateAnswers(sessionId);
         const cursor = since ?? cursorFor(sessionId);
         if (store.getState().hasCapability('transcript-pages')) {
             const requestId = newRequestId();
@@ -414,6 +426,12 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 if (subscribedSessions.has(message.session)) store.getState().setPlan(message.session, message.plan);
                 return;
             case 'questions':
+                if (!store.getState().questionSnapshots.has(message.session)) return;
+                for (const [id, owner] of pendingAnswers) {
+                    if (owner === message.session && !message.questions.some(q => q.question_id === id)) {
+                        pendingAnswers.delete(id);
+                    }
+                }
                 store.getState().setQuestions(message.session, message.questions);
                 return;
             case 'subscribed': {
@@ -624,6 +642,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
                 confirmations.rejected(message);
                 store.getState().applyError(message);
                 if (typeof message.question_id === 'string') {
+                    pendingAnswers.delete(message.question_id);
                     store.getState().noteQuestionFailure(message.question_id,
                         message.message || 'the hub refused that answer');
                 }
@@ -738,6 +757,7 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
             store.getState().setSelected(sessionId);
             writeSessionToUrl(sessionId, loc, hist);
             if (previous) {
+                invalidateAnswers(previous);
                 subscribedSessions.delete(previous);
                 subscriptionRequests.delete(previous);
                 cancelLegacySubscription(previous);
@@ -867,9 +887,14 @@ export function createPanelClient(options: PanelClientOptions = {}): PanelClient
         },
 
         answerQuestion(sessionId, questionId, answer) {
-            return socket.send({
+            const state = store.getState();
+            if (!state.questionSnapshots.has(sessionId) || pendingAnswers.has(questionId)
+                || !state.questions.get(sessionId)?.some(q => q.question_id === questionId)) return false;
+            const sent = socket.send({
                 type: 'question_answer', session: sessionId, question_id: questionId, answer,
             });
+            if (sent) pendingAnswers.set(questionId, sessionId);
+            return sent;
         },
 
         refreshLogs(sessionId, limit) {

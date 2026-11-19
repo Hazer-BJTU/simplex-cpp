@@ -378,3 +378,30 @@ test('only the visible clipped part of a decision card governs focus', async ({ 
     const after = await plan.evaluate(node => node.scrollTop);
     expect(Math.abs(after - before - delta)).toBeLessThanOrEqual(2);
 });
+
+test('question drafts survive reconnect and answers require an explicit retry', async ({ page }) => {
+    await open(page, '?session=demo');
+    const q = question('recover-answer');
+    await questions(page, [q]);
+    const card = page.locator('[data-question="recover-answer"]');
+    const text = card.getByRole('textbox', { name: 'Answer' });
+    const send = card.getByRole('button', { name: 'Answer', exact: true });
+    await text.fill('Keep my draft');
+    await page.request.post(STUB + '/__stub/down');
+    await expect(send).toBeDisabled();
+    await expect(card.getByRole('button', { name: 'Second' })).toBeDisabled();
+    await page.request.post(STUB + '/__stub/up');
+    await expect(send).toBeEnabled();
+    await expect(text).toHaveValue('Keep my draft');
+    await send.click();
+    await expect(send).toBeDisabled();
+    await page.request.post(STUB + '/__stub/down');
+    await expect(card).toContainText('Answer delivery is unknown');
+    await page.request.post(STUB + '/__stub/up');
+    await expect(send).toBeEnabled();
+    const received = await (await page.request.get(STUB + '/__stub/received')).json();
+    expect(received.received.filter((m: { type: string }) => m.type === 'question_answer')).toHaveLength(1);
+    await card.getByRole('button', { name: 'Second' }).click();
+    await questions(page, []);
+    await expect(card).toHaveCount(0);
+});

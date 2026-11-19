@@ -16,7 +16,9 @@ constexpr std::size_t max_question_bytes = 8 * 1024;
 constexpr std::size_t max_option_bytes = 200;
 constexpr std::size_t min_options = 2;
 constexpr std::size_t max_options = 8;
-/** The hub settles the question first; this slack only covers the reply write. */
+/** The Hub caps identity admission at 15 s before starting the operator clock. */
+constexpr std::chrono::seconds admission_allowance{15};
+/** Additional transport time for connection setup and the terminal reply. */
 constexpr std::chrono::milliseconds reply_slack{10000};
 
 bool nonblank(const std::string& value)
@@ -163,8 +165,12 @@ boost::asio::awaitable<model_io::Content> AskUserTool::invoke(const model_io::In
         Json reply;
         try {
             reply = co_await request(query, "ask_user/ask", identity.worker_id,
-                identity.session_id, identity.run_id, question_timeout_ + reply_slack);
+                identity.session_id, identity.run_id, admission_allowance + question_timeout_ + reply_slack, identity.stop);
         } catch (const InvokeException&) {
+            if (identity.stop.stop_requested()) {
+                co_return render_result({{"outcome", "cancelled"}, {"reason", "run_cancelled"}},
+                    question_timeout_);
+            }
             // A lost hub must not fail the run: the model needs an answer it can
             // act on, and "no reply" is the honest one.
             co_return unavailable("the hub connection was lost before the user answered");
@@ -174,6 +180,10 @@ boost::asio::awaitable<model_io::Content> AskUserTool::invoke(const model_io::In
         }
         if (reply.at("status") == "rejected") {
             const auto& error = reply.at("error");
+            if (error.value("code", "") == "run_cancelled") {
+                co_return render_result({{"outcome", "cancelled"}, {"reason", "run_cancelled"}},
+                    question_timeout_);
+            }
             co_return unavailable("the hub rejected the question ("
                 + error.at("code").get<std::string>() + "): "
                 + error.at("message").get<std::string>());

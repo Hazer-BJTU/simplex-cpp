@@ -180,6 +180,9 @@ export class Session {
     lastRunId: string;
     /** Only an observed active run may invoke executable hub routes. */
     activeRunId = '';
+    private questionLifetime = new AbortController();
+    private cancelledQuestionRun: { worker: string; run: string } | null = null;
+
     /** Open tool-confirmation prompts, keyed by confirmation ID. */
     readonly prompts: Map<string, RegisteredPrompt>;
     /** Identity observers, used by the confirmation adapter's hold. */
@@ -230,6 +233,9 @@ export class Session {
      */
     attach(connection: AttachedConnection): { previous: AttachedConnection | null; replaced: boolean } {
         const previous = this.connection;
+        // Keep the last known identity visible during a seamless reconnect.
+        // The replacement must establish its own active run before opening waits.
+        if (previous && previous !== connection) this.setActiveRun('', 'worker_disconnected');
         this.connection = connection;
         this.workerCapabilities = null;
         this.lastConnectionAt = new Date().toISOString();
@@ -320,7 +326,7 @@ export class Session {
         const incarnation = previous !== null && previous !== workerId;
         if (previous !== workerId) {
             this.workerCapabilities = null;
-            this.activeRunId = '';
+            this.setActiveRun('', 'worker_disconnected');
         }
         if (incarnation) this.stats.incarnations += 1;
         this.identity = {
@@ -335,7 +341,7 @@ export class Session {
 
     /** Mark a known identity as no longer backed by an open connection. */
     markStale(): void {
-        this.activeRunId = '';
+        this.setActiveRun('', 'worker_disconnected');
         this.workerCapabilities = null;
         if (this.identity.state !== IDENTITY.live) return;
         this.identity = {
@@ -386,15 +392,39 @@ export class Session {
         return [...this.prompts.values()].map((prompt) => prompt.describe());
     }
 
+    /** The verified run owns all of its operator waits, including later admissions. */
+    questionSignal(): AbortSignal {
+        return this.questionLifetime.signal;
+    }
+
+    /** Withdraw existing waits and fence delayed tool RPCs for this same run. */
+    cancelQuestions(run: string): void {
+        const worker = this.identity.workerId;
+        if (!worker || !run || run !== this.activeRunId) return;
+        this.cancelledQuestionRun = { worker, run };
+        this.questionLifetime.abort('run_cancelled');
+    }
+
+    private setActiveRun(run: string, reason = 'run_finished'): void {
+        if (this.activeRunId === run) return;
+        this.questionLifetime.abort(reason);
+        this.activeRunId = run;
+        this.questionLifetime = new AbortController();
+        const cancelled = this.cancelledQuestionRun;
+        if (cancelled && cancelled.worker === this.identity.workerId && cancelled.run === run) {
+            this.questionLifetime.abort('run_cancelled');
+        }
+    }
+
     /** Record an inbound envelope and update the cheap panel snapshots. */
     noteEnvelope(envelope: RegistryEnvelope): void {
         if (envelope.event === 'input_admitted' || envelope.event === 'run_started') {
-            this.activeRunId = typeof envelope.run_id === 'string' ? envelope.run_id : '';
+            this.setActiveRun(typeof envelope.run_id === 'string' ? envelope.run_id : '');
         } else if (envelope.event === 'run_finished' || envelope.event === 'shutdown') {
-            this.activeRunId = '';
+            this.setActiveRun('');
         } else if (envelope.event === 'status') {
             const data = envelope.data as { active?: boolean } | null;
-            this.activeRunId = data?.active && typeof envelope.run_id === 'string' ? envelope.run_id : '';
+            this.setActiveRun(data?.active && typeof envelope.run_id === 'string' ? envelope.run_id : '');
         }
 
         this.stats.events += 1;
