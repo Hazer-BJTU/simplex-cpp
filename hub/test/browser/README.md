@@ -71,12 +71,15 @@ immediate protocol ingestion from visual publication:
   and its anchor unchanged.
 
 Approval submission state belongs to the transport supervisor, scoped by
-session, worker, run and prompt creation. Closing a dialog does not unlock a
-pending decision. Submission changes the existing button's contents without
+session, worker, run and prompt creation. The selected primary session shows a
+card over the reading column. It animates independently of the transcript,
+respects reduced motion, and keeps the composer accessible. Focus stays on the
+current control when visible. A covered reading control moves focus to the scroll
+surface without selecting a decision. Headless approvals appear in their detail view. Submission changes the existing button's contents without
 inserting a waiting paragraph or optimistically removing the prompt. After
 8 seconds without settlement, an independently bounded snapshot request checks
 whether the prompt remains open; failure keeps the outcome unknown. **Check
-outcome** or **Review** can check again without resending a decision. Only an
+outcome** can check again without resending a decision. Only an
 explicit action retries after authoritative reconciliation. Panel and worker
 links are tracked independently; reconnect checks unknown outcomes without
 replaying security decisions. Either link's loss also revokes an already granted
@@ -174,7 +177,7 @@ asks in other sessions/headless workers, delayed settlement, and replay. Verify:
 2. Existing spinner elements stay mounted. Readers above the bottom keep their
    anchor within 2 px after growth and approval resizing; Jump to latest resumes
    following. Reduced motion removes animation without changing behavior.
-3. Double/opposite decisions send once; Later/Review preserves the lock. Reject,
+3. Repeated or opposite decisions send once. **Check outcome** reconciles an uncertain submission. Reject,
    lost reply, failed outcome check, expiry, Panel disconnect and Worker-only
    disconnect cannot settle another prompt or silently resend a decision.
 4. Terminal/cancellation/approval state remains current during output bursts,

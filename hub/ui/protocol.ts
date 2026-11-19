@@ -756,7 +756,7 @@ export type PanelMessage =
         type: 'question_answer';
         /** Target session ID or description according to the message variant. */
         session: SessionId;
-        /** Pending question id from the `question` message. */
+        /** Pending ID from this session’s `questions` update or `subscribed.questions` snapshot. */
         question_id: string;
         /** Exactly one of free text or an option index. */
         answer: { text?: string; option_index?: number };

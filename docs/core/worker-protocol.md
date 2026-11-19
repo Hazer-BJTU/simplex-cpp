@@ -1812,25 +1812,29 @@ outcome is a successful response; the four result shapes are:
 {"outcome":"cancelled","reason":"run_cancelled","timeout_ms":300000,"elapsed_ms":4000}
 ```
 
-`timeout` means the operator did not answer before the deadline; it is a normal
-result and the worker continues with no answer. `cancelled` covers a cancelled
-run, a deleted session, a hub shutdown and a closed worker connection. A pending
-question exists only in hub memory: nothing is persisted or replayed, and a hub
-restart drops its record without a reply (the waiting tool sees the socket close
-and reports no reply). Only a session shown in the operator panel can answer: a
-headless subagent caller is rejected with `not_implemented` immediately instead
-of waiting. A `timeout_ms` above the hub ceiling is clamped to it, and the
-result reports the granted `timeout_ms`. The hub replaces the generic socket
-deadline for this route with the granted budget plus 5 s; the worker waits its
-own requested budget plus 10 s, so a timeout is reported as a result rather than
-a transport failure. The panel always accepts free text in addition to the
-offered options, and the first accepted answer wins. Rejections use
-`unauthorized`, `invalid_arguments`, `too_many_questions` (four pending per
-session, 64 per hub), `request_conflict` for a reused request id, and
-`not_implemented` (unknown route or a headless caller).
-The worker turns a rejection, a lost connection or an unexpected reply into a
-normal tool result whose text starts with "No user reply", so a transport
-problem never fails the run.
+`timeout` means the operator window expired without an answer. The first valid
+answer wins. Free text is allowed even when options are present.
+
+The Hub verifies the worker incarnation and active run before opening the
+question. Admission can wait up to the smallest of `limits.confirmIdentityHoldMs`,
+`toolRequests.timeoutMs` and 15 s. The operator clock starts after authorization.
+The Hub socket allows the identity hold, the granted window and 5 s for reply.
+The worker budgets 15 s for admission, its requested window and 10 s of transport
+allowance. Network loss can still prevent a terminal reply.
+
+Cancelling the matching run withdraws its questions and prevents later questions
+for that run from opening. Finishing or replacing a run, losing its event
+connection, deleting the session and Hub shutdown also withdraw pending questions.
+If the tool socket remains writable the Hub can return `cancelled`. Losing the
+tool socket or restarting the Hub leaves the worker with a transport
+`unavailable` result. A local worker cancel or graceful shutdown interrupts the
+operator wait directly and the loop settles its tool batch.
+
+Admission rejections include `unauthorized`, `run_cancelled`, `invalid_arguments`,
+`too_many_questions` (four per session and 64 per Hub), `request_conflict` for a
+pending request ID, and `not_implemented` for unknown routes or headless callers.
+The tool reports a matching cancellation as `cancelled` and other rejections as
+`unavailable`. An unanswered question is a normal tool result.
 
 
 ## Bundled Hub implementation

@@ -38,16 +38,17 @@ update during requests or compaction. See [environment configuration](../../load
 Editing the file affects new sessions. Existing session snapshots keep their
 stored prompt when restored; the worker does not hot-reload prompt files.
 
-The worker appends a short, untitled `signature.runtime` Volatile section after
-other configured sections and before any restored memory: “Powered by agent runtime simplex version <version>.”
-When the provider factory name or the configured model id matches a known AI
-organization, the same sentence continues with “Greetings to <organization>.”,
-using a department name such as “Qwen Team” or “Zhipu GLM Team” rather than the
-vendor alias. The section always ends with a second paragraph, “All the best with
-your work, <model>.”, that names the configured model id; an unrecognized
-provider omits only the greeting. This decorative footer is regenerated at
-startup, including on restore, from the current build version, provider and
-model. It is host-owned and cannot be declared in a role YAML file.
+The untitled `signature.runtime` section appears after configured sections and
+before restored memory. It starts with “Powered by agent runtime simplex version
+&lt;version&gt;.” A recognized provider factory or slash-separated model ID token adds
+“Greetings to &lt;organization&gt;.” The first matching entry in the worker's
+contributor table wins across both inputs. For example, a Qwen factory with
+model ID `deepseek-flash` credits DeepSeek. An unrecognized pair omits the greeting.
+
+A nonempty model ID in the startup configuration adds the second paragraph,
+“All the best with your work, &lt;model&gt;.” Omitting the ID omits that paragraph.
+The worker rebuilds the signature at startup and restore. Later model choices in
+payload options do not refresh it. The section name is reserved for the host.
 
 ## Compaction instruction and memory
 

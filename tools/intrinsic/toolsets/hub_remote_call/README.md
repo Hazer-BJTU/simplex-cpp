@@ -54,8 +54,9 @@ with a stated assumption instead of treating silence as failure. Pending
 questions live only in Hub memory and are settled as cancelled when the run is
 cancelled, the session is deleted, or the Hub exits. The hub caps the wait with
 `toolRequests.questionTimeoutMs`; a larger requested budget is clamped to that
-ceiling and the reply reports the granted `timeout_ms`. The worker waits 10 s
-longer than its own budget so the hub's timeout reply always arrives first.
+ceiling and the reply reports the granted `timeout_ms`. The operator window starts after authorization. The worker allows
+15 s for admission and 10 s of transport slack beyond its requested window.
+A run stop interrupts this operator wait directly.
 
 ## Request base and extension boundary
 

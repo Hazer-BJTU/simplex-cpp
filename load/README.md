@@ -579,15 +579,17 @@ including restore, and is not refreshed during requests or compaction. It explic
 asks the model to recheck the system clock when current time matters. The section is saved with the
 session, is not hot-reloaded, and remains editable through existing loop hooks.
 
-The worker appends a short, untitled `signature.runtime` Volatile section after
-configured sections and before restored memory: “Powered by agent runtime simplex version <version>.”
-The provider factory name and the configured model id select an optional
-“Greetings to <organization>.” clause — a department name such as “Kimi Team”,
-not the vendor alias — followed by a second paragraph, “All the best with your
-work, <model>.”, that names the configured model id. An unrecognized provider
-keeps the footer without a greeting. This decorative footer is regenerated at
-startup, including on restore, using the current build version, provider and
-model. It is host-owned and cannot be declared in a role YAML file.
+The untitled `signature.runtime` section appears after configured sections and
+before restored memory. It starts with “Powered by agent runtime simplex version
+&lt;version&gt;.” A recognized provider factory or slash-separated model ID token adds
+“Greetings to &lt;organization&gt;.” The first matching entry in the worker's
+contributor table wins across both inputs. For example, a Qwen factory with
+model ID `deepseek-flash` credits DeepSeek. An unrecognized pair omits the greeting.
+
+A nonempty model ID in the startup configuration adds the second paragraph,
+“All the best with your work, &lt;model&gt;.” Omitting the ID omits that paragraph.
+The worker rebuilds the signature at startup and restore. Later model choices in
+payload options do not refresh it. The section name is reserved for the host.
 
 ## Compact configuration
 
@@ -643,13 +645,13 @@ The parser retains the independent timeout in `hub_remote_call_timeout`.
 
 The endpoint names `/agent/<session>/tools`; a client appends the operation
 route to the URL pathname while retaining its authentication query. These
-settings cause core to register an `HubRemoteCallToolSet` with the plan,
+settings cause core to register a `HubRemoteCallToolSet` with the plan,
 question and subagent tools, which can use `HubRemoteCallToolBase`. Omission
 leaves the set unloaded. Those tools and their skill are registered;
 construction opens no connection. The hub accepts authenticated one-shot
 requests on its dedicated listener and rejects unknown routes with
-`not_implemented`; plan/read, plan/replace and ask_user/ask are implemented.
-The envelope and lifecycle contract are specified in
+`not_implemented`. The supported plan, question and subagent routes and their
+lifecycle are listed in
 [the worker protocol](../docs/core/worker-protocol.md#remote-tool-requests).
 
 ### Automatic compaction startup settings
