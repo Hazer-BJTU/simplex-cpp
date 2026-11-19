@@ -213,14 +213,29 @@ test('retained-container target supports snapshots without a shared path and ref
     const record = await start(ctx);
     assert.equal((await ctx.api('/api/sessions/demo/snapshot')).body.state.text.length, 10 * 1024 * 1024);
     const stopped = await ctx.api('/api/sessions/demo/stop', 'POST');
-    assert.equal(stopped.body.ok, false);
-    assert.equal(stopped.body.how, 'remote-ownership-unconfirmed');
+    assert.equal(stopped.body.ok, false, JSON.stringify({ result: stopped.body }));
+    assert.equal(stopped.body.how, 'remote-ownership-unconfirmed',
+        JSON.stringify({ result: stopped.body }));
     assert.equal((await ctx.api('/api/sessions/demo/force-kill', 'POST')).body.ok, false);
-    const pid = Number(readFileSync(join(ctx.target, `${record.reference.allocationId}.lease`), 'utf8'));
+    const lease = join(ctx.target, `${record.reference.allocationId}.lease`);
+    const pid = Number(readFileSync(lease, 'utf8'));
     process.kill(pid, 0);
     process.kill(pid, 'SIGTERM');
-    await until(() => !existsSync(join(ctx.target, `${record.reference.allocationId}.lease`)));
-    assert.equal((await ctx.api('/api/sessions/demo/stop', 'POST')).body.ok, true);
+    // The lease proves the target released its allocation. It does not prove
+    // the Hub observed the foreground dispatch exit; stop also requires that.
+    await until(() => {
+        if (existsSync(lease)) return false;
+        try {
+            return readManagedSession(ctx.config, 'demo').lifecycle?.dispatch === 'completed';
+        } catch {
+            return false;
+        }
+    });
+    let lifecycle;
+    try { lifecycle = readManagedSession(ctx.config, 'demo').lifecycle; }
+    catch { lifecycle = 'unreadable'; }
+    const resumed = await ctx.api('/api/sessions/demo/stop', 'POST');
+    assert.equal(resumed.body.ok, true, JSON.stringify({ result: resumed.body, lifecycle }));
     assert.equal((await ctx.api('/api/sessions/demo', 'DELETE')).status, 200);
     assert.ok(operations(ctx).some(op => op.operation === 'remove'));
 });
