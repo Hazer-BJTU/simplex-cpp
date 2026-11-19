@@ -94,12 +94,14 @@ function historyTurns(count: number) {
 /** Count actual DOM work over twenty frame-separated input positions; never assert timings. */
 async function sampleScrollWork(scroller: Locator) {
     return scroller.evaluate(async node => {
-        const work = { roundQueries: 0, childQueries: 0, roundBounds: 0, childBounds: 0 };
+        const work = { roundQueries: 0, childQueries: 0, lineQueries: 0,
+            roundBounds: 0, childBounds: 0 };
         const originalQuery = Element.prototype.querySelectorAll;
         const originalBounds = Element.prototype.getBoundingClientRect;
         Element.prototype.querySelectorAll = function (this: Element, selector: string) {
             if (selector.includes('[data-testid="round"]')) work.roundQueries += 1;
             if (selector.includes('[data-testid="assistant-message"]')) work.childQueries += 1;
+            if (selector.includes('[data-testid="conversation-line"]')) work.lineQueries += 1;
             return originalQuery.call(this, selector);
         } as typeof originalQuery;
         Element.prototype.getBoundingClientRect = function () {
@@ -120,6 +122,31 @@ async function sampleScrollWork(scroller: Locator) {
             Element.prototype.querySelectorAll = originalQuery;
             Element.prototype.getBoundingClientRect = originalBounds;
         }
+    });
+}
+
+/** Count full-line queries while one live response is appended and reconciled. */
+async function sampleArrivalWork(page: Page, scroller: Locator): Promise<number> {
+    await page.evaluate(() => {
+        const target = window as unknown as { __lineQueries?: number; __restoreLineQueries?: () => void };
+        target.__lineQueries = 0;
+        const original = Element.prototype.querySelectorAll;
+        target.__restoreLineQueries = () => { Element.prototype.querySelectorAll = original; };
+        Element.prototype.querySelectorAll = function (this: Element, selector: string) {
+            if (selector.includes('[data-testid="conversation-line"]')) {
+                target.__lineQueries = (target.__lineQueries ?? 0) + 1;
+            }
+            return original.call(this, selector);
+        } as typeof original;
+    });
+    await emit(page, 'model_response', modelResponse('Arrived while sampling.\n\n'.repeat(20)));
+    await expect(scroller).toContainText('Arrived while sampling.');
+    await frames(page);
+    return page.evaluate(() => {
+        const target = window as unknown as { __lineQueries: number; __restoreLineQueries: () => void };
+        const count = target.__lineQueries;
+        target.__restoreLineQueries();
+        return count;
     });
 }
 
@@ -148,8 +175,12 @@ test('a long transcript reuses membership and probes logarithmically during read
     expect(report.rounds).toBe(150);
     expect(report.roundQueries).toBe(0);
     expect(report.childQueries).toBeLessThan(10);
+    expect(report.lineQueries).toBe(0);
     expect(report.roundBounds).toBeGreaterThan(0);
     expect(report.roundBounds).toBeLessThan(20 * 16);
+    // Keep the probe installed through a live append: reconciliation itself
+    // must not enumerate the retained lines.
+    expect(await sampleArrivalWork(page, scroller)).toBe(0);
     await expect(page.getByRole('button', { name: 'jump to latest' })).toBeVisible();
     await page.getByRole('button', { name: 'jump to latest' }).click();
     await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
@@ -429,6 +460,30 @@ test('a restored page that arrives late lands instead of sweeping', async ({ pag
     // A restore is not a scroll: the reader is already at the end of what they
     // had, so the page lands there.
     expect(Math.max(...samples.map(sample => sample.gap))).toBeLessThan(2);
+});
+
+test('a replaced transcript tail lands instead of gliding', async ({ page }) => {
+    await open(page, '?session=demo');
+    await emit(page, 'model_response', modelResponse('Original tail.\n\n'.repeat(8)));
+    const scroller = page.getByTestId('transcript');
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    // Let the previous growth leave the replay quiet window.
+    await page.waitForTimeout(300);
+    await startSampling(page);
+    await page.evaluate(() => {
+        const content = document.querySelector('[data-testid="reading-surface"]')!;
+        const lines = content.querySelectorAll('[data-testid="conversation-line"]');
+        const tail = lines[lines.length - 1]!;
+        const replacement = tail.cloneNode(true) as HTMLElement;
+        replacement.style.height = '720px';
+        tail.replaceWith(replacement);
+    });
+    await expect.poll(() => scroller.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(2);
+    await frames(page);
+    const tops = (await readSamples(page)).map(sample => sample.top);
+    // A replacement is a restore. It may land at the new end, but it must not
+    // animate through intermediate positions like a live append.
+    expect(new Set(tops).size).toBeLessThanOrEqual(2);
 });
 
 test('a single large arrival moves in bounded steps', async ({ page }) => {

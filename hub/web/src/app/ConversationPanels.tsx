@@ -42,6 +42,7 @@ export function ConversationPanels() {
                     aria-labelledby={hasPlan ? 'conversation-tab' : undefined}
                     style={{ display: activePane === 'conversation' ? 'flex' : 'none' }}
                     className="min-h-0 flex-1 flex-col focus:outline-none"
+                    data-decision-surface
                 >
                     <Transcript key={selected} active={activePane === 'conversation'} />
                 </div>
@@ -54,6 +55,8 @@ export function ConversationPanels() {
                         style={{ display: activePane === 'plan' ? 'block' : 'none' }}
                         className="min-h-0 flex-1 overflow-auto break-words reading-scroll text-sm focus:outline-none"
                         data-testid="plan-content"
+                        data-decision-surface
+                        data-decision-fallback
                     >
                         <PlanContent active={activePane === 'plan'} markdown={markdown} />
                     </TabsPrimitive.Content>

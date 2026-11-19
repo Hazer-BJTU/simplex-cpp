@@ -827,8 +827,10 @@ export const Transcript = memo(function Transcript({ active = true }: { active?:
             <div
                 ref={scroller}
                 data-testid="transcript"
+                data-decision-fallback
+                tabIndex={-1}
                 style={{ overflowAnchor: 'none' }}
-                className="min-h-0 flex-1 overflow-y-auto reading-scroll"
+                className="min-h-0 flex-1 overflow-y-auto reading-scroll focus:outline-none"
             >
                 <div className="reading-width conversation-space" data-testid="reading-surface">
                     {view?.transcriptNotices?.map(notice =>
