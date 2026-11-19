@@ -334,8 +334,9 @@ compact summaries. Each exchange adds its reported usage again; this is cumulati
 request cost, not the size of the current context. Types are `prompt`, `generated`,
 `total` (prompt + generated), and `cache_hit`. Cached tokens are included in
 prompt/total without deduction or double counting. Cache-hit accounting requires
-an explicit reported cache count in the preserved standard usage metadata;
-missing/unsupported usage is an accounting error, not measured zero. Reasoning
+a measured cache count from the provider, including a count read through a
+configured token-cost pointer. Measured zero is valid. A missing or invalid
+measurement ends the run with an accounting error. Reasoning
 cannot be selected separately with the current usage representation. Assistant
 models and subagents are not part of this budget.
 

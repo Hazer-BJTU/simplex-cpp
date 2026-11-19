@@ -154,6 +154,7 @@ BOOST_AUTO_TEST_CASE(plugin_wire_options_and_raw_cost) {
     BOOST_TEST(result.cost->prompt == 12u);
     BOOST_TEST(result.cost->generated == 3u);
     BOOST_TEST(result.cost->cache_hit == 7u);
+    BOOST_TEST(result.extras->at(model_io::cache_hit_measured) == true);
     BOOST_TEST(result.extras->at("usage") == Json::parse(R"({"in":12,"out":3,"cached":7})"));
 }
 

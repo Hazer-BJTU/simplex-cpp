@@ -180,3 +180,18 @@ it('bounds protocol identities and rejects out-of-range sequence strings without
         assert.equal(parseEventEnvelope(JSON.stringify(message)).ok, false);
     }
 });
+
+it('preserves exact research counters and limits through transcript JSON', () => {
+    const data = { unrelated: { tokens: 1, token_limit: 2 }, experimental: {
+        policy: { step_limit: 0, token_limit: 'LIMIT', token_type: 'cache_hit' },
+        steps: 4, tokens: 'COUNT', reason: '', error: '',
+    } };
+    const wire = JSON.stringify(workerEvent({ event: 'run_finished', data }))
+        .replace('"LIMIT"', '18446744073709551615').replace('"COUNT"', '9007199254740993');
+    const parsed = parseEventEnvelope(wire);
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(parsed.envelope)).data.experimental, {
+        ...data.experimental, tokens: '9007199254740993',
+        policy: { ...data.experimental.policy, token_limit: '18446744073709551615' },
+    });
+});

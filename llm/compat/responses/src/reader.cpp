@@ -1,3 +1,4 @@
+#include "dataclass/usage_measurement.hpp"
 // responses/reader.cpp — the delta accumulation + assembly of the
 // Responses-API layer. Fed exclusively by the delta stream the decoder
 // guarantees lossless (one delta per event, full event JSON on markers), so
@@ -465,6 +466,7 @@ void ResponsesReader::_assemble() {
 
     if (!invokes.empty()) result.invokes = std::move(invokes);
 
+    bool cache_measured = false;
     if (_usage && _usage->is_object()) {
         model_io::TokenCost cost;
         bool has_cost = false;
@@ -479,6 +481,7 @@ void ResponsesReader::_assemble() {
         if (const auto details = _usage->find("input_tokens_details");
             details != _usage->end() && details->is_object()) {
             if (auto value = get_uint64(*details, "cached_tokens")) {
+                cache_measured = true;
                 cost.cache_hit = *value;
                 has_cost = true;
             }
@@ -491,6 +494,7 @@ void ResponsesReader::_assemble() {
 
     nlohmann::json extras = nlohmann::json::object();
     if (!_response_id.empty()) extras["response_id"] = _response_id;
+    if (result.cost) extras[model_io::cache_hit_measured] = cache_measured;
     if (_usage) extras["usage"] = *_usage;
     if (_terminal_details) {
         // Truncation details vs. failure record — named by what happened.

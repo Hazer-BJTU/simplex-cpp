@@ -142,11 +142,37 @@ export type EnvelopeParseResult =
     | { ok: true; envelope: ParsedEnvelope; issues: string[]; sequence: UnsignedInteger }
     | { ok: false; error: string };
 
+/** Persist unsafe uint64 research values as decimal strings. The common path
+ * stays a single plain JSON parse. Only re-read a terminal report containing a
+ * large counter, using Node's primitive source token to avoid rounding.
+ */
+function preserveResearchIntegers(document: Record<string, unknown>, text: string): void {
+    if (document.event !== 'run_finished') return;
+    const data = document.data as { experimental?: Record<string, unknown> } | null;
+    const report = data?.experimental;
+    if (!report || typeof report !== 'object') return;
+    const policy = report.policy as Record<string, unknown> | undefined;
+    const large = (value: unknown) => typeof value === 'number' && value > Number.MAX_SAFE_INTEGER;
+    if (![report.steps, report.tokens, policy?.step_limit, policy?.token_limit].some(large)) return;
+
+    const exact = JSON.parse(text, (_key: string, value: unknown, context?: { source?: string }) =>
+        large(value) && context?.source ? context.source : value).data.experimental;
+    for (const key of ['steps', 'tokens']) {
+        if (large(report[key])) report[key] = exact[key];
+    }
+    for (const key of ['step_limit', 'token_limit']) {
+        if (policy && large(policy[key])) policy[key] = exact.policy[key];
+    }
+}
+
 /** Parse one worker text message into a validated event envelope. */
 export function parseEventEnvelope(text: string): EnvelopeParseResult {
     let parsed: unknown;
     try {
         parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+            preserveResearchIntegers(parsed as Record<string, unknown>, text);
+        }
     } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         return { ok: false, error: `invalid JSON: ${message}` };

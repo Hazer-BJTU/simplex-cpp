@@ -1,3 +1,4 @@
+#include "dataclass/usage_measurement.hpp"
 #include "loop/experimental.hpp"
 #include <limits>
 #include <stdexcept>
@@ -71,22 +72,10 @@ void account_experimental(model_io::AgentInputState& state, const ExperimentalCo
                     break;
                 case ExperimentalControl::TokenType::CacheHit:
                     value = cost.cache_hit;
-                    // Adapters preserve raw usage. Missing cache counters must
-                    // not masquerade as a measured zero in research results.
-                    if (!response.extras || !response.extras->contains("usage")) {
+                    if (!response.extras || !response.extras->is_object()
+                        || !response.extras->contains(model_io::cache_hit_measured)
+                        || response.extras->at(model_io::cache_hit_measured) != true) {
                         error = "experimental cache-hit usage unavailable";
-                    } else {
-                        const auto& usage = response.extras->at("usage");
-                        bool measured = false;
-                        for (const char* path : {"/prompt_tokens_details/cached_tokens",
-                                "/input_tokens_details/cached_tokens", "/prompt_cache_hit_tokens"}) {
-                            const Json::json_pointer pointer(path);
-                            if (usage.contains(pointer) && usage.at(pointer).is_number_integer()
-                                && (usage.at(pointer).is_number_unsigned()
-                                    || usage.at(pointer).get<std::int64_t>() >= 0)
-                                && usage.at(pointer) == value) measured = true;
-                        }
-                        if (!measured) error = "experimental cache-hit usage unavailable";
                     }
                     break;
             }

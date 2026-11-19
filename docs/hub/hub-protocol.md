@@ -565,6 +565,10 @@ Legacy or unmatched entries remain separate with a visible explanation. See
 [history/replay correlation](../core/worker-protocol.md#matching-history-to-event-replay)
 for the Worker contract, including Continue and compact boundaries.
 
+For `run_finished.experimental`, the Hub forwards cumulative `steps`, `tokens`
+and policy limits as JSON numbers up to JavaScript's maximum safe integer.
+Larger uint64 values are exact decimal strings in live events and transcript replay.
+
 `subscribed.questions` and the `questions` message carry the pending `ask_user`
 questions as `{question_id, question, options, asked_at, deadline_at}` objects.
 `SessionDescription.pending_questions` counts them, and that count is part of

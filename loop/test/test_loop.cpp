@@ -1195,7 +1195,7 @@ BOOST_AUTO_TEST_CASE(research_accounting_serialization_compaction_and_token_type
         loop::reset_experimental(state, control);
         Item response;
         response.cost = model_io::TokenCost{10, 2, 7};
-        response.extras = nlohmann::json::parse(R"({"usage":{"prompt_tokens_details":{"cached_tokens":7}}})");
+        response.extras = nlohmann::json::parse(R"({"simplex.cache_hit_measured":true,"usage":{"cached":7}})");
         loop::account_experimental(state, control, response);
         BOOST_TEST(loop::experimental_boundary(state, control).empty());
         auto draft = nlohmann::json(state).get<State>();
@@ -1218,6 +1218,8 @@ BOOST_AUTO_TEST_CASE(research_overflow_and_unreported_cache_are_errors) {
     control.token_type = loop::ExperimentalControl::TokenType::CacheHit;
     loop::reset_experimental(state, control);
     response.cost = model_io::TokenCost{1, 1, 0};
+    // Raw diagnostic fields can coincide with a defaulted cache count.
+    response.extras = nlohmann::json::parse(R"({"usage":{"prompt_cache_hit_tokens":0}})");
     loop::account_experimental(state, control, response);
     BOOST_CHECK_THROW(loop::experimental_boundary(state, control), std::runtime_error);
 }
