@@ -19,6 +19,7 @@ export async function dispatchQuestion(
     let context;
     try {
         context = await authorizeTool(route, request, registry, token, holdMs, signal);
+        context.validate();
     } catch (error) {
         if (error instanceof ToolFailure) return rejectedTool(route, request, error);
         throw error;
@@ -51,6 +52,10 @@ export async function dispatchQuestion(
 
     const sessionId = context.caller.id;
     const askedAt = Date.now();
+    const run = context.caller.questionSignal();
+    if (run.aborted) {
+        return reject('run_cancelled', 'the run is no longer accepting operator questions');
+    }
     let pending: Promise<QuestionResult>;
     try {
         pending = questions.open({
@@ -59,6 +64,7 @@ export async function dispatchQuestion(
             question: args.question,
             options: options as string[],
             timeoutMs: budget,
+            signal: AbortSignal.any([run, signal]),
         });
     } catch (error) {
         if (error instanceof QuestionLimitError) return reject('too_many_questions', error.message);
@@ -69,14 +75,7 @@ export async function dispatchQuestion(
     // change the answer the worker receives.
     try { changed(sessionId); } catch { /* the panel can resubscribe */ }
 
-    const withdraw = (): void => questions.withdraw(request.request_id, 'worker_disconnected');
-    signal.addEventListener('abort', withdraw, { once: true });
-    let result: QuestionResult;
-    try {
-        result = await pending;
-    } finally {
-        signal.removeEventListener('abort', withdraw);
-    }
+    const result = await pending;
     try { changed(sessionId); } catch { /* settlement is already decided */ }
 
     if (signal.aborted) {

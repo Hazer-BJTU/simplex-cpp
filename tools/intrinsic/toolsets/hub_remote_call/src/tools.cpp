@@ -123,7 +123,8 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     std::string worker_id,
     std::string session_id,
     std::string run_id,
-    std::optional<std::chrono::milliseconds> deadline) const
+    std::optional<std::chrono::milliseconds> deadline,
+    std::stop_token stop) const
 {
     if (!valid_route(route) || !nonblank(worker_id) || !nonblank(session_id)
         || !nonblank(run_id) || !query.arguments.is_object()) {
@@ -159,7 +160,7 @@ boost::asio::awaitable<Json> HubRemoteCallToolBase::request(
     try {
         wire = co_await intercom::cancellable_exchange(
             co_await boost::asio::this_coro::executor,
-            std::move(target), encoded_request, budget, {},
+            std::move(target), encoded_request, budget, stop,
             endpoint::get_global_ssl_context(), 256 * 1024);
     } catch (const boost::system::system_error& error) {
         throw InvokeException(InvokeException::Stage::Invoke,

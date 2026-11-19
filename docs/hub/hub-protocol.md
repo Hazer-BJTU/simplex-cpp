@@ -565,12 +565,21 @@ Legacy or unmatched entries remain separate with a visible explanation. See
 [history/replay correlation](../core/worker-protocol.md#matching-history-to-event-replay)
 for the Worker contract, including Continue and compact boundaries.
 
+For `run_finished.experimental`, the Hub forwards cumulative `steps`, `tokens`
+and policy limits as JSON numbers up to JavaScript's maximum safe integer.
+Larger uint64 values are exact decimal strings in live events and transcript replay.
+
 `subscribed.questions` and the `questions` message carry the pending `ask_user`
-questions as `{question_id, question, options, asked_at, deadline_at}` objects.
+questions for that subscribed session as `{question_id, question, options, asked_at, deadline_at}` objects.
 `SessionDescription.pending_questions` counts them, and that count is part of
 every description this Hub sends (`welcome`, `sessions`, `session`, `created`,
 `subscribed` and `snapshot`), so a sidebar badge does not disappear when a
-client re-subscribes. They exist only in Hub memory: a cancelled run, a deleted
+client re-subscribes. Question content is subscription-scoped. Confirmations
+can also be published globally. On reconnect the panel keeps a surviving draft
+and enables answering after the subscription snapshot confirms the question is
+still open. An uncertain submission requires an explicit retry.
+
+Questions exist only in Hub memory: a cancelled run, a deleted
 session, a closed worker connection or a Hub shutdown drops the record as
 `cancelled`, and a Hub restart drops it without a reply, leaving the waiting
 tool to report a closed connection. Answers are first-wins, and a free-text

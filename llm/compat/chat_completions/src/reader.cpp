@@ -1,3 +1,4 @@
+#include "dataclass/usage_measurement.hpp"
 #include "llm/compat/chat_completions/reader.hpp"
 
 #include <cstdint>
@@ -185,6 +186,7 @@ void ChatCompletionsReader::_assemble() {
         result.invokes = std::move(invokes);
     }
 
+    bool cache_measured = false;
     if (_mapped_cost) result.cost = _cost;
     if (!_mapped_cost && _usage && _usage->is_object()) {
         model_io::TokenCost cost;
@@ -200,6 +202,7 @@ void ChatCompletionsReader::_assemble() {
         if (const auto details = _usage->find("prompt_tokens_details");
             details != _usage->end() && details->is_object()) {
             if (auto value = get_uint64(*details, "cached_tokens")) {
+                cache_measured = true;
                 cost.cache_hit = *value;
                 has_cost = true;
             }
@@ -214,6 +217,7 @@ void ChatCompletionsReader::_assemble() {
     if (!_completion_id.empty()) extras["completion_id"] = _completion_id;
     if (!_model.empty()) extras["model"] = _model;
     if (!_finish_reason.empty()) extras["finish_reason"] = _finish_reason;
+    if (result.cost && !_mapped_cost) extras[model_io::cache_hit_measured] = cache_measured;
     if (_usage) extras["usage"] = *_usage;
     if (_error) extras["error"] = *_error;
     if (!extras.empty()) result.extras = std::move(extras);

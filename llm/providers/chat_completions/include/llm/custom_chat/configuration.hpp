@@ -259,17 +259,18 @@ struct CompatibilityConfig {
     }
 };
 
+inline std::optional<std::uint64_t> mapped_count(const Json& usage, const std::optional<Json::json_pointer>& path) {
+    if (!path || !usage.contains(*path)) return std::nullopt;
+    const auto& value = usage.at(*path);
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>();
+    if (value.is_number_integer() && value.get<std::int64_t>() >= 0)
+        return static_cast<std::uint64_t>(value.get<std::int64_t>());
+    return std::nullopt;
+}
+
 class ConfigurableDialect final : public chat_completions::ChatCompletionsDialect {
     std::shared_ptr<const CompatibilityConfig> config_;
     Json selected_;
-    static std::optional<std::uint64_t> count(const Json& usage, const std::optional<Json::json_pointer>& path) {
-        if (!path || !usage.contains(*path)) return std::nullopt;
-        const auto& value = usage.at(*path);
-        if (value.is_number_unsigned()) return value.get<std::uint64_t>();
-        if (value.is_number_integer() && value.get<std::int64_t>() >= 0)
-            return static_cast<std::uint64_t>(value.get<std::int64_t>());
-        return std::nullopt;
-    }
 public:
     explicit ConfigurableDialect(std::shared_ptr<const CompatibilityConfig> config, Json selected = Json::object())
         : config_(std::move(config)), selected_(std::move(selected)) {}
@@ -311,10 +312,10 @@ public:
         return chunk;
     }
     std::optional<model_io::TokenCost> extract_cost(const Json& usage) const override {
-        const auto prompt = count(usage, config_->prompt);
-        const auto generated = count(usage, config_->generated);
+        const auto prompt = mapped_count(usage, config_->prompt);
+        const auto generated = mapped_count(usage, config_->generated);
         if (!prompt || !generated) return std::nullopt;
-        return model_io::TokenCost{*prompt, *generated, count(usage, config_->cache).value_or(0)};
+        return model_io::TokenCost{*prompt, *generated, mapped_count(usage, config_->cache).value_or(0)};
     }
 };
 } // namespace llm::custom_chat

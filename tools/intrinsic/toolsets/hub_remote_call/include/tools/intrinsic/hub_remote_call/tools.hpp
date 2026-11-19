@@ -10,11 +10,14 @@
 namespace tools::intrinsic {
 
 /** Trusted identity snapshot, copied at invocation time by the application. */
-struct HubRemoteCallIdentity {
+struct HubRemoteCallRunContext {
     std::string worker_id;
     std::string session_id;
     std::string run_id;
+    /// Only operator waits opt into cancellation. Other remote tools settle normally.
+    std::stop_token stop{};
 };
+using HubRemoteCallIdentity = HubRemoteCallRunContext;
 using HubRemoteCallIdentityProvider = std::function<HubRemoteCallIdentity()>;
 
 
@@ -62,7 +65,7 @@ protected:
      * endpoint query (which can contain a session token) or raw response bytes.
      * Incoming assembled messages are bounded to the Hub's 256 KiB reply budget
      * before JSON parsing, including fragmented messages.
-     * There are no retries or run-cancellation hooks. The bounded exchange joins
+     * Only the operator wait passes a run stop token. There are no retries. The bounded exchange joins
      * its transport cleanup before returning; system DNS can delay that cleanup
      * beyond the reply-validity deadline, as documented by cancellable_exchange.
      *
@@ -76,7 +79,8 @@ protected:
         std::string worker_id,
         std::string session_id,
         std::string run_id,
-        std::optional<std::chrono::milliseconds> deadline = std::nullopt) const;
+        std::optional<std::chrono::milliseconds> deadline = std::nullopt,
+        std::stop_token stop = {}) const;
 
 private:
     const endpoint::ResolvedEndpoint endpoint_;

@@ -84,7 +84,11 @@ new invocation; the options signal only reads choices and current values.
 Do not make option discovery depend on a live API request. Test failures from
 request construction, transport, provider rejection, exhausted retries, and
 response parsing. Usage reporting should preserve prompt, generated, and cache-hit
-meaning so hooks and clients can calculate costs consistently.
+meaning so hooks and clients can calculate costs consistently. When the provider
+measures cache hits, set `MessageItem::extras["simplex.cache_hit_measured"]` to
+`true` and store the count in `cost.cache_hit`, including a measured zero.
+A missing or invalid counter leaves this flag false or absent. The research
+loop checks the flag and adapters retain the provider's usage object in `extras.usage`.
 
 For services with configurable Chat Completions field differences, the bundled
 [Custom Chat Completions provider](../providers/chat-completions.md) can avoid

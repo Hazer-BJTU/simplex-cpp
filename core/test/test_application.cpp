@@ -568,10 +568,24 @@ sections:
         std::ofstream(prompt_file) << "sections: [{name: persona, text: Changed instructions.}]\n";
         config.system_prompt = load::read_system_prompt(prompt_file);
         // Both replacement and removal must discard the snapshot's old hints.
-        for (const std::string provider : {"restored-provider", "deepseek", "qwen", "glm", "zhipu"}) {
-            const bool clear = provider != "restored-provider";
+        struct RestoreCase {
+            std::string provider;
+            std::string model;
+            std::string greeting;
+        };
+        for (const RestoreCase& test : std::vector<RestoreCase>{
+                {"restored-provider", "fixture-1", ""},
+                {"deepseek", "fixture-1", "DeepSeek"},
+                {"qwen", "fixture-1", "Qwen Team"},
+                {"glm", "fixture-1", "Zhipu GLM Team"},
+                {"zhipu", "", "Zhipu GLM Team"},
+                {"chat-completions", "", ""},
+                {"qwen", "deepseek-flash", "DeepSeek"}}) {
+            const bool clear = test.provider != "restored-provider";
             io.restart();
-            config.provider = provider;
+            config.provider = test.provider;
+            config.model = Json::object();
+            if (!test.model.empty()) config.model["model"] = test.model;
             config.environment = {};
             if (!clear) config.environment.platform = "Replacement platform";
             core::Application restored(io.get_executor(), config, "test", model);
@@ -585,17 +599,16 @@ sections:
             const auto& signature = *std::prev(saved_snapshot.system_prompt.end());
             BOOST_TEST(signature.name == "signature.runtime");
             BOOST_TEST(signature.title.empty());
-            const std::string greeting = provider == "deepseek" ? "Greetings to DeepSeek."
-                : provider == "qwen" ? "Greetings to Qwen Team."
-                : (provider == "glm" || provider == "zhipu") ? "Greetings to Zhipu GLM Team."
-                : std::string();
-            if (greeting.empty()) {
+            if (test.greeting.empty()) {
                 BOOST_TEST(signature.text.find("Greetings to ") == std::string::npos);
             } else {
-                BOOST_TEST(signature.text.find(greeting) != std::string::npos);
+                BOOST_TEST(signature.text.find("Greetings to " + test.greeting + ".") != std::string::npos);
             }
-            BOOST_TEST(signature.text.find("All the best with your work, fixture-1.")
-                != std::string::npos);
+            if (test.model.empty()) {
+                BOOST_TEST(signature.text.find("All the best") == std::string::npos);
+            } else {
+                BOOST_TEST(signature.text.ends_with("All the best with your work, " + test.model + "."));
+            }
             BOOST_TEST(saved_snapshot.system_prompt.find("persona")->text == "Initial instructions.");
             const auto environment = saved_snapshot.system_prompt.find("environment.runtime");
             BOOST_REQUIRE(environment != saved_snapshot.system_prompt.end());

@@ -180,6 +180,10 @@ export class Session {
     lastRunId: string;
     /** Only an observed active run may invoke executable hub routes. */
     activeRunId = '';
+    private questionLifetime = new AbortController();
+    /** Last verified owner. Retained across event socket loss only for cancel correlation. */
+    private questionRun: { worker: string; run: string; cancelled: boolean } | null = null;
+
     /** Open tool-confirmation prompts, keyed by confirmation ID. */
     readonly prompts: Map<string, RegisteredPrompt>;
     /** Identity observers, used by the confirmation adapter's hold. */
@@ -230,6 +234,9 @@ export class Session {
      */
     attach(connection: AttachedConnection): { previous: AttachedConnection | null; replaced: boolean } {
         const previous = this.connection;
+        // Keep the last known identity visible during a seamless reconnect.
+        // The replacement must establish its own active run before opening waits.
+        if (previous && previous !== connection) this.suspendActiveRun();
         this.connection = connection;
         this.workerCapabilities = null;
         this.lastConnectionAt = new Date().toISOString();
@@ -320,8 +327,9 @@ export class Session {
         const incarnation = previous !== null && previous !== workerId;
         if (previous !== workerId) {
             this.workerCapabilities = null;
-            this.activeRunId = '';
+            this.suspendActiveRun();
         }
+        if (this.questionRun?.worker !== workerId) this.questionRun = null;
         if (incarnation) this.stats.incarnations += 1;
         this.identity = {
             state: IDENTITY.live,
@@ -335,7 +343,7 @@ export class Session {
 
     /** Mark a known identity as no longer backed by an open connection. */
     markStale(): void {
-        this.activeRunId = '';
+        this.suspendActiveRun();
         this.workerCapabilities = null;
         if (this.identity.state !== IDENTITY.live) return;
         this.identity = {
@@ -386,15 +394,48 @@ export class Session {
         return [...this.prompts.values()].map((prompt) => prompt.describe());
     }
 
+    /** The verified run owns all of its operator waits, including later admissions. */
+    questionSignal(): AbortSignal {
+        return this.questionLifetime.signal;
+    }
+
+    /** Withdraw existing waits and fence delayed tool RPCs for this same run. */
+    cancelQuestions(run: string): void {
+        const owner = this.questionRun;
+        if (!owner || owner.run !== run) return;
+        owner.cancelled = true;
+        if (this.activeRunId === run) this.questionLifetime.abort('run_cancelled');
+    }
+
+    /** Revoke live admission immediately while the replacement socket identifies its run. */
+    private suspendActiveRun(): void {
+        this.activeRunId = '';
+        this.questionLifetime.abort('worker_disconnected');
+    }
+
+    private setActiveRun(run: string): void {
+        const worker = this.identity.workerId;
+        if (!run || !worker) {
+            this.questionRun = null;
+        } else if (this.questionRun?.worker !== worker || this.questionRun.run !== run) {
+            this.questionRun = { worker, run, cancelled: false };
+        }
+        if (this.activeRunId === run) return;
+        this.questionLifetime.abort('run_finished');
+        this.activeRunId = run;
+        this.questionLifetime = new AbortController();
+        if (this.questionRun?.cancelled) this.questionLifetime.abort('run_cancelled');
+    }
+
     /** Record an inbound envelope and update the cheap panel snapshots. */
     noteEnvelope(envelope: RegistryEnvelope): void {
         if (envelope.event === 'input_admitted' || envelope.event === 'run_started') {
-            this.activeRunId = typeof envelope.run_id === 'string' ? envelope.run_id : '';
+            this.setActiveRun(typeof envelope.run_id === 'string' ? envelope.run_id : '');
         } else if (envelope.event === 'run_finished' || envelope.event === 'shutdown') {
-            this.activeRunId = '';
+            this.setActiveRun('');
         } else if (envelope.event === 'status') {
             const data = envelope.data as { active?: boolean } | null;
-            this.activeRunId = data?.active && typeof envelope.run_id === 'string' ? envelope.run_id : '';
+            this.setActiveRun(data?.active && typeof envelope.run_id === 'string' ? envelope.run_id : '');
         }
 
         this.stats.events += 1;

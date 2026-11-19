@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include "dataclass/usage_measurement.hpp"
 #include "llm/custom_chat/configuration.hpp"
 #include "llm/compat/chat_completions/model.hpp"
 
@@ -41,6 +42,18 @@ public:
         built_ = ChatCompletionsModel::build();
         return built_;
     }
+    boost::asio::awaitable<model_io::MessageItem> converse(model_io::AgentInputState state) override {
+        auto response = co_await ChatCompletionsModel::converse(std::move(state));
+        // Configurable costs use the immutable pointer on the original usage
+        // snapshot, even when a response patch rewrites the wire chunk.
+        if (response.cost && response.extras) {
+            auto& extras = *response.extras;
+            extras[model_io::cache_hit_measured] =
+                mapped_count(extras.at("usage"), compatibility_->cache).has_value();
+        }
+        co_return response;
+    }
+
     Json get_options() const override {
         Json result = Json::array();
         for (const auto& option : compatibility_->options) {

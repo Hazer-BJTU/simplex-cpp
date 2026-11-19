@@ -83,9 +83,7 @@ const block = page.getByTestId('approval-block');
 await block.waitFor({ timeout: 60_000 });
 console.log(`approval block: ${(await block.innerText()).split('\n').slice(0, 3).join(' | ')}`);
 
-// The block sits above the composer and covers nothing; a decision has to be
-// clicked rather than pressed Enter into, which is checked by deciding first
-// and pressing nothing.
+// The card floats over the reading column. Capture it before explicitly approving.
 await page.screenshot({ path: `${SHOTS}/p8-approval.png` });
 
 await block.getByRole('button', { name: 'Approve' }).click();

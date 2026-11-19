@@ -99,6 +99,7 @@ export class QuestionStore {
         question: string;
         options: string[];
         timeoutMs: number;
+        signal?: AbortSignal;
     }): Promise<QuestionResult> {
         if (this.entries.size >= this.total) {
             throw new QuestionLimitError('too many pending questions on this hub');
@@ -125,10 +126,15 @@ export class QuestionStore {
             const settle = (result: QuestionResult): void => {
                 const current = this.entries.get(doc.question_id);
                 if (!current || current.resolve !== settle) return;
+                input.signal?.removeEventListener('abort', abort);
                 clearTimeout(current.timer);
                 this.entries.delete(doc.question_id);
                 resolve(result);
             };
+            // Capture this entry's settle function. A delayed abort cannot
+            // withdraw a different request that later reused the same ID.
+            const abort = (): void => settle({ outcome: 'cancelled',
+                reason: typeof input.signal?.reason === 'string' ? input.signal.reason : 'worker_disconnected' });
             // Deliberately referenced: a pending question must still time out
             // when it is the only thing left on the event loop.
             const timer = setTimeout(() => settle({ outcome: 'timeout' }),
@@ -139,6 +145,8 @@ export class QuestionStore {
                 resolve: settle,
                 timer,
             });
+            if (input.signal?.aborted) abort();
+            else input.signal?.addEventListener('abort', abort, { once: true });
         });
     }
 
@@ -172,11 +180,6 @@ export class QuestionStore {
         }
         entry.resolve({ outcome: 'answered', reply: { option_index: index, option } });
         return { ok: true };
-    }
-
-    /** Withdraw one question, e.g. when its transport closed. */
-    withdraw(questionId: string, reason: string): void {
-        this.entries.get(questionId)?.resolve({ outcome: 'cancelled', reason });
     }
 
     /** Withdraw every question of one session, e.g. when its run is cancelled. */

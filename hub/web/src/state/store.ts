@@ -198,6 +198,8 @@ export interface PanelState {
     plans: ReadonlyMap<SessionId, SessionPlan>;
     /** Pending ask_user questions per session; Hub memory only, never restored. */
     questions: ReadonlyMap<SessionId, readonly OperatorQuestion[]>;
+    /** Sessions with a current pending-question snapshot on this connection. */
+    questionSnapshots: ReadonlySet<SessionId>;
     /** Refusal state per question id; a new object marks a new refusal. */
     questionFailures: ReadonlyMap<string, QuestionFailure>;
     hub: HubMetadata | null;
@@ -244,6 +246,8 @@ export interface PanelState {
 /** Everything the store can be asked to do. */
 export interface PanelActions {
     setPlan(session: SessionId, plan: SessionPlan, snapshot?: boolean): void;
+    /** Retain drafts but pause submission until a fresh subscription snapshot. */
+    invalidateQuestionSnapshot(session: SessionId): void;
     /** Replace the pending-question set for one session. */
     setQuestions(session: SessionId, questions: readonly OperatorQuestion[]): void;
     /** Record why the hub refused an answer; the card resets to editable. */
@@ -400,6 +404,7 @@ const INITIAL: PanelState = {
     pendingExecutions: new Map(),
     plans: new Map(),
     questions: new Map(),
+    questionSnapshots: new Set(),
     questionFailures: new Map(),
     sessions: new Map(),
     views: new Map(),
@@ -894,12 +899,18 @@ export function createPanelStore() {
             failures.delete(questionId);
             set({ questionFailures: failures });
         },
+        invalidateQuestionSnapshot(session) {
+            if (!get().questionSnapshots.has(session)) return;
+            const snapshots = new Set(get().questionSnapshots);
+            snapshots.delete(session);
+            set({ questionSnapshots: snapshots });
+        },
         setQuestions(session, questions) {
             if (!Array.isArray(questions)) return;
             const next = new Map(get().questions);
             if (questions.length === 0) next.delete(session);
             else next.set(session, questions);
-            set({ questions: next });
+            set({ questions: next, questionSnapshots: new Set(get().questionSnapshots).add(session) });
         },
         setPlan(session, plan, snapshot = false) {
             if (!plan || typeof plan.markdown !== 'string' || !Number.isSafeInteger(plan.revision)
@@ -915,7 +926,6 @@ export function createPanelStore() {
             set({ sessions: upserted(get(), session) });
         },
         applyWelcome(message) {
-            set({ plans: new Map(), questions: new Map(), questionFailures: new Map() });
             const state = get();
             const patch: Partial<PanelState> = {};
             if (message.hub) {
@@ -932,6 +942,13 @@ export function createPanelStore() {
                 sessions.set(session.session_id, session);
             }
             patch.sessions = sessions;
+            patch.plans = new Map();
+            patch.questionSnapshots = new Set();
+            // Keep a surviving card mounted while awaiting its authoritative
+            // subscription snapshot, so a reconnect preserves the typed draft.
+            patch.questions = new Map([...state.questions].filter(([id]) =>
+                sessions.has(id) && state.epoch === message.hub?.transcript_epoch
+                && state.sessions.get(id)?.identity.worker_id === sessions.get(id)?.identity.worker_id));
             if (state.selected && !sessions.has(state.selected)) patch.selected = null;
 
             const epoch = reconcileEpoch(state, message.hub?.transcript_epoch);
@@ -966,6 +983,7 @@ export function createPanelStore() {
             plans.delete(sessionId);
             const questions = new Map(get().questions);
             questions.delete(sessionId);
+            get().invalidateQuestionSnapshot(sessionId);
             const patch: Partial<PanelState> = { sessions, views, plans, questions };
             if (get().selected === sessionId) patch.selected = null;
             set(patch);

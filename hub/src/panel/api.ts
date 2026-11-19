@@ -684,6 +684,7 @@ export function createPanelApi({
             return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
         const sent = connection.sendSignal(signal);
+        if (sent.ok && body.operation === 'cancel' && runId) session.cancelQuestions(runId);
         return sent.ok ? { ok: true } : { ok: false, error: sent.error ?? 'the signal was not sent' };
     }
 
@@ -1138,12 +1139,6 @@ export function createPanelApi({
                         message: result.error, request: message,
                     });
                     return;
-                }
-                if (message.operation === 'cancel') {
-                    // A cancelled run no longer has a waiting tool to answer;
-                    // settle now instead of holding the worker until the deadline.
-                    questions.cancel(target.id, 'run_cancelled');
-                    try { broadcastQuestions(target.id); } catch { /* recoverable */ }
                 }
                 send(client, {
                     type: 'accepted', action: 'signal',
