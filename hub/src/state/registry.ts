@@ -181,7 +181,8 @@ export class Session {
     /** Only an observed active run may invoke executable hub routes. */
     activeRunId = '';
     private questionLifetime = new AbortController();
-    private cancelledQuestionRun: { worker: string; run: string } | null = null;
+    /** Last verified owner. Retained across event socket loss only for cancel correlation. */
+    private questionRun: { worker: string; run: string; cancelled: boolean } | null = null;
 
     /** Open tool-confirmation prompts, keyed by confirmation ID. */
     readonly prompts: Map<string, RegisteredPrompt>;
@@ -235,7 +236,7 @@ export class Session {
         const previous = this.connection;
         // Keep the last known identity visible during a seamless reconnect.
         // The replacement must establish its own active run before opening waits.
-        if (previous && previous !== connection) this.setActiveRun('', 'worker_disconnected');
+        if (previous && previous !== connection) this.suspendActiveRun();
         this.connection = connection;
         this.workerCapabilities = null;
         this.lastConnectionAt = new Date().toISOString();
@@ -326,8 +327,9 @@ export class Session {
         const incarnation = previous !== null && previous !== workerId;
         if (previous !== workerId) {
             this.workerCapabilities = null;
-            this.setActiveRun('', 'worker_disconnected');
+            this.suspendActiveRun();
         }
+        if (this.questionRun?.worker !== workerId) this.questionRun = null;
         if (incarnation) this.stats.incarnations += 1;
         this.identity = {
             state: IDENTITY.live,
@@ -341,7 +343,7 @@ export class Session {
 
     /** Mark a known identity as no longer backed by an open connection. */
     markStale(): void {
-        this.setActiveRun('', 'worker_disconnected');
+        this.suspendActiveRun();
         this.workerCapabilities = null;
         if (this.identity.state !== IDENTITY.live) return;
         this.identity = {
@@ -399,21 +401,30 @@ export class Session {
 
     /** Withdraw existing waits and fence delayed tool RPCs for this same run. */
     cancelQuestions(run: string): void {
-        const worker = this.identity.workerId;
-        if (!worker || !run || run !== this.activeRunId) return;
-        this.cancelledQuestionRun = { worker, run };
-        this.questionLifetime.abort('run_cancelled');
+        const owner = this.questionRun;
+        if (!owner || owner.run !== run) return;
+        owner.cancelled = true;
+        if (this.activeRunId === run) this.questionLifetime.abort('run_cancelled');
     }
 
-    private setActiveRun(run: string, reason = 'run_finished'): void {
+    /** Revoke live admission immediately while the replacement socket identifies its run. */
+    private suspendActiveRun(): void {
+        this.activeRunId = '';
+        this.questionLifetime.abort('worker_disconnected');
+    }
+
+    private setActiveRun(run: string): void {
+        const worker = this.identity.workerId;
+        if (!run || !worker) {
+            this.questionRun = null;
+        } else if (this.questionRun?.worker !== worker || this.questionRun.run !== run) {
+            this.questionRun = { worker, run, cancelled: false };
+        }
         if (this.activeRunId === run) return;
-        this.questionLifetime.abort(reason);
+        this.questionLifetime.abort('run_finished');
         this.activeRunId = run;
         this.questionLifetime = new AbortController();
-        const cancelled = this.cancelledQuestionRun;
-        if (cancelled && cancelled.worker === this.identity.workerId && cancelled.run === run) {
-            this.questionLifetime.abort('run_cancelled');
-        }
+        if (this.questionRun?.cancelled) this.questionLifetime.abort('run_cancelled');
     }
 
     /** Record an inbound envelope and update the cheap panel snapshots. */

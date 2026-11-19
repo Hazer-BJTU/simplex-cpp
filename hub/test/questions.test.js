@@ -114,15 +114,15 @@ async function setup(overrides = {}) {
     await panel.waitFor((message) => message.type === 'welcome');
     panel.send({ type: 'subscribe', session: 'demo' });
     await panel.waitFor((message) => message.type === 'subscribed');
-    // One admitted run is enough; every call below reuses run-1.
+    // Start with a verified run on the original event connection.
     emit('input_admitted');
     await until(() => session.activeRunId === 'run-1');
-    const call = async (arguments_, requestId) => {
+    const call = async (arguments_, requestId, worker = 'worker-1', run = 'run-1') => {
         const url = new URL(endpoints.tools);
         url.pathname += '/ask_user/ask';
         const peer = await connectWorker(url.href);
         peer.send({ type: 'tool_request', data: {
-            worker_id: 'worker-1', session_id: 'demo', run_id: 'run-1',
+            worker_id: worker, session_id: 'demo', run_id: run,
             request_id: requestId, arguments: arguments_,
         } });
         const response = await peer.waitFor((value) => value.type === 'tool_response', { timeout: 12000 });
@@ -294,6 +294,48 @@ it('binds pending and late questions to the cancelled run', async () => {
     assert.equal(late.error.code, 'run_cancelled');
     assert.equal(ctx.panel.messages.slice(mark).some(m => m.questions?.length > 0), false);
 });
+
+for (const { scenario, worker, run, detach } of [
+    { scenario: 'replacement socket confirms the same run', worker: 'worker-1', run: 'run-1' },
+    { scenario: 'detached socket reconnects to the same run', worker: 'worker-1', run: 'run-1', detach: true },
+    { scenario: 'same worker reports a different run', worker: 'worker-1', run: 'run-2' },
+    { scenario: 'new worker reports the same run ID', worker: 'worker-2', run: 'run-1' },
+]) {
+    it(`scopes cancel during event reconnect when ${scenario}`, async () => {
+        const ctx = await setup();
+        if (detach) {
+            await ctx.event.close();
+            await until(() => !ctx.session.connected);
+        }
+        const replacement = await connectWorker(ctx.endpoints.events);
+        cleanup.push(() => replacement.close());
+        await replacement.waitFor(m => m.type === 'signal' && m.data.operation === 'status');
+        assert.equal(ctx.session.activeRunId, '');
+        ctx.panel.send({ type: 'signal', session: 'demo', operation: 'cancel', run_id: 'run-1' });
+        await replacement.waitFor(m => m.type === 'signal' && m.data.operation === 'cancel'
+            && m.data.run_id === 'run-1');
+        await ctx.panel.waitFor(m => m.type === 'accepted' && m.operation === 'cancel');
+
+        replacement.send(workerEvent({ session: 'demo', worker, sequence: 2,
+            event: 'status', runId: run, data: { active: true } }));
+        await until(() => ctx.session.activeRunId === run && ctx.session.identity.workerId === worker);
+        const pending = ctx.call({ question: 'After reconnect?', timeout_ms: 5000 }, 'late', worker, run);
+        if (worker === 'worker-1' && run === 'run-1') {
+            const reply = await pending;
+            assert.equal(reply.status, 'rejected');
+            assert.equal(reply.error.code, 'run_cancelled');
+            // A subsequent list reply is a barrier on the panel connection.
+            ctx.panel.send({ type: 'list_sessions' });
+            await ctx.panel.waitFor(m => m.type === 'sessions');
+            assert.equal(ctx.panel.messages.some(m => m.questions?.some(q => q.question_id === 'late')), false);
+        } else {
+            await ctx.panel.waitFor(m => m.type === 'questions' && m.questions.some(q => q.question_id === 'late'));
+            ctx.panel.send({ type: 'question_answer', session: 'demo', question_id: 'late',
+                answer: { text: 'New run' } });
+            assert.equal((await pending).result.reply.text, 'New run');
+        }
+    });
+}
 
 it('keeps the granted operator window after delayed run authorization', async () => {
     const ctx = await setup({ limits: { confirmIdentityHoldMs: 9000 } });

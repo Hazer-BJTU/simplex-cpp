@@ -72,8 +72,10 @@ no mutable application state is retained. The host identity callback uses a weak
 application reference and briefly locks to copy worker/session/run IDs. Network
 awaits hold no application lock. Never obtain these IDs from model arguments.
 
-Requests wait through run cancellation. The intercom deadline invalidates late
-replies and joins transport cleanup; an active system DNS lookup can delay cleanup.
+Plan and subagent requests wait for settlement through run cancellation.
+Only `ask_user` passes the run stop token to interrupt its operator wait.
+The intercom deadline invalidates late replies and joins transport cleanup.
+An active system DNS lookup can delay cleanup.
 Transport diagnostics exclude the token-bearing endpoint and raw reply bytes.
 Future operations must explicitly define authorization, arguments, results and
 side effects before registration. Unknown routes remain not_implemented.
