@@ -581,3 +581,22 @@ BOOST_AUTO_TEST_CASE(reasoning_is_validated_only_when_it_is_replayed) {
             .build_request(state, fixture.endpoint, fixture.generation),
         HttpRequestException);
 }
+
+BOOST_AUTO_TEST_CASE(tool_budget_notice_follows_the_final_dialect_transformation) {
+    class PreviewDialect final : public llm::chat_completions::ChatCompletionsDialect {
+        void transform_request(nlohmann::json& body) const override {
+            body.at("messages").back().at("content") = "preview";
+        }
+    };
+    Fixture fixture;
+    auto state = react_state();
+    state.turns.back().agent_loop_step.pop_back();
+    state.extras = nlohmann::json{{"simplex.tool_result_notice", {{"call_id", "call_1"}, {"text", "finish soon"}}}};
+    ChatCompletionsInterpreter interpreter(std::make_shared<PreviewDialect>());
+    auto render = [&] { return body_of(interpreter.build_request(state, fixture.endpoint, fixture.generation)); };
+    auto message = render().at("messages").back();
+    BOOST_TEST(message.at("tool_call_id") == "call_1");
+    BOOST_TEST(message.at("content") == "preview\n\nfinish soon");
+    (*state.extras)["simplex.tool_result_notice"]["call_id"] = "other-call";
+    BOOST_TEST(render().at("messages").back().at("content") == "preview");
+}

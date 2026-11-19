@@ -90,6 +90,13 @@ measures cache hits, set `MessageItem::extras["simplex.cache_hit_measured"]` to
 A missing or invalid counter leaves this flag false or absent. The research
 loop checks the flag and adapters retain the provider's usage object in `extras.usage`.
 
+The worker can attach a request-only planning reminder to the final tool result.
+Adapters using either bundled wire interpreter inherit this behavior. An
+independent adapter can read `AgentInputState::extras["simplex.tool_result_notice"]`
+on the request snapshot and append its `text` to the matching final tool result
+(`call_id`) after output formatting. Preserve the call ID and all preceding
+messages. See [model-visible budget configuration](../getting-started/configuration.md#controlled-research-budgets).
+
 For services with configurable Chat Completions field differences, the bundled
 [Custom Chat Completions provider](../providers/chat-completions.md) can avoid
 writing a new plugin. It supports local model/option declarations, ordered

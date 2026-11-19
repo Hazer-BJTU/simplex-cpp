@@ -1,3 +1,4 @@
+#include "llm/tool_result_notice.hpp"
 #include "core/application.hpp"
 #include "persistence/selection.hpp"
 #include <boost/asio/thread_pool.hpp>
@@ -43,6 +44,62 @@ namespace asio = boost::asio;
 using Json = nlohmann::json;
 
 namespace {
+/** Decorate only the private provider input, after hooks and tool-result
+ * projection. An empty advance or pruned tail must never borrow an older call.
+ * Compact uses the provider directly and therefore only contributes usage. */
+void prepare_budget_notice(model_io::AgentInputState& snapshot, const load::Configuration& config) {
+    if (snapshot.extras && snapshot.extras->is_object()) {
+        snapshot.extras->erase(llm::tool_result_notice_key);
+    }
+    const auto& visible = config.model_visible_budget;
+    if ((!visible.after_exchanges && !visible.token_percent) || !snapshot.loop
+        || snapshot.turns.empty() || snapshot.turns.back().agent_loop_step.empty()) return;
+
+    const auto& step = snapshot.turns.back().agent_loop_step.back();
+    if (!step.commit_sequence || step.commit_sequence != snapshot.loop->committed_response_sequence
+        || !step.invoke_returns || step.invoke_returns->empty()) return;
+    const auto& result = step.invoke_returns->back().invoke_return;
+    if (!result) return;
+
+    const auto report = loop::experimental_report(snapshot);
+    if (!report) return;
+    const auto steps = report->at("steps").get<std::uint64_t>();
+    const auto tokens = report->at("tokens").get<std::uint64_t>();
+    const auto& control = config.experimental;
+    // ceil(limit * percent / 100) without multiplying the full uint64 limit.
+    const auto threshold = (control.tokens / 100) * visible.token_percent
+        + ((control.tokens % 100) * visible.token_percent + 99) / 100;
+    if (!(visible.after_exchanges && steps >= visible.after_exchanges)
+        && !(visible.token_percent && tokens >= threshold)) return;
+
+    std::string text = "[Runtime budget] ";
+    if (control.steps) {
+        if (steps >= control.steps) {
+            text += "This is your final step for the current task. ";
+        } else {
+            const auto left = control.steps - steps;
+            text += "Plan to finish the current task within " + std::to_string(left)
+                + (left == 1 ? " more step. " : " more steps. ");
+        }
+        text += "Each model reply counts as one step, including a reply that calls tools. ";
+    }
+    if (control.tokens) {
+        const auto left = control.tokens - std::min(tokens, control.tokens);
+        const char* unit = "total (input plus generated) tokens";
+        using Type = loop::ExperimentalControl::TokenType;
+        switch (control.token_type) {
+            case Type::Prompt: unit = "input tokens"; break;
+            case Type::Generated: unit = "generated tokens"; break;
+            case Type::CacheHit: unit = "cache-hit input tokens"; break;
+            case Type::Total: break;
+        }
+        text += "Your remaining budget for this task is " + std::to_string(left) + " " + unit + ". ";
+    }
+    text += "Prioritize the actions needed to finish. Once a reply exceeds a budget, "
+            "the worker ends this task after settling that reply's tool calls.";
+    (*snapshot.extras)[llm::tool_result_notice_key] = {{"call_id", result->query.id}, {"text", std::move(text)}};
+}
+
 /**
  * Attach host execution identity inside the loop's integration transaction.
  * New inputs receive their creating execution; Continue keeps that provenance
@@ -54,9 +111,9 @@ namespace {
 class ExecutionModel final : public llm::LLMModel {
 public:
     ExecutionModel(asio::any_io_executor executor, llm::LLMModel& provider,
-                   Json execution)
+                   Json execution, const load::Configuration& config)
         : LLMModel(std::move(executor), Json::object()), provider_(provider),
-          execution_(std::move(execution)) {}
+          execution_(std::move(execution)), config_(config) {}
 
     llm::LLMModelType model_type() const noexcept override {
         return provider_.model_type();
@@ -64,6 +121,7 @@ public:
 
     asio::awaitable<model_io::MessageItem> converse(
         model_io::AgentInputState conversation) override {
+        prepare_budget_notice(conversation, config_);
         co_return co_await provider_.converse(std::move(conversation));
     }
 
@@ -91,6 +149,7 @@ public:
 private:
     llm::LLMModel& provider_;
     Json execution_;
+    const load::Configuration& config_;
 };
 
 /**
@@ -1526,7 +1585,7 @@ struct Application::Impl : std::enable_shared_from_this<Impl> {
             message = continuation();
         }
         ExecutionModel execution_model(strand, *driver_model,
-            {{"worker_id", worker_id}, {"request_id", request_id}, {"run_id", run_id}});
+            {{"worker_id", worker_id}, {"request_id", request_id}, {"run_id", run_id}}, config);
         for (;;) {
             failure_operation = "task";
             run_saved = false;

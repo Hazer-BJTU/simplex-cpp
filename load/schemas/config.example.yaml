@@ -247,3 +247,6 @@ persistence:
 #   cumulative_token_control:
 #     type: total  # prompt | generated | total | cache_hit
 #     threshold: 1000000
+#   model_visible_budget:  # Optional reminders on the next request after a tool batch.
+#     after_exchanges: 80  # Absolute completed steps, at most cumulative_step_control.
+#     token_percent: 80    # Percentage of the selected token budget, 1..100.

@@ -624,3 +624,27 @@ BOOST_AUTO_TEST_CASE(synthesized_refusal_becomes_its_own_part) {
     BOOST_CHECK_EQUAL(content[1]["refusal"], "cannot help with that");
     BOOST_CHECK(!content[1].contains("text"));
 }
+
+BOOST_AUTO_TEST_CASE(tool_budget_notice_survives_captured_output_replay) {
+    Fixture fixture;
+    auto state = react_conversation();
+    state.turns.pop_back();
+    auto& steps = state.turns.back().agent_loop_step;
+    steps.pop_back();
+    auto& record = *steps.back().invoke_returns->back().invoke_return;
+    state.extras = nlohmann::json{{"simplex.tool_result_notice", {{"call_id", "call_1"}, {"text", "finish soon"}}}};
+    const std::string large(64 * 1024, 'x');
+    record.extras = nlohmann::json{{"type", "function_call_output"}, {"call_id", "call_1"}, {"output", large}};
+    ResponsesInterpreter interpreter;
+    auto render = [&] { return body_of(interpreter.build_request(state, fixture.endpoint, fixture.generation)); };
+    BOOST_CHECK(render().at("input").back().at("output") == large + "\n\nfinish soon");
+    BOOST_CHECK(record.extras->at("output") == large);
+
+    const nlohmann::json parts = {{{"type", "input_image"}, {"file_id", "fixture-image"}}};
+    (*record.extras)["output"] = parts;
+    const auto output = render().at("input").back().at("output");
+    BOOST_REQUIRE_EQUAL(output.size(), 2u);
+    BOOST_TEST(output.front() == parts.front());
+    BOOST_TEST(output.back().at("type") == "input_text");
+    BOOST_TEST(output.back().at("text") == "finish soon");
+}

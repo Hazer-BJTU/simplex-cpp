@@ -327,6 +327,9 @@ experimental:
   cumulative_token_control:
     type: total
     threshold: 1000000
+  model_visible_budget:      # optional
+    after_exchanges: 80
+    token_percent: 80
 ```
 
 One step is one committed driver-model exchange, including final answers and
@@ -352,6 +355,29 @@ prevents another continue from issuing model requests; send a new message instea
 Compact costs count even if its summary later fails validation. A valid compact
 replacement is published before applying its budget, without starting an automatic
 continuation afterwards. Cancellation remains cancellation and does not reset counts.
+
+To make the budget visible to the driver model, set either reminder threshold.
+`after_exchanges` counts completed model replies since the last external user
+message. Its maximum is `cumulative_step_control`. `token_percent` is an integer
+from 1 to 100 and requires a positive `cumulative_token_control.threshold`.
+Omission or zero disables the corresponding reminder trigger.
+
+Once either threshold is reached, each ordinary request immediately following a
+settled tool batch carries a short planning reminder at the end of the **last
+tool result**. It tells the model how many steps it can take within the limit
+and how many tokens of the configured kind remain. A token-only budget cannot
+predict a step count. Each model reply consumes one step, including a reply
+that requests several tools. At the exact step limit the reminder asks the model
+to finish on the current reply, consistent with strict exceedance.
+
+The bundled Chat Completions and Responses adapters append the reminder after
+dialect transformations, to the matching final tool result. Custom transformations
+must retain that result's standard identity and text or content-array field.
+Reasoning-only advancement, other requests without a trailing tool result and
+compact summary requests omit the reminder. The next eligible tool result shows
+the current figures. The reminder exists in the outgoing request only. System
+instructions, persisted tool results and Hub tool events keep their original text.
+The provider accounts for the reminder as ordinary request content.
 
 Counters and terminal reasons live in the host-owned `simplex.experimental` state
 metadata. Enabled persistence retains them across restarts; without persistence

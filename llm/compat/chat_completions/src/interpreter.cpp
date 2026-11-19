@@ -1,3 +1,4 @@
+#include "llm/tool_result_notice.hpp"
 #include "llm/compat/chat_completions/interpreter.hpp"
 
 #include <string>
@@ -373,6 +374,7 @@ ChatCompletionsInterpreter::build_request(
         body["stream_options"]["include_usage"] = true;
     }
     _dialect->transform_request(body);
+    append_tool_result_notice(conversation, body, ToolResultFormat::ChatCompletions);
 
     HttpRequest request{http::verb::post, where.target, 11};
     request.set(http::field::host, where.authority());

@@ -100,6 +100,10 @@ struct Configuration {
     bool save_shutdown = true;
     /// Opt-in controlled research budgets.
     loop::ExperimentalControl experimental;
+    struct {
+        std::uint64_t after_exchanges = 0;
+        std::uint64_t token_percent = 0;
+    } model_visible_budget;
     /**
      * Accepted legacy `persistence.readable` setting.
      *
