@@ -10,6 +10,7 @@ import pytest
 from simplex_ptc import PTCError, Request, Session, ToolDescriptor, ToolRegistry
 from simplex_ptc.client import Client
 from simplex_ptc.protocol import MAX_RESPONSE_BYTES, encode
+from simplex_ptc.session import digest
 from simplex_ptc.storage import Storage
 
 
@@ -18,13 +19,36 @@ def execute(session, identity, source):
     epoch = receipt["epoch"] if receipt else None
     # An initial-request retry uses the exact original request digest.
     if receipt and (receipt.get("receipt") or {}).get("execution_id") == identity:
-        from simplex_ptc.session import digest
-
         if receipt["receipt"]["request_digest"] == digest(
             encode({"source": source, "epoch": None})
         ):
             epoch = None
     return session.execute(Request(identity, source, epoch))
+
+
+def legacy_recovered(session, identity, source):
+    """Create a receipt with the exact envelope written by recover() before v1.3.2."""
+    checkpoint = session.storage.read("checkpoint")
+    session.storage.write(
+        "execution.pending",
+        {
+            "epoch": checkpoint["epoch"],
+            "base_revision": checkpoint["revision"],
+            "execution_id": identity,
+            "request_digest": digest(encode({"source": source, "epoch": checkpoint["epoch"]})),
+        },
+    )
+    session.recover(checkpoint["epoch"], identity)
+    checkpoint = session.storage.read("checkpoint")
+    response = checkpoint["receipt"]["response"]
+    for key in ("result", "output", "output_omitted_bytes"):
+        response.pop(key)
+    session.storage.write("checkpoint", checkpoint)
+    return checkpoint, response
+
+
+def forbidden(*_args, **_kwargs):
+    raise AssertionError("a saved receipt must not replay source")
 
 
 def cli(path, identity, source):
@@ -219,6 +243,69 @@ def test_write_failure_blocks_new_execution_until_recovery(tmp_path, monkeypatch
     finally:
         client.stop()
     assert execute(session, "three", "x")["result"] == 1
+
+
+def test_legacy_interrupted_receipt_is_normalized_on_read(tmp_path):
+    session = Session(tmp_path)
+    execute(session, "one", "x = 1")
+    source = "x = 99"
+    checkpoint, legacy = legacy_recovered(session, "two", source)
+    expected = {**legacy, "result": None, "output": "", "output_omitted_bytes": 0}
+    request = Request("two", source, checkpoint["epoch"])
+
+    assert session.execute(request, evaluator=forbidden) == expected
+    assert session.execute(request, evaluator=forbidden) == expected
+    # The identity, revision and uncertain-effects classification are unchanged.
+    durable = session.storage.read("checkpoint")["receipt"]
+    assert durable["execution_id"] == "two"
+    assert durable["response"]["error"]["code"] == "interrupted"
+    assert durable["response"]["revision"] == checkpoint["revision"]
+
+    # Both public receipt paths return the documented envelope. The daemon
+    # query reads the same durable checkpoint rather than replaying source.
+    client = Client(tmp_path)
+    try:
+        client.inspect()
+        query = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "simplex_ptc",
+                "session",
+                "query",
+                "--state-directory",
+                str(tmp_path),
+                "--execution-id",
+                "two",
+                "--epoch",
+                checkpoint["epoch"],
+            ],
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert query.returncode == 0, query.stderr
+        assert json.loads(query.stdout) == {"status": "terminal", "response": expected}
+    finally:
+        client.stop()
+
+    # The interrupted source never ran; the saved heap still holds x = 1.
+    assert execute(Session(tmp_path), "three", "x")["result"] == 1
+
+
+def test_only_the_legacy_interrupted_shape_is_normalized(tmp_path):
+    session = Session(tmp_path)
+    execute(session, "one", "x = 1")
+    source = "x = 99"
+    checkpoint, legacy = legacy_recovered(session, "two", source)
+    legacy["error"]["code"] = "runtime_error"
+    session.storage.write("checkpoint", checkpoint)
+
+    result = session.execute(Request("two", source, checkpoint["epoch"]), evaluator=forbidden)
+    assert result["error"]["code"] == "runtime_error"
+    assert "result" not in result
+    assert "output" not in result
+    assert "output_omitted_bytes" not in result
 
 
 def test_commit_then_unlink_failure_recovers_without_reexecution(tmp_path, monkeypatch):
