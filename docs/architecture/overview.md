@@ -47,7 +47,7 @@ commits the complete response. If the response asks for tools, the registry
 applies the tool approval policy, dispatches the calls, and returns a result for
 each call. The loop commits those results before requesting the model again.
 Synchronous hooks can observe loop boundaries or edit eligible state, such as
-pruning past tool output after a batch. See the [loop hook guide](../plugins/loop-hooks.md).
+pruning past tool output after a batch. See the [loop hook guide](../plugins/configuration.md#loop-hooks).
 
 A response with a final answer and no tool calls completes ordinary work.
 With the default `empty_advance` behavior, a response containing only reasoning

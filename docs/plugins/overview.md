@@ -1,56 +1,21 @@
-# Plugin principles
+# Plugin roles
 
-Simplex has three extension domains: tools, loop hooks, and model providers.
-They use native shared modules, domain descriptors, exported factories, and
-shared C++ interfaces. Built-in tools/hooks use the same runtime interfaces but
-do not need a dynamically loaded descriptor.
+A worker assembles its plugins when it starts. Each worker session has its own
+model instances, registered tools and loop hooks. Configuration determines
+which capabilities the model can use and which observers run during a turn.
 
-## Discovery and construction
+| Component | What it does | Scope |
+| --- | --- | --- |
+| Model provider | Connects a configured model to its endpoint. | The driver runs ordinary exchanges. An optional modality assistant handles isolated requests from its tool. |
+| Toolset | Adds callable tools and any accompanying usage instructions to the model's context. | Selected tools act with the worker's permissions and tool approval policy. |
+| Loop hook | Observes synchronous loop events. At designated edit points a hook can update conversation state. | Runs for that session. Changes recorded in conversation state can survive restoration. |
 
-```text
-startup configuration
-    → scan library directories
-    → load library / validate build fingerprint and descriptor
-    → resolve typed factory
-    → read selected configuration
-    → construct instance
-    → register for this worker session
-```
+Providers are discovered as native modules. Toolsets and hooks can be built
+into the worker or loaded as native extensions. For example, [PTC](ptc.md)
+is a built-in toolset that calls a separately installed interpreter.
 
-Discovery and construction are separate. All compatible provider descriptors
-are discovered; model instances are created only for selected roles. Tools and
-hooks are constructed only when named in their `enable` lists. Empty lists do
-not disable built-in components.
-
-| Domain | Descriptor | Runtime product | Owner |
-| --- | --- | --- | --- |
-| Tools | `ToolSetExtensionContext` | `ToolSet` with `ToolInterface` handles | `ToolRegistry` |
-| Loop | `LoopHookExtensionContext` | `LoopHookInterface` | `LoopHookRegistry` |
-| Models | `LLMModelExtensionContext` | `LLMModel` | Application model role |
-
-## Lifetime
-
-Factory configuration references are valid only during construction. Copy needed
-values; do not store references into temporary YAML/JSON objects. Returned
-instances must be fully initialized or construction must fail with RAII cleanup.
-
-The generic loader uses process-resident modules on the supported Linux path
-(`RTLD_NODELETE`); dropping handles is not a hot-unload mechanism.
-Library ownership is also retained through instance destruction. Retained tool handles
-must keep the originating module alive too. Hook bindings disconnect before
-releasing their object; the event bus must outlive bindings. Do not unload or
-replace an instance while its callback or coroutine is executing.
-
-Persistent state belongs in serializable AgentInputState fields. In-memory caches,
-subscriptions, process handles, and connections are rebuilt after restart.
-
-## Compatibility and trust
-
-The framework checks a build fingerprint, the domain context, ABI version,
-factory exports, and descriptor identity. Modules use C++ types across library
-boundaries, so build them with the same compiler/runtime/dependency context as
-the host. A matching ABI number alone is insufficient.
-
-These checks are not a sandbox. Library initialization may execute before
-validation. Configure only trusted plugin directories; see
-[security](../architecture/security.md).
+Set model roles, tool selection and extension names in the worker YAML. Settings
+in shared installation files apply to new workers that read those files.
+Native plugins execute inside the worker process. Use trusted plugin directories
+and builds compatible with the worker. [Configure plugins](configuration.md) ·
+[Security boundaries](../architecture/security.md#native-plugins)

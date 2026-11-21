@@ -1,154 +1,49 @@
 # Configure plugins
 
-The worker's YAML separates provider discovery from explicitly enabled tool and
-hook extensions:
+Apply the following fragments to the worker YAML on the target. Restart the
+worker to load the selected components. In a Hub-managed deployment, a new
+configuration pair takes effect in a new session. [Configuration library](../hub/configurations.md)
+
+## Built-in toolsets
+
+Choose the **complete** list under `tools.intrinsic`. For example, to let the
+model run processes, read files, and edit text:
 
 ```yaml
-plugins:
-  providers:
-    directories: []
-  extensions:
-    tools:
-      directories: []
-      enable:
-        - name: noop_toolset
-    loop_hooks:
-      directories: []
-      enable:
-        - name: noop_hook
+tools:
+  intrinsic: [process, reading, editing]
 ```
 
-The no-op modules are diagnostic examples shipped by the source build. The toolset
-exposes `noop_probe`, which returns `noop`; the hook listens without changing state.
-These names demonstrate loading end to end rather than useful task behavior.
-
-## Search locations
-
-| Resource | Default beneath the executable directory |
-| --- | --- |
-| Provider modules | `plugins/llm/` |
-| Tool modules | `plugins/tools/` |
-| Hook modules | `plugins/loop/` |
-| Tool YAML | `schemas/tools/extensions/<name>/` |
-| Hook YAML | `schemas/loop/extensions/<name>/config.yaml` |
-
-Omitted or empty directory lists use defaults. A nonempty list replaces the
-default search list. Scans are nonrecursive. Explicit relative paths resolve
-against the startup YAML directory. Names are portable identifiers, not paths.
-Duplicate selections and unresolved selected components fail startup.
-
-A missing directory adds no descriptors. Other filesystem failures may propagate.
-Malformed modules can be logged and skipped during scanning; a selected missing
-component still cannot be constructed successfully.
-
-## Configuration overrides
-
-```yaml
-plugins:
-  extensions:
-    tools:
-      directories: [/opt/my-plugins/tools]
-      enable:
-        - name: example_toolset
-          schema_directory: ./plugin-config/example_toolset
-    loop_hooks:
-      directories: [/opt/my-plugins/loop]
-      enable:
-        - name: example_hook
-          config_file: ./plugin-config/example_hook/config.yaml
-```
-
-Tool overrides name a **directory**; hook overrides name a **file**. With no
-explicit override, `SIMPLEX_TOOL_EXTENSION_SCHEMA_DIR` or
-`SIMPLEX_LOOP_EXTENSION_SCHEMA_DIR` can replace the corresponding schema root.
-An explicit missing override is an error, not permission to fall back elsewhere.
-
-Each component's `config.yaml` contains `name`, `description`, and a `config`
-mapping. Identity must match the descriptor. Unknown top-level component fields
-are rejected; plugin-specific options are validated by the factory. Editable YAML
-changes apply to newly constructed instances, not to an already running worker.
-
-## Intrinsic tool configuration
-
-An individual built-in tool may define a host-only `config` mapping in its
-existing `schemas/<tool_name>.yaml`. For example, the installed
-`bin/schemas/reading/read_text.yaml` includes:
-
-```yaml
-name: read_text
-# Keep the existing description and argument_schema alongside this mapping.
-config:
-  max_file_bytes: 1073741824
-  max_output_bytes: 65536
-```
-
-`read_text` accepts integer byte counts: `max_file_bytes` from 1 to 1073741824
-(default 1073741824), and `max_output_bytes` from 1 to 16777216 (default 65536).
-These cap scanned file bytes and rendered text bytes respectively, in both line
-and byte modes. Metadata and result framing are outside the display cap.
-Reading scans the file once with fixed buffers, so a larger file budget raises
-the supported input size and the synchronous scan time, not the memory a call
-needs; the display cap bounds what the model sees. Truncation hints report the
-effective output cap; model-facing guidance does not hard-code
-operator-configurable limits.
-
-`str_replace_edit` accepts the same kind of host-only limit:
-
-```yaml
-name: str_replace_edit
-config:
-  max_file_bytes: 1073741824
-```
-
-`max_file_bytes` from 1 to 1073741824 (default 1073741824) bounds both the
-scanned source and the resulting size. Editing streams the source and stages the
-result in a private candidate beside the destination, so the file is never
-buffered; the visible cost is one temporary file roughly the size of the edited
-output, plus the scan and verification passes.
-
-Omitting `config` means `{}`. Explicit null, scalars, and sequences are invalid.
-The shared loader checks only its mapping shape and preserves nested JSON data;
-the concrete tool checks supported keys, types, ranges and defaults. It does not
-apply argument-schema keywords to configuration. Tools without implemented
-settings accept only omitted/empty config, rather than silently ignoring keys.
-Invalid configuration names the file/field in logs and makes the affected tool
-unavailable; unrelated valid tools can still register.
-
-The file is read once per instance. Newly constructed instances see edits;
-existing instances keep owned settings. There are no per-call reads, hot reload,
-environment substitution, or additional startup configuration fields. Use the
-existing resource selection: for reading, a nonempty
-`SIMPLEX_READING_SCHEMA_DIR` override, then executable-relative
-`schemas/reading/`, then the compiled source directory. A selected invalid file
-does not fall back to another copy. Restart a worker to construct fresh tools.
-
-These settings belong to that **individual tool**, not its toolset or
-`skill.yaml`. They never enter advertised tool schemas, invocation arguments,
-injected skill text, or persisted conversation state. Model arguments cannot
-replace them. YAML `type` and `security` remain documentation-only; C++ assigns
-the actual concurrency/security policy.
-
-This is distinct from a dynamic toolset's separate `config.yaml` and from a loop
-hook's required `config` mapping. It also does not move application-injected model
-or Hub endpoint dependencies into tool YAML. See the
-[reading package guide](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/reading)
-for invocation formats and result semantics.
-
-## Built-in components and roles
-
-Built-in process, reading, and editing toolsets and built-in hooks are assembled
-by `core`. Their public enablement is not controlled by extension lists.
+An empty list disables all built-in tools. Omitting the list selects all
+built-ins whose prerequisites are met. Add `modality_assist` for image
+descriptions, `hub_remote_call` for Hub plans and delegation, or
+`archive_memory` for archived conversation text.
 The optional modality assistant toolset is constructed only when
 `modality_assist_model` is selected. The optional Hub remote toolset is constructed
 only when `hub_remote_call` is configured. These receive application dependencies
 during runtime construction. With persistence enabled and the selected backend
-SQLite, `archive_memory` also provides `memory_search` and `memory_fetch`.
-Automatic backend selection follows the existing store, so JSON sessions omit
-these tools. Their host-only query/display settings are in
-`bin/schemas/archive_memory/memory_search.yaml` and `memory_fetch.yaml`; see the
-[archive memory guide](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/archive_memory).
+SQLite, `archive_memory` provides `memory_search` and `memory_fetch`.
+For Python programs, add `ptc` and configure the
+[interpreter and persistent session directory](ptc.md).
 
-Model selection is separate:
+Individual tools can have host settings in their installed YAML file. For
+example, edit the existing `config` section of
+`bin/schemas/reading/read_text.yaml` to cap the returned text at 32 KiB:
+
+```yaml
+config:
+  max_file_bytes: 1073741824
+  max_output_bytes: 32768
+```
+
+The other fields in that file describe the tool. The model cannot override
+these host limits with call arguments. For shell commands, the `config.bypass`
+section in `bin/schemas/process/run_command.yaml` controls which commands can
+bypass approval. The shipped mode is `strict`. [Process approval settings](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/process#startup-command-bypass-policy)
+
+## Model providers
+
+Give a provider configuration a name and select it for a model role:
 
 ```yaml
 providers:
@@ -162,28 +57,51 @@ providers:
 driver_model: primary
 ```
 
-There is no provider allowlist. `primary` is a configured instance name and
-`deepseek` is a factory name. Referencing the same entry for two model roles
-still creates two model instances.
+The worker discovers all compatible provider modules. Only the named model
+roles create instances. To use a vision-capable model for image descriptions,
+set `modality_assist_model` to its configured name and select the
+`modality_assist` toolset. Using the same name for both roles creates separate
+instances. [Provider-specific settings](../providers/index.md#provider-configuration)
 
-### Process command approval
+## Loop hooks
 
-`run_command` supports host-only `config.bypass` in its installed
-`bin/schemas/process/run_command.yaml`. Its packaged default is `mode: strict`,
-which keeps all commands on the existing RequireConfirm path. Change the mode to
-`readonly` to trust only the packaged readonly regex rules, or `permissive` to
-also trust the limited write rules. The first category sets ReadOnly scheduling;
-trusted writes remain serial. The policy is loaded at startup, never supplied by
-the model, and does not affect other process tools.
+The worker installs the built-in `context_statistic` hook for each session.
+It records context usage in the session state. Set the positive integer
+`config.context_window_tokens` in `bin/schemas/loop/context_statistic/config.yaml`
+to the window size used for those statistics. The model's token limit and the
+worker's automatic compaction threshold are configured separately.
 
-The default lists cover selected file-reading/search/statistics commands and
-restricted Git queries; trusted writes cover directory creation, non-overwriting
-copy and non-replacing symbolic links. Matching considers complete command
-segments and selected parameters, not just executable names. Unsupported shell
-syntax and regex limits fall back to confirmation. RequireConfirm still obeys
-the worker's ask/approve/deny handler; Trusted bypasses that handler.
+## Dynamic toolsets and hooks
 
-See the [process tool guide](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/tools/intrinsic/toolsets/process#startup-command-bypass-policy)
-for the mode matrix, precise syntax, custom configuration, limits and trust
-assumptions. These regexes are approval heuristics, not a filesystem sandbox or
-a guarantee that programs will avoid side effects.
+Enable installed extensions by name. These bundled examples expose the
+diagnostic tool `noop_probe` and attach a hook that leaves session state intact:
+
+```yaml
+plugins:
+  extensions:
+    tools:
+      enable: [{name: noop_toolset}]
+    loop_hooks:
+      enable: [{name: noop_hook}]
+```
+
+An empty or omitted `enable` list selects no extensions of that kind. A
+selected extension that cannot be found or initialized prevents worker startup.
+
+| Module kind | Worker YAML directory list | Default beside the worker executable |
+| --- | --- | --- |
+| Providers | `plugins.providers.directories` | `plugins/llm/` |
+| Toolsets | `plugins.extensions.tools.directories` | `plugins/tools/` |
+| Hooks | `plugins.extensions.loop_hooks.directories` | `plugins/loop/` |
+
+An empty or omitted directory list uses the default. A nonempty list replaces
+it. Searches cover files directly inside each directory. Relative paths in
+worker YAML resolve against the configuration file's directory.
+
+A toolset reads its declarations from `schemas/tools/extensions/<name>/`
+beside the executable. Set `schema_directory` alongside its `name` to select
+another directory. For a hook, set `config_file` alongside its `name` to
+override `schemas/loop/extensions/<name>/config.yaml`.
+To change the default schema root for a whole deployment, set
+`SIMPLEX_TOOL_EXTENSION_SCHEMA_DIR` or `SIMPLEX_LOOP_EXTENSION_SCHEMA_DIR`
+in the worker environment. Explicit per-extension paths take precedence.
