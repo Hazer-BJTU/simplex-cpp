@@ -14,8 +14,13 @@ export MODEL_API_KEY='your-provider-key'
 simplex-hub
 ```
 
-Open <http://127.0.0.1:8800> and leave the Hub running. It stores configuration
-files under `~/.simplex/hub` by default. Local workers inherit the Hub's
+The panel, worker events, and approval requests share the main listener, which
+defaults to loopback (`127.0.0.1`) on port **8800**. To use a different port, start the Hub
+with, for example, `simplex-hub --listen 127.0.0.1:8900`, or set `listen.port`
+in `~/.simplex/hub/hub.config.jsonc` and restart. Optional remote tool calls
+use a separate listener on port **8801** by default (`toolRequests.port`).
+
+Leave the Hub running while using the panel. Local workers inherit its
 environment. For Docker, supply the credential when creating the container.
 
 ## Configure the model
