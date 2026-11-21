@@ -27,6 +27,7 @@ build, development server, preview, and search when updating them.
 
 The site excludes `README.md` indexes, the SQLite schema reference, this guide,
 historical panel redesign notes, and the unverified remote deployment guide.
+The native plugin development and ABI notes also stay in Git for contributors.
 
 The homepage title uses the same `assets/simplex-logo-v4.svg` as the repository
 README. The custom theme imports this source directly, so logo changes are

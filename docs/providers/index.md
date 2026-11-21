@@ -20,8 +20,7 @@ than a production model provider.
 Provider libraries are discovered independently of named YAML configurations.
 Only configurations selected by `driver_model` and optional
 `modality_assist_model` construct model instances. See
-[model plugin development](../plugins/model-providers.md) for adding another
-implementation.
+[model role configuration](../plugins/configuration.md#model-providers) for selecting them.
 
 ## Provider configuration
 
