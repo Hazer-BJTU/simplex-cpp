@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+<title id="title">Simplex components and worker execution</title>
+<desc id="description">The operator panel communicates with a Node.js Hub that manages several workers. Each worker initiates its persistent WebSocket and uses separate connections for approvals and remote tools. Inside one worker, the four-step loop runs clockwise. A response may lead directly to a final answer. Hub records, worker session storage and the optional PTC interpreter are shown below their owners.</desc>
+<defs>
+<style>
+text{font-family:Arial,"Liberation Sans",sans-serif;fill:#182e46}
+.name{font-size:23px;font-weight:700;letter-spacing:-.45px}
+.worker-title{font-size:32px;font-weight:700;letter-spacing:-.8px}
+.section{font-size:22px;font-weight:700;letter-spacing:-.4px}
+.sub{font-size:18px}.node{font-size:18px;font-weight:700;letter-spacing:-.25px}
+.edge{font-size:16px;font-weight:600}.protocol{font-size:17px;font-weight:700;fill:#265783}
+.aside{font-size:15px;font-style:italic;fill:#4a6274}.teal{fill:#185e59}
+.code{font-family:Consolas,"Liberation Mono",monospace;font-size:15px;font-weight:700}
+.small{font-size:15.5px}
+</style>
+<linearGradient id="paper" x2=".95" y2="1"><stop stop-color="#f8fbff"/><stop offset="1" stop-color="#eaf2f8"/></linearGradient>
+<linearGradient id="worker" x2=".85" y2="1"><stop stop-color="#e1f2ff"/><stop offset="1" stop-color="#c8e4f7"/></linearGradient>
+<linearGradient id="hub-blue" x2=".85" y2="1"><stop stop-color="#d2eafa"/><stop offset="1" stop-color="#a9d2f0"/></linearGradient>
+<linearGradient id="ptc-green" x2="1" y2="1"><stop stop-color="#effaf6"/><stop offset="1" stop-color="#d5f0e9"/></linearGradient>
+<marker id="flow-tip" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto-start-reverse"><path d="M0 0 11.6 6 0 12 2.4 6Z" fill="#2c6098"/></marker>
+<marker id="optional-tip" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto-start-reverse"><path d="M0 0 11.6 6 0 12 2.4 6Z" fill="#227c72"/></marker>
+<marker id="storage-tip" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto-start-reverse"><path d="M0 0 11.6 6 0 12 2.4 6Z" fill="#597184"/></marker>
+</defs>
+<rect x="6" y="8" width="1188" height="614" rx="15" fill="#fdfdfb" stroke="#293f56" stroke-width="2"/>
+<g id="worker-processes">
+<rect x="588" y="55" width="392" height="256" rx="16" fill="#edf4f9" stroke="#88a6bc" stroke-width="2.15"/>
+<rect x="567" y="73" width="403" height="257" rx="16" fill="#e3eff8" stroke="#799db8" stroke-width="2.15"/>
+<rect x="545" y="91" width="415" height="258" rx="16" fill="url(#worker)" stroke="#335d7e" stroke-width="2.15"/>
+<text x="752.5" y="130" text-anchor="middle" class="worker-title">Worker</text>
+<text x="752.5" y="155" text-anchor="middle" class="sub">One process · one session</text>
+<g id="agent-loop">
+<rect x="557" y="182" width="125" height="45" rx="11" fill="#f8fcff" stroke="#43627d" stroke-width="1.8"/>
+<text x="619.5" y="211" text-anchor="middle" class="node" style="font-size:16px">Model request</text>
+<rect x="700" y="182" width="143" height="45" rx="11" fill="#f8fcff" stroke="#43627d" stroke-width="1.8"/>
+<text x="771.5" y="211" text-anchor="middle" class="node" style="font-size:16px">Commit response</text>
+<rect x="700" y="273" width="143" height="45" rx="11" fill="#f8fcff" stroke="#43627d" stroke-width="1.8"/>
+<text x="771.5" y="302" text-anchor="middle" class="node" style="font-size:16px">Execute tools</text>
+<rect x="557" y="273" width="125" height="45" rx="11" fill="#f8fcff" stroke="#43627d" stroke-width="1.8"/>
+<text x="619.5" y="302" text-anchor="middle" class="node" style="font-size:16px">Commit results</text>
+<path d="M683 204.5H698" fill="none" stroke="#2c6098" stroke-width="3" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<path d="M771.5 228V271" fill="none" stroke="#2c6098" stroke-width="3" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<path d="M699 295.5H684" fill="none" stroke="#2c6098" stroke-width="3" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<path d="M619.5 272V229" fill="none" stroke="#2c6098" stroke-width="3" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<rect x="864" y="182" width="84" height="45" rx="11" fill="#e6f7f2" stroke="#497a75" stroke-width="1.6"/>
+<text x="906" y="201" text-anchor="middle" class="edge teal"><tspan x="906" dy="0">Final</tspan><tspan x="906" dy="18">answer</tspan></text>
+<path d="M844 204.5H862" fill="none" stroke="#2c6098" stroke-width="3" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+</g>
+</g>
+<g id="operator-panel">
+<rect x="18" y="175" width="128" height="129" rx="13" fill="url(#paper)" stroke="#354e69" stroke-width="2"/>
+<text x="82.0" y="204" text-anchor="middle" class="name"><tspan x="82.0" dy="0">Operator</tspan><tspan x="82.0" dy="24">panel</tspan></text>
+<g xmlns="http://www.w3.org/2000/svg" transform="translate(50 244) scale(.73)" stroke="#3e6383" stroke-width="1.8" fill="none">
+      <rect x="0" y="0" width="88" height="58" rx="6" fill="#fff"/>
+      <path d="M1 12h86M23 13v44" stroke="#9fb3c1"/>
+      <path d="M1 13h21v43H5q-4 0-4-4Z" fill="#eaf0f4" stroke="none"/>
+      <circle cx="8" cy="6.3" r="1.65" fill="#5f8098" stroke="none"/><circle cx="14" cy="6.3" r="1.65" fill="#a4b6c4" stroke="none"/>
+      <rect x="32" y="23" width="40" height="6" rx="3" fill="#b5d0e1" stroke="none"/><path d="M32 37h29m-29 7h18" stroke="#90a6b6" stroke-linecap="round"/>
+    </g>
+
+</g>
+<g id="hub">
+<rect x="237" y="175" width="127" height="129" rx="13" fill="url(#hub-blue)" stroke="#345d80" stroke-width="2"/>
+<text x="300.5" y="204" text-anchor="middle" class="name"><tspan x="300.5" dy="0">Node.js</tspan><tspan x="300.5" dy="25">Hub</tspan></text>
+<g xmlns="http://www.w3.org/2000/svg" transform="translate(270.5 250) scale(1.2)" stroke="#38698f" stroke-width="1.8" fill="none">
+      <rect x="0" y="0" width="50" height="12" rx="3" fill="#fff"/><rect x="0" y="17" width="50" height="12" rx="3" fill="#fff"/>
+      <circle cx="7" cy="6" r="1.6" fill="#39877e" stroke="none"/><circle cx="7" cy="23" r="1.6" fill="#39877e" stroke="none"/>
+      <path d="M30 6h12m-12 17h12" stroke="#8ea8ba"/>
+    </g>
+
+</g>
+<g id="external-model">
+<rect x="1054" y="175" width="127" height="129" rx="13" fill="url(#paper)" stroke="#354e69" stroke-width="2"/>
+<text x="1117.5" y="204" text-anchor="middle" class="name"><tspan x="1117.5" dy="0">Model</tspan><tspan x="1117.5" dy="24">endpoint</tspan></text>
+<g xmlns="http://www.w3.org/2000/svg" transform="translate(1087.5 250) scale(1.2)" stroke="#38698f" stroke-width="1.8" fill="none">
+      <rect x="0" y="0" width="50" height="12" rx="3" fill="#fff"/><rect x="0" y="17" width="50" height="12" rx="3" fill="#fff"/>
+      <circle cx="7" cy="6" r="1.6" fill="#39877e" stroke="none"/><circle cx="7" cy="23" r="1.6" fill="#39877e" stroke="none"/>
+      <path d="M30 6h12m-12 17h12" stroke="#8ea8ba"/>
+    </g>
+
+</g>
+<g id="connections">
+<path d="M148 260H235" fill="none" stroke="#2c6098" stroke-width="3.6" stroke-linecap="butt" stroke-linejoin="round" marker-start="url(#flow-tip)" marker-end="url(#flow-tip)"/>
+<text x="191.5" y="227" text-anchor="middle" class="protocol" style="font-size:15px"><tspan x="191.5" dy="0">HTTP +</tspan><tspan x="191.5" dy="18">WebSocket</tspan></text>
+<text x="446" y="163" text-anchor="middle" class="protocol">Persistent WebSocket</text>
+<text x="454" y="194" text-anchor="middle" class="edge">Input and control</text>
+<path d="M365 207H543" fill="none" stroke="#2c6098" stroke-width="3.6" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<text x="454" y="230" text-anchor="middle" class="edge">Events</text>
+<path d="M544 240H366" fill="none" stroke="#2c6098" stroke-width="3.6" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<text x="454" y="263" text-anchor="middle" class="aside">Opened by worker</text>
+<path d="M367 290H543" fill="none" stroke="#227c72" stroke-width="2.6" stroke-linecap="butt" stroke-linejoin="round" marker-start="url(#optional-tip)" stroke-dasharray="7 5" marker-end="url(#optional-tip)"/>
+<text x="454" y="311" text-anchor="middle" class="edge teal"><tspan x="454" dy="0">Approval /</tspan><tspan x="454" dy="18">remote tool requests</tspan></text>
+<path d="M961 237h23" fill="none" stroke="#fdfdfb" stroke-width="12"/>
+<path d="M962 237H1052" fill="none" stroke="#2c6098" stroke-width="3.6" stroke-linecap="butt" stroke-linejoin="round" marker-start="url(#flow-tip)" marker-end="url(#flow-tip)"/>
+<text x="1017" y="204" text-anchor="middle" class="protocol"><tspan x="1017" dy="0">Provider</tspan><tspan x="1017" dy="20">API</tspan></text>
+</g>
+<g id="hub-records">
+<path d="M300.5 305V409" fill="none" stroke="#597184" stroke-width="2.6" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#storage-tip)"/>
+<rect x="177" y="412" width="247" height="95" rx="12" fill="url(#paper)" stroke="#4f6a80" stroke-width="1.75"/>
+<text x="300.5" y="444" text-anchor="middle" class="section">Hub records</text>
+<text x="300.5" y="471" text-anchor="middle" class="sub"><tspan x="300.5" dy="0">Configuration · events ·</tspan><tspan x="300.5" dy="22">logs · plans</tspan></text>
+</g>
+<g id="session-store">
+<path d="M591 350V374Q591 381 584 381H546Q539 381 539 388V409" fill="none" stroke="#2c6098" stroke-width="2.8" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#flow-tip)"/>
+<rect x="440" y="412" width="198" height="95" rx="12" fill="url(#paper)" stroke="#4f6a80" stroke-width="1.75"/>
+<text x="539" y="444" text-anchor="middle" class="section">Session store</text>
+<text x="539" y="470" text-anchor="middle" class="sub">SQLite or JSON</text>
+<text x="539" y="491" text-anchor="middle" class="small">Compaction archives</text>
+</g>
+<g id="optional-ptc">
+<path d="M771.5 319V409" fill="none" stroke="#227c72" stroke-width="2.6" stroke-linecap="butt" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#optional-tip)"/>
+<rect x="654" y="412" width="527" height="160" rx="14" fill="url(#ptc-green)" stroke="#44857c" stroke-width="2"/>
+<text x="669" y="443" text-anchor="start" class="section teal">Optional PTC</text>
+<rect x="666" y="468" width="113" height="42" rx="9" fill="#f8fdfb" stroke="#4b746f" stroke-width="1.65"/>
+<text x="722.5" y="495" text-anchor="middle" class="code">ptc_execute</text>
+<rect x="833" y="468" width="140" height="42" rx="9" fill="#f8fdfb" stroke="#4b746f" stroke-width="1.65"/>
+<text x="903" y="495" text-anchor="middle" class="node" style="font-size:16px">simplex-ptc CLI</text>
+<rect x="1039" y="468" width="129" height="42" rx="9" fill="#f8fdfb" stroke="#4b746f" stroke-width="1.65"/>
+<text x="1103.5" y="495" text-anchor="middle" class="node" style="font-size:16px">Monty daemon</text>
+<path d="M780 489H831" fill="none" stroke="#227c72" stroke-width="2.5" stroke-linecap="butt" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#optional-tip)"/>
+<path d="M974 489H1037" fill="none" stroke="#227c72" stroke-width="2.5" stroke-linecap="butt" stroke-linejoin="round" stroke-dasharray="7 5" marker-end="url(#optional-tip)"/>
+<text x="805" y="476" text-anchor="middle" class="edge teal">stdio</text>
+<text x="1006" y="457" text-anchor="middle" class="edge teal"><tspan x="1006" dy="0">Unix</tspan><tspan x="1006" dy="17">socket</tspan></text>
+<path d="M1103.5 511V533" fill="none" stroke="#227c72" stroke-width="2.2" stroke-linecap="butt" stroke-linejoin="round" marker-end="url(#optional-tip)"/>
+<rect x="1039" y="535" width="129" height="27" rx="10" fill="#e6f7f1" stroke="#54837c" stroke-width="1.45"/>
+<text x="1103.5" y="554" text-anchor="middle" class="edge teal" style="font-size:14px" id="ptc-state-label">PTC session state</text>
+</g>
+</svg>

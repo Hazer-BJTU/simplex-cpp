@@ -2210,7 +2210,7 @@ their backend; selecting SQLite is not a conversion operation.
 
 
 Persistence backend selection and managed SQLite inspection follow
-[state and persistence](../architecture/state-and-persistence.md).
+[the persistence backend guide](../architecture/persistence-backends.md).
 
 ### Controlled research budget outcomes
 

@@ -285,8 +285,8 @@ Existing JSON sessions remain supported: keep `backend: json` or the legacy
 Omitting both settings detects an existing single backend; a directory holding
 both stores is refused for every setting. Changing a backend setting is **not
 migration**, and selecting the opposite backend over existing history is rejected. See
-[state and persistence](../architecture/state-and-persistence.md#selection-inspection-and-backup)
-for inspection, backup, and child-session behavior.
+[inspection and backups](../architecture/persistence-backends.md#inspection-and-backups)
+and [subagent persistence](../hub/subagents.md#persistence-and-lifetime).
 
 ## Intrinsic toolset selection
 

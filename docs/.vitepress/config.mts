@@ -36,8 +36,6 @@ export default defineConfig({
             ]),
             group('Architecture', [
                 ['Overview', '/architecture/overview'],
-                ['Agent loop', '/architecture/agent-loop'],
-                ['State and persistence', '/architecture/state-and-persistence'],
                 ['Persistence backend', '/architecture/persistence-backends'],
                 ['Security', '/architecture/security'],
             ]),
