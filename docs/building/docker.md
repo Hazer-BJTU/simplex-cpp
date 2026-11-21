@@ -1,18 +1,19 @@
 # Build with the published Docker images
 
-The author publishes toolchain images to GHCR. They contain dependencies and
-compilers, not a configured worker installation.
+The project publishes three Linux x86_64 toolchain images to GHCR.
 
 | Image | Purpose |
 | --- | --- |
 | `ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14` | Development and CI in one compiler/dependency context |
-| `ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3` | Portable Linux x86_64 release builds with bundled runtime libraries |
+| `ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3` | Standard worker package (`linux-amd64-standard`) for hosts with glibc 2.34+ and OpenSSL 3 |
+| `ghcr.io/hazer-bjtu/simplex-cpp/build-musl:musl1.2.6-gcc15.2` | Bundled worker package (`linux-amd64-bundled`) with the musl loader, runtime libraries and OpenSSL |
 
 For reproducibility, use the corresponding digest pinned in
 [CI](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/.github/workflows/ci.yml)
-or the [release workflow](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/.github/workflows/release-worker.yml).
-Tags can move. The images target Linux x86_64; use a matching Docker host or
-explicitly configured emulation.
+for development and standard builds, or in the
+[musl workflow](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/.github/workflows/musl-portable.yml)
+for the bundled package.
+Use an x86_64 Docker host or configure emulation.
 
 ## Development build
 
@@ -38,6 +39,10 @@ run them inside the same environment unless you have checked host compatibility.
 
 ## Portable release build
 
+### Standard glibc package
+
+Start with fresh build and staging directories.
+
 ```sh
 image=ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3
 docker pull "$image"
@@ -55,7 +60,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
     cmake --install build-portable --strip
     ctest --test-dir build-portable --output-on-failure --no-tests=error --timeout 120
     bash docker/package-worker-release.sh stage-portable worker-release
-    bash docker/check-worker-release.sh worker-release/*.tar.gz
+    bash docker/check-worker-release.sh "worker-release/simplex-worker-v$(cat VERSION)-linux-x86_64-glibc2.34.tar.gz"
   '
 ```
 
@@ -65,11 +70,24 @@ remain external. Symbol-floor checks constrain dependencies; running the archive
 on target systems remains necessary. Official release CI also tests Ubuntu 22.04
 and AlmaLinux 9.
 
-To build the toolchain images yourself, inspect
-[Dockerfile.build-base](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docker/Dockerfile.build-base)
-and [Dockerfile.build-portable](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docker/Dockerfile.build-portable).
-The portable Dockerfile downloads a pinned existing GCC toolchain image rather
-than compiling GCC. Building Boost and yaml-cpp still takes time.
+### Bundled musl package
+
+Use the release workflow's Dockerfile to build and stage the worker with the
+musl launcher and bundled dependencies. The recipe configures Release with
+whole-project LTO off.
+
+```sh
+image=ghcr.io/hazer-bjtu/simplex-cpp/build-musl:musl1.2.6-gcc15.2
+docker build -f docker/Dockerfile.musl-test --build-arg BUILD_IMAGE="$image" \
+  --build-arg JOBS=2 -t simplex-musl-build .
+docker run --rm simplex-musl-build ctest --test-dir /build --output-on-failure --no-tests=error --timeout 120
+mkdir -p musl-release
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/musl-release:/output" \
+  simplex-musl-build bash /src/docker/package-musl-worker.sh /opt/simplex /output
+```
+
+The [musl build guide](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docker/MUSL_EXPERIMENT.md#build-test-and-package-the-worker)
+covers checksum verification, relocation and runtime checks.
 
 For a container that **runs** the installed worker, follow
 [Docker deployment](../deployment/docker-worker.md).
