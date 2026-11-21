@@ -70,6 +70,20 @@ for (const mode of ['installed', 'bare']) {
         if (resolution === 'NodeNext') execute(['compiled-NodeNext/consumer.js'], consumer);
     }
     cpSync(join(fixtures, 'browser.ts'), join(consumer, 'browser.ts'));
+    if (mode === 'installed') {
+        const guide = readFileSync(join(pkg, 'dist/docs/hub/ui-sdk.md'), 'utf8');
+        const snippets = [...guide.matchAll(/^```ts\n([\s\S]*?)^```$/gm)];
+        assert.ok(snippets.length, 'The UI SDK guide must contain a typed example');
+        for (const [index, snippet] of snippets.entries()) {
+            writeFileSync(join(consumer, `guide-${index}.ts`), snippet[1]);
+        }
+        json(join(consumer, 'tsconfig.guide.json'), {
+            extends: './tsconfig.json',
+            compilerOptions: { noEmit: true, lib: ['ES2023', 'DOM'] },
+            include: ['guide-*.ts'],
+        });
+        execute([join(toolchain, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.guide.json'], consumer);
+    }
     const modules = new Set();
     await build({
         configFile: false, root: consumer, logLevel: 'warn',

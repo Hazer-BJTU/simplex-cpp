@@ -20,7 +20,8 @@ descriptions, `hub_remote_call` for Hub plans and delegation, or
 `archive_memory` for archived conversation text.
 The optional modality assistant toolset is constructed only when
 `modality_assist_model` is selected. The optional Hub remote toolset is constructed
-only when `hub_remote_call` is configured. These receive application dependencies
+only when `hub_remote_call` is configured. Its delegation tools can create and
+contact [headless subagents](../hub/subagents.md). These toolsets receive application dependencies
 during runtime construction. With persistence enabled and the selected backend
 SQLite, `archive_memory` provides `memory_search` and `memory_fetch`.
 For Python programs, add `ptc` and configure the

@@ -1,20 +1,4 @@
-/**
- * @file panel protocol drift: the hub's vocabulary against its own document.
- *
- * `docs/hub/hub-protocol.md` is the prose contract for the browser protocol, and
- * `shared/protocol.ts` is the machine-readable copy the hub and the panel both
- * import. The worker side has had a drift check against
- * `docs/core/worker-protocol.md` for a while; the panel side had none, so the
- * document and the code could disagree with nothing to notice.
- *
- * The failure this prevents is quiet: a message type the document promises and
- * the hub never accepts, an error code a client switches on that no longer
- * exists, or a type the hub emits that nobody wrote down. All of those keep the
- * tests green and only show up as a panel feature that never works.
- *
- * When the document is reformatted beyond what this parser understands, the
- * test fails too — with a message that says which of the two to fix.
- */
+/** Check the published panel vocabulary and version against the public SDK. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,7 +9,8 @@ import {
     ERROR_CODES,
     HUB_MESSAGE_TYPES,
     PANEL_MESSAGE_TYPES,
-} from '../shared/protocol.ts';
+    PANEL_PROTOCOL,
+} from '../ui/index.ts';
 
 const DOC_PATH = join(hubRoot, '..', 'docs', 'hub', 'hub-protocol.md');
 const available = existsSync(DOC_PATH);
@@ -33,7 +18,7 @@ const skip = available ? false : `hub documentation not present at ${DOC_PATH}`;
 
 /** Hint appended to every parse failure. */
 const PARSER_HINT = 'The document was reformatted or the vocabulary moved. Update this '
-    + "test's parser, or shared/protocol.ts, to match — do not delete the check.";
+    + "test's parser, or ui/protocol.ts, to match — do not delete the check.";
 
 /** Read the authoritative document. */
 function readDocument() {
@@ -84,10 +69,16 @@ function firstColumn(markdown, heading) {
 function assertSameVocabulary(documented, declared, label) {
     const sorted = (list) => [...list].sort();
     assert.deepEqual(sorted(documented), sorted(declared),
-        `${label} in hub-protocol.md and shared/protocol.ts disagree`);
+        `${label} in hub-protocol.md and ui/protocol.ts disagree`);
 }
 
 describe('panel protocol drift', { skip }, () => {
+    it('identifies the current panel protocol in both references', () => {
+        const sdkGuide = readFileSync(join(hubRoot, '..', 'docs', 'hub', 'ui-sdk.md'), 'utf8');
+        const version = `\`${PANEL_PROTOCOL.name}\`, version **${PANEL_PROTOCOL.version}**`;
+        for (const guide of [readDocument(), sdkGuide]) assert.ok(guide.includes(version));
+    });
+
     it('documents exactly the message types the hub accepts', () => {
         assertSameVocabulary(
             firstColumn(readDocument(), '### Client to hub'),
