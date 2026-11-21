@@ -1,20 +1,19 @@
 # Installation
 
-The quickest deployment runs the worker and Hub on the same Linux machine.
-The worker release and Hub npm package are installed separately.
+Install the Hub on the machine that serves the browser panel. Install the worker
+where it will run. For a local deployment, install both on the same Linux host.
 
 ## Requirements
 
-| Component | Requirement |
-| --- | --- |
-| `linux-amd64-standard` | Linux x86_64, glibc 2.34 or newer, host OpenSSL 3 libraries, Bash |
-| `linux-amd64-bundled` | Linux x86_64, Bash; loader and OpenSSL bundled |
-| Hub | Node.js 22.18 or newer and npm |
-| Hub worker installer | util-linux `flock`; standard needs `ldd`, bundled needs `dirname` and `readlink` |
-| Model | Credentials and an endpoint supported by an installed provider |
+The Hub requires Node.js 22.18 or newer and npm. The prebuilt workers target
+Linux x86_64. Choose a platform tag for the installer:
 
-The archive includes C++ runtime libraries, plugins, schemas, and prompts.
-It is not a statically linked binary. Keep its directory structure intact.
+| Platform | When to use it |
+| --- | --- |
+| `linux-amd64-standard` | The host has glibc 2.34 or newer, OpenSSL 3 libraries, and `ldd`. |
+| `linux-amd64-bundled` | Use the bundled musl loader, OpenSSL, and runtime libraries. The launcher uses `dirname` and `readlink`. |
+
+Both packages require Bash and util-linux `flock`.
 
 ## Install the Hub and worker
 
@@ -23,184 +22,40 @@ npm install -g @hazer-bjtu/simplex-hub
 simplex-hub install-worker --platform linux-amd64-standard --update-path
 ```
 
-The standalone installation command downloads the latest stable worker from the
-official GitHub Releases, verifies `SHA256SUMS`, checks the extracted tree and
-runtime libraries, and runs bounded `simplex run --help` and
-`simplex_manager --help` startup checks. Worker archives must ship
-`bin/simplex_manager`; pre-1.0 archives without it are rejected at install time.
-It does not start the Hub, load Hub configuration, or require model credentials.
-GitHub is the default and currently the only supported source. `--platform` is
-required and has no default:
-
-| Platform tag | Package / runtime requirements |
-| --- | --- |
-| `linux-amd64-standard` | glibc release; host glibc 2.34+, OpenSSL 3 and `ldd`, with bundled C++ runtimes |
-| `linux-amd64-bundled` | musl release; bundled loader, OpenSSL and runtime dependencies, with no host glibc/OpenSSL requirement |
-
-Both target Linux x86_64 and require Bash and util-linux `flock`. The bundled
-launcher also uses `dirname` and `readlink`. For example:
+Use `--platform linux-amd64-bundled` for the bundled package. The installer
+downloads the latest stable worker from GitHub Releases, verifies its checksum,
+and installs it under `~/.simplex/worker`. The `--update-path` option adds its
+`bin` directory to your Bash PATH via `~/.bashrc`. Open a new Bash shell and verify:
 
 ```sh
-simplex-hub install-worker --platform linux-amd64-bundled --update-path
+simplex-hub --version
+simplex --version
 ```
 
-A release missing the selected platform is rejected; the installer never falls
-back to another package.
-
-The default installation root is `~/.simplex/worker`; choose a different directory
-or a specific stable release with (replace `vX.Y.Z` with the desired published tag):
-
-```sh
-simplex-hub install-worker --platform linux-amd64-standard --source github --version vX.Y.Z \
-  --directory "$HOME/apps/simplex-worker" --no-update-path
-simplex-hub install-worker --help
-```
-
-The chosen directory contains `bin/`, `lib/`, and the other release resources
-directly, without a version-named wrapper directory. Keep this structure intact.
-Check the installed binary's version with `simplex --version`, or with
-`<installation>/bin/simplex --version` before adding it to PATH. This prints
-the worker's compiled version without requiring configuration or a session.
-For standard packages, the host must provide `libssl.so.3` and `libcrypto.so.3`;
-Node's bundled OpenSSL does not satisfy that requirement. Bundled packages are
-checked with their shipped loader against `bin/simplex_worker.bin`, then started
-through the unchanged `simplex` router and `simplex_worker` wrapper. Their
-certificate bundle, OpenSSL configuration and other release resources are kept.
-Startup validation clears development
-`LD_LIBRARY_PATH`, `LD_PRELOAD`, and `LD_AUDIT` variables.
-
-### Proxy environment
-
-The downloader reads `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` automatically;
-lowercase `http_proxy`, `https_proxy` and `no_proxy` take precedence. This applies
-to release metadata, checksum files, worker archives and redirected asset hosts.
-Use an HTTP or HTTPS proxy URL, for example:
-
-```sh
-HTTPS_PROXY=http://127.0.0.1:7890 \
-  simplex-hub install-worker --platform linux-amd64-bundled --update-path
-```
-
-If only `HTTP_PROXY` is set, it also handles HTTPS requests. `NO_PROXY` bypasses
-the proxy for matching hosts (optionally scoped to a port); `*` bypasses it for
-all hosts only when `*` is the entire value (`NO_PROXY='*'`). A `*` entry
-inside a comma-separated list does not bypass all hosts. Without proxy settings
-downloads connect directly. A configured
-proxy failure is reported without retrying directly. No additional Node.js flag
-is needed, and TLS certificate verification remains enabled. Downloader-owned
-connections are released after each operation, including failure/cancellation.
-
-### Replacement and versions
-
-| Option / behavior | Meaning |
-| --- | --- |
-| Same installed version and platform | Checks required files and executable permissions, then skips downloading/replacing; still honors PATH updates |
-| Different platform | Replaces the whole installation, even at the same version; native plugins must match the chosen package ABI |
-| Newer version | Replaces a recognized installer-managed installation |
-| `--reinstall` | Replaces the current version, for example to repair missing files |
-| `--allow-downgrade` | Authorizes installing an older known version |
-| `--overwrite` | Authorizes replacement of an unknown non-empty directory; does not authorize downgrades or dangerous targets |
-
-Installations made by older Hub versions without platform metadata are treated
-as standard packages. Unknown platform metadata requires `--overwrite`.
-
-Stop workers using this installation before replacing it. The installer does
-not supervise or stop running workers. Complete-tree replacement removes custom
-and stale files inside the installation root; keep session state, archives,
-custom prompts, and other data outside it. Root, home, protected system
-directories, and symlinked destinations are rejected even with `--overwrite`.
-
-Preparation happens separately from the live directory. Failed downloads,
-checksums, extraction, or startup checks leave the previous installation intact.
-Replacement uses a rollback record and an adjacent private
-`.simplex-install-<hash>/` workspace, with a persistent kernel-lock file. If the
-process is interrupted during replacement, the next installation into the same
-directory recovers before proceeding. Do not remove recovery files while an
-installation is active or a rollback needs recovery. Concurrent installation
-attempts fail clearly instead of replacing each other's files.
-
-Once installation has committed, failure to delete obsolete backups or staging
-files produces a warning identifying the retained directory. PATH handling and
-final verification instructions still run. Later invocations retry that cleanup
-and use independent staging/backup directories, so retained debris does not block
-a current-version check or another installation. An incomplete rollback remains
-a hard error: its journal and recovery files are preserved for restoration.
-
-### Optional Bash PATH update
-
-`--update-path` writes one marked block to the current user's `~/.bashrc`.
-Later installations replace that block, including when the installation directory
-changes. Unrelated shell configuration and existing file permissions are
-preserved. Complete duplicate blocks are consolidated; malformed markers or a
-symlinked `.bashrc` require manual correction instead of an ambiguous rewrite.
-PATH editing has its own lock, independent of the worker destination.
-The managed shell block always uses LF, even in a CRLF file; unrelated lines keep
-their original endings so the generated assignment cannot append `\r` to PATH.
-
-`--no-update-path` leaves `.bashrc` unchanged. Without either flag, an interactive
-terminal asks once; non-interactive use skips the update and prints a safely
-quoted manual PATH command. EOF or cancellation declines the prompt. A PATH
-write failure reports that the worker was installed and returns a nonzero exit
-code; it does not undo the worker installation.
-
-Open a new Bash shell or run `source ~/.bashrc`, then restart the Hub so it
-inherits the updated PATH. Existing shells and already-running Hubs retain their
-environment. Other shells require manual PATH configuration. Without changing
-PATH, put the absolute `<installation>/bin/simplex` path in `management.executable`
-of your saved local launch configuration (`launcher.command[0]` for a legacy command profile).
-
-Standard installation directories containing `:` are supported, but PATH cannot represent
-them because colons separate search entries. `--update-path` therefore reports
-a PATH failure and leaves `.bashrc` unchanged; `--no-update-path` installs normally.
-The installer prints an absolute verification command and saved-launcher guidance
-instead of an unusable PATH export. Use the absolute `bin/simplex` path for these
-installations. Bundled installation directories cannot contain `:` because the
-loader interprets it as a library search-path separator. Spaces and Unicode
-characters are supported.
-
-Downloads install executable code and dynamic plugins. Checksums detect
-corruption; a checksum downloaded from the same release does not independently
-authenticate the publisher.
+Use `--version vX.Y.Z` to select a stable release or `--directory DIR` to
+choose the installation root. Before upgrading, stop workers that use this
+installation. Upgrades replace the installation tree, so keep session data and
+custom files elsewhere. See `simplex-hub install-worker --help` for other options.
 
 ## Manual worker download
 
-Download the worker archive and `SHA256SUMS` from
-[GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
-Run these commands in the download directory containing that release's files:
+Download your chosen archive and its release's `SHA256SUMS` into an empty
+directory. Choose the filename ending in `-glibc2.34.tar.gz` for standard or
+`-musl.tar.gz` for bundled. [GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest)
+
+From that directory, set `archive` to the exact filename you downloaded:
 
 ```sh
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf simplex-worker-v*-linux-x86_64-glibc2.34.tar.gz
-export PATH="/absolute/path/to/extracted-worker/bin:$PATH"
-simplex run --help
+archive=simplex-worker-vX.Y.Z-linux-x86_64-glibc2.34.tar.gz
+sha256sum --check --ignore-missing SHA256SUMS && tar -xzf "$archive"
+export PATH="$PWD/${archive%.tar.gz}/bin:$PATH"
+simplex --version
 ```
 
-To use musl, download and extract the `linux-x86_64-musl.tar.gz` archive
-instead. It is dynamically linked with a bundled loader and libraries, so it
-does not require host glibc or OpenSSL. Keep the whole tree together; native
-plugins must be compiled for the matching musl build. This is the same package
-selected by `--platform linux-amd64-bundled`.
-
-`SHA256SUMS` covers both variants; `--ignore-missing` verifies the archive you
-downloaded without requiring the other variant. Replace the example path with
-the extracted directory. A checksum detects file
-corruption; it does not independently authenticate the publisher. Add the PATH
-export to your shell startup file if desired.
-
-The package includes the compiled server and browser panel; no separate panel
-build is required. The Hub's default local launcher expects `simplex` on PATH.
+Keep the extracted directory intact. For a source build, see
+[Build locally](../building/local.md) or [Build with Docker](../building/docker.md).
 
 ## Start the Hub
 
-```sh
-export MODEL_API_KEY='your-api-key'
-simplex-hub --data-dir "$HOME/.simplex/hub"
-```
-
-Open `http://127.0.0.1:8800`. The Hub creates its configuration library on first
-startup. Continue with [configuration](configuration.md) before starting a
-worker. Set credentials before starting the Hub so local workers inherit them.
-
-For an installation built from source, see [local builds](../building/local.md)
-or [the published build images](../building/docker.md). To run the worker inside a container on the Hub host,
-see [Docker deployment](../deployment/hub.md#run-a-docker-worker).
+Follow [Deploy the Hub and a worker](../deployment/hub.md) to configure a model,
+start the service, and create your first session.
