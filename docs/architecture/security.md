@@ -44,7 +44,7 @@ files are mode 0600. The Hub does not copy its own environment into the
 container, does not inspect container environment variables, and never reads the
 container's filesystem. Worker credentials belong to the container's environment,
 which the operator controls. See
-[Docker worker deployment](../deployment/docker-worker.md#security).
+[Docker worker deployment](../deployment/hub.md#run-a-docker-worker).
 
 ## Data and model endpoints
 

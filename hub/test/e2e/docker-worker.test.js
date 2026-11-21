@@ -27,7 +27,7 @@ import { describe, it } from 'node:test';
 import { createHub } from '../../src/hub.ts';
 import { hubRoot, loadConfig } from '../../src/config.ts';
 import { createLogger } from '../../src/log.ts';
-import { ConfigurationStore } from '../../src/configurations/store.ts';
+import { ConfigurationStore, workerDocument } from '../../src/configurations/store.ts';
 import { snapshotConfigs } from '../../src/configurations/session.ts';
 import { readManagedSession } from '../../src/launch/managed-sessions.ts';
 import { connectWorker, until } from '../helpers/worker.js';
@@ -78,8 +78,13 @@ describe('Managed Docker worker in a retained container',
                     },
                     worker: { threads: 1, stopTimeoutMs: 10000 },
                 }), null);
-                snapshotConfigs(store, id, { launchConfig: 'docker-managed', workerConfig: 'default' });
-                hub.registry.create(id, { launchConfig: 'docker-managed', workerConfig: 'default' });
+                const worker = workerDocument(store.read('worker', 'default').text);
+                worker.set('providers', { mock: config.providerProfiles.mock });
+                worker.set('driver_model', 'mock');
+                store.save('worker', 'offline', worker.toString(), null);
+                const selection = { launchConfig: 'docker-managed', workerConfig: 'offline' };
+                snapshotConfigs(store, id, selection);
+                hub.registry.create(id, selection);
                 panel = await connectWorker(`ws://127.0.0.1:${port}/panel/ws?token=docker-managed-test`);
 
                 const started = await api(`/api/sessions/${id}/start`, 'POST');

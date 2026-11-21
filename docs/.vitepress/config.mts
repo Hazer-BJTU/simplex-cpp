@@ -18,6 +18,7 @@ export default defineConfig({
     srcExclude: [
         '**/README.md',
         'architecture/sqlite-schema-v1.md',
+        'deployment/remote-worker.md',
         'maintaining/documentation.md',
         'hub/panel-redesign-plan.md',
         'node_modules/**',
@@ -44,9 +45,7 @@ export default defineConfig({
                 ['Build images', '/building/docker'],
             ]),
             group('Deployment', [
-                ['Hub and worker lifecycle', '/deployment/hub'],
-                ['Docker worker', '/deployment/docker-worker'],
-                ['Remote worker', '/deployment/remote-worker'],
+                ['Deploy the Hub and a worker', '/deployment/hub'],
             ]),
             group('Protocol', [
                 ['Worker overview', '/core/index'],

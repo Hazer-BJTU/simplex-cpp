@@ -363,8 +363,7 @@ test('body text keeps WCAG AA over white and black image regions at 0.3 opacity'
     for (const theme of ['light', 'dark'] as const) {
         await page.emulateMedia({ colorScheme: theme });
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-        // Secondary metadata is exempt by design; deployment/hub.md states the
-        // tradeoff, so only the primary ink colour is asserted here.
+        // Only primary body text has a contrast guarantee over the background image.
         const worst = await page.evaluate(() => {
             const canvas = document.createElement('canvas');
             canvas.width = 1;

@@ -5,7 +5,7 @@ Start with [installation](getting-started/installation.md), then
 
 - [Architecture](architecture/overview.md)
 - [Local source builds](building/local.md) and [Docker builds](building/docker.md)
-- [Hub](deployment/hub.md), [Docker](deployment/docker-worker.md), and [remote](deployment/remote-worker.md) deployment
+- [Deploy the Hub with a local or Docker worker](deployment/hub.md)
 - [Simplex Loop Worker Protocol](core/worker-protocol.md), including the bundled Hub implementation
 - [Plugin configuration](plugins/configuration.md) and [development](plugins/development.md)
 - [Providers](providers/index.md)

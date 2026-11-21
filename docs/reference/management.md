@@ -282,8 +282,8 @@ The container must remain available after worker exit until deletion succeeds.
 Hub does not create, stop or remove this container; its lifecycle must not make
 the worker PID 1 with automatic container removal. Configure advertised Hub
 endpoints reachable from the target as with other remote launch profiles.
-[Deploy a Docker worker](../deployment/docker-worker.md) covers image
-preparation, network modes, the allocation root and troubleshooting.
+[Deploy a Docker worker](../deployment/hub.md#run-a-docker-worker) covers image
+preparation, host networking, the allocation root and troubleshooting.
 
 Remote stop sends the normal shutdown signal. A successful idle lease probe is
 only a present-time observation: an SSH/Docker command may already be dispatched

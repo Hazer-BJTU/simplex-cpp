@@ -219,6 +219,10 @@ logic; its imports and behavior remain separately tested.
 
 ## Optional panel decoration
 
+Operators can set `panel.background` in `hub.config.jsonc`. The image path
+is relative to that file. See the [Hub configuration example](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/hub.config.example.jsonc)
+for sizing, positioning, and theme-specific opacity.
+
 `HubMetadata.background` is an optional `PanelBackground` descriptor containing
 `url`, a SHA-256 `revision`, `size`, `position`, light/dark `opacity`, and the
 optional light/dark `toolCardOpacity` (absent from older Hubs; 0.6 when omitted)

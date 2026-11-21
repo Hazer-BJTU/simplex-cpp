@@ -21,8 +21,7 @@ conversation state.
 The Hub launches `simplex run` locally, in a configured Docker container, or on a
 remote host over SSH. A worker can also be launched independently and connected
 to a service that implements the worker protocol. See the
-[Hub deployment guide](../deployment/hub.md) and the guides for
-[Docker](../deployment/docker-worker.md) and [remote workers](../deployment/remote-worker.md).
+[Hub and worker deployment guide](../deployment/hub.md) for local and Docker setups.
 
 At startup, the worker validates configuration, restores or initializes session
 state, and assembles the driver model, tool registry, and loop-hook registry.
