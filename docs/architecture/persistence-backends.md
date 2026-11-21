@@ -1,79 +1,35 @@
 # Persistence backend
 
-The worker saves its complete conversation state through a session-scoped store.
-Both backends support restoration, checkpoints, compaction archives, and archive
-retention. SQLite is the default for new sessions.
+<a id="archived-text-search"></a>
 
-| Backend | Storage | Use |
-| --- | --- | --- |
-| `sqlite` | `state/state.sqlite3`, containing normalized state and archives | Default; transactional checkpoints and compaction with revision checks. |
-| `json` | `state/state.json`, with complete JSON archives under `memory/` | Plain JSON snapshots; supported for existing sessions and explicit new configurations. |
+**Use SQLite for new worker sessions.** It saves checkpoints transactionally
+and keeps conversation state and compaction archives in one database
+(`state/state.sqlite3`). Its full-text index lets the
+[`archive_memory` toolset](../plugins/configuration.md) search archived conversations.
 
-JSON is a complete snapshot, **not JSONL**. The Hub's `events.jsonl` records
-observed events separately; it cannot restore a worker's conversation.
+The legacy `json` backend writes a complete snapshot to `state/state.json` and
+stores compaction archives under `memory/`. It still supports existing sessions
+and is planned for deprecation. The Hub's `events.jsonl` is a separate event log.
 
 ## Configuration
+
+Set the backend in the worker YAML. A relative session directory resolves
+against the configuration file.
 
 ```yaml
 persistence:
   enabled: true
   directory: ./data/session
   backend: sqlite
-  state: state
-  memory: memory
-  restore: if_present
-  memory_retention:
-    max_archives: 5
 ```
 
-Use `backend: json` to select JSON for a new session. Paths are relative to
-`persistence.directory`; the worker does not append a session ID. SQLite keeps
-its archives in the database, while JSON uses the configured memory directory.
-
-If `backend` is omitted, existing JSON-only or SQLite-only storage is detected;
-an empty directory selects SQLite. A directory holding both stores is refused for
-every setting, including an explicit backend: choosing one would abandon the other
-history, and no migration is provided, so remove or migrate one store first.
-Changing the setting does not migrate data, and selecting the opposite backend
-over a sole existing store is rejected. Saved Hub configurations are preserved.
-
-See [Configuration](../getting-started/configuration.md) for setup and
-[Architecture](overview.md#state-and-persistence) for the worker lifecycle.
+Omit `backend` to reuse the existing store or select SQLite in an empty
+directory. Keep existing JSON sessions on JSON. Switching the setting cannot
+convert their history, and the worker refuses a directory containing both stores.
 
 ## Inspection and backups
 
-For read-only inspection, the Hub invokes `simplex manage` on the worker target
-with a `read_state` request. The manager returns decoded JSON for either backend. See
-[worker storage management](../reference/management.md) for the command contract.
-
-For backups, stop the worker and finish manager reads before copying the whole
-session directory, including any SQLite WAL/SHM files. Use a local filesystem
-compatible with SQLite WAL. Mount or link the directory if needed and keep
-`state.sqlite3` as an ordinary file.
-
-## Archived-text search
-
-SQLite stores also maintain an FTS5 trigram index of retained archive text:
-conversation bodies, tool calls, and textual tool results. Reasoning and binary
-content are excluded from the index; complete snapshots remain unchanged.
-Retention removes an archive's index entries with the archive, so the default
-five-archive retention target also limits searchable history.
-
-The `archive_memory` toolset provides `memory_search` and `memory_fetch`.
-It requires active SQLite persistence and must be included when the
-`tools.intrinsic` list is explicit. The model can search with keyword
-terms (each term of three or more characters is matched as a case-insensitive
-trigram substring, and results are ranked by BM25), then fetch a hit using its
-`archive_id` and `source_id`. Long sources use
-byte pagination (`next_offset` / `has_more`); results have bounded previews and
-invalid UTF-8 is replaced only for display. Shorter terms are ignored when longer
-terms are present; a query of only short terms falls back to a literal scan.
-Retention may remove a source between search and fetch. Current unarchived turns
-are not searched.
-
-Host-side query timeout and display budgets live in the installed
-`bin/schemas/archive_memory/` declarations; see
-[tool configuration](../plugins/configuration.md). No Hub search interface is
-added. Existing SQLite schema-v1 stores remain readable and are upgraded with an index backfill
-on their next normal writer operation. After upgrade, older workers that only
-support schema v1 cannot open the store.
+For managed sessions, the Hub reads either backend through
+[`simplex manage`](../reference/management.md). To back up a session, stop the
+worker, let manager reads finish, and copy the entire session directory,
+including any SQLite WAL and SHM files.
