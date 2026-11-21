@@ -90,4 +90,4 @@ The [musl build guide](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docke
 covers checksum verification, relocation and runtime checks.
 
 For a container that **runs** the installed worker, follow
-[Docker deployment](../deployment/docker-worker.md).
+[Docker deployment](../deployment/hub.md#run-a-docker-worker).

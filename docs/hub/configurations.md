@@ -188,8 +188,10 @@ cannot use unless it shares the host network. The Hub must listen on an address
 reachable from that network; no browser-side heuristic can determine it
 reliably.
 
-See [advertised endpoints and reverse proxies](../deployment/hub.md#advertised-endpoints-and-reverse-proxies)
-for origin/prefix examples and listener routing.
+For a reverse proxy, set the launch profile’s `endpoints.events` and
+`endpoints.confirm` to the public WebSocket origin and optional prefix for the
+main listener. Set `endpoints.tools` to the origin and prefix for the tool
+listener if used. The Hub appends each session route and token.
 
 ## Docker management template
 
@@ -198,7 +200,7 @@ operator already runs. It contains a `management.target` with
 `"kind": "docker"`, the container name and a `preflight` block. The Hub never
 builds an image or creates, starts, stops or removes a container; it only runs
 `simplex manage` and `simplex run` there with `docker exec`. See
-[Docker worker deployment](../deployment/docker-worker.md) for the image,
+[Docker worker deployment](../deployment/hub.md#run-a-docker-worker) for the image,
 retention, network and troubleshooting details.
 
 | Field | Meaning |

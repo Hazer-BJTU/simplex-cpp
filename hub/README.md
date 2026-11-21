@@ -194,7 +194,7 @@ running, then create a **Docker (running container)** launch configuration in th
 editor. Set `management.target.container`, the container path of
 `management.executable`, and a container-local `management.root`. The complete
 walkthrough — image, retention, network and allocation root — is in
-[Docker worker deployment](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/deployment/docker-worker.md).
+[Docker worker deployment](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/docs/deployment/hub.md#run-a-docker-worker).
 
 ```jsonc
 {
@@ -943,8 +943,8 @@ caret. References support keyboard completion, preview, direct editing, and
 explicit snapshot refresh. Send expands them in place into ordinary user text;
 worker changes are unnecessary. The packaged examples live in `schemas/skills/`,
 where `code-review.yaml` also serves as the authoring template. See the
-[deployment guide](../docs/deployment/hub.md#predefined-skills-in-messages)
-for the format, limits, and recovery semantics.
+[skill library reference](../docs/hub/hub-protocol.md#predefined-skill-library)
+for the format and expansion limits.
 
 ### Subagent navigation
 

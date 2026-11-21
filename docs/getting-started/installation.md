@@ -202,6 +202,5 @@ startup. Continue with [configuration](configuration.md) before starting a
 worker. Set credentials before starting the Hub so local workers inherit them.
 
 For an installation built from source, see [local builds](../building/local.md)
-or [the published build images](../building/docker.md). To deploy away from the
-Hub host, see [Docker](../deployment/docker-worker.md) or
-[remote workers](../deployment/remote-worker.md).
+or [the published build images](../building/docker.md). To run the worker inside a container on the Hub host,
+see [Docker deployment](../deployment/hub.md#run-a-docker-worker).

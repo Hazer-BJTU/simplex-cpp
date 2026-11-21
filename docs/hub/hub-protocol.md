@@ -850,6 +850,8 @@ content hash; clients retain the selected snapshot until an explicit refresh.
 IDs are filename stems, never paths. `template` is reserved. Missing files return
 404; invalid IDs or documents return 400. A malformed individual file is listed
 under `errors`; exceeding the 256-file library limit fails the list request.
-The limit is 64 KiB per source file. See [skill authoring and message
-semantics](../deployment/hub.md#predefined-skills-in-messages) for fields,
-reference syntax, and expansion limits.
+The limit is 64 KiB per source file. Store UTF-8 YAML files under
+`<dataDir>/skills/` with `name`, `title`, `description`, `text`, and optional
+`keywords`. The panel expands `@{skill:ID}` in place when sending a message,
+up to 16 references and 256 KiB of expanded text. For an editable example, see
+[the code review skill](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/hub/schemas/skills/code-review.yaml).

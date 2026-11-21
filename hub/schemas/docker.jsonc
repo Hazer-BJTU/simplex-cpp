@@ -4,7 +4,7 @@
     // The Hub never builds, starts, stops or removes a container. Create one
     // yourself, keep it running, and install the same `simplex` command inside
     // it. The Hub only runs `simplex manage` and `simplex run` there through
-    // `docker exec`; see docs/deployment/docker-worker.md.
+    // `docker exec`; see docs/deployment/hub.md#run-a-docker-worker.
     "management": {
         "target": {
             "kind": "docker",

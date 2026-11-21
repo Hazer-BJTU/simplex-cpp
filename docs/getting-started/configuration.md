@@ -23,7 +23,7 @@ an absolute installed `bin/simplex` path if necessary. Their target allocations
 live under `<dataDir>-workers`, independently of Hub records. The seeded
 `docker` launch file is a managed target for a container the operator already
 runs (`management.target.kind: "docker"`); it never creates a container. See
-[Docker worker deployment](../deployment/docker-worker.md). Existing saved
+[Docker worker deployment](../deployment/hub.md#run-a-docker-worker). Existing saved
 launch files are preserved.
 
 Replace `YOUR_*` values in the worker template. `providers` keys are arbitrary
