@@ -10,18 +10,18 @@ a newer host glibc is not automatically portable to older machines; use the
 | Dependency | Reference version / requirement |
 | --- | --- |
 | CMake | 3.20 or newer |
-| GCC | 14.3.0; default compiler command is `g++-14` |
+| GCC | 14.3.0 reference toolchain, with `gcc-14` for C and `g++-14` for C++ |
 | Boost | 1.91.0, shared `filesystem`, `process`, `program_options`, `unit_test_framework` |
 | OpenSSL | Development headers/libraries; released binaries target OpenSSL 3 |
 | nlohmann/json | 3.12.0 single header |
 | yaml-cpp | 0.9.0 static library compiled with PIC |
+| SQLite | 3.54.0 amalgamation, compiled from the pinned C source with FTS5 enabled |
 | Test utilities | Python 3, Bash, binutils (`readelf`, `nm`), normal POSIX process tools |
 
-Install compiler, CMake, OpenSSL development files, Python, and download/archive
-tools with your OS package manager. Distro Boost may be older than the version
-required by this project's Asio and Process code. The commands below build the
-reference dependencies into private directories, without overwriting system
-libraries.
+Install the compilers, CMake, Make, OpenSSL development files, Python 3,
+`curl`, `wget`, and `tar` with your OS package manager. Distro Boost may be older
+than the version required by this project's Asio and Process code. The commands
+below install the reference dependencies into private directories.
 
 ## Prepare dependencies
 
@@ -58,11 +58,13 @@ cmake -S "$SIMPLEX_DEPS/src/yaml-cpp-yaml-cpp-0.9.0" \
   -DCMAKE_INSTALL_PREFIX="$SIMPLEX_DEPS/third-party"
 cmake --build "$SIMPLEX_DEPS/yaml-build" -j"$JOBS"
 cmake --install "$SIMPLEX_DEPS/yaml-build"
+bash docker/install-sqlite-amalgamation.sh "$SIMPLEX_DEPS/third-party/include/sqlite"
 ```
 
-Verify that `third-party/libs/libyaml-cpp.a` and the `yaml-cpp` include directory
-exist. The project expects `include/` and `libs/` beneath
-`SIMPLEX_THIRDPARTY_DIR`. Source releases and licenses are also recorded in
+The SQLite helper verifies the upstream archive before extracting it. CMake
+checks the hashes of `sqlite3.c` and `sqlite3.h` during configuration. The
+project expects `include/` and `libs/` beneath `SIMPLEX_THIRDPARTY_DIR`.
+Source releases and licenses are recorded in
 [third_party/versions](https://github.com/Hazer-BJTU/simplex-cpp/tree/main/third_party/versions).
 
 ## Configure, build, test, install
@@ -81,13 +83,8 @@ export LD_LIBRARY_PATH="$SIMPLEX_DEPS/boost/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_P
 ./install-local/bin/simplex run --help
 ```
 
-This local install does not copy the private Boost shared libraries into
-`install-local/lib`. The installed binaries use executable-relative library
-paths, so the export above makes the explicitly selected Boost `lib` directory
-available at runtime while preserving any existing `LD_LIBRARY_PATH`. Keep it
-set when running the worker, or start the Hub from the same shell so launched
-workers inherit it. Repeat the export in a new shell, using the absolute path
-to your dependency directory.
+The local installation loads Boost from the private library directory. Keep
+`LD_LIBRARY_PATH` set when running the worker or starting a Hub that launches it.
 
 For a distributable installation, use the [portable release build](docker.md#portable-release-build),
 which bundles the required runtime libraries. Copying only the local executable
@@ -95,8 +92,10 @@ does not produce a self-contained worker.
 
 Release defaults to `SIMPLEX_RELEASE_OPTIMIZATION=-Os`. Set it to `-O3` to trade
 size for a different optimization policy. `SIMPLEX_ENABLE_LTO=ON` enables
-whole-project Release LTO when supported; official release builds enable it.
+whole-project Release LTO when supported. The glibc release enables it. The
+musl release uses target-specific LTO settings.
 Use a separate build directory when changing the compiler or dependency context.
 
-The Hub is separate: in `hub/`, run `npm ci`, `npm run build`, `npm run typecheck`,
-and `npm test`. `npm run build:release` also emits the installed server JavaScript.
+To build the Hub, use Node.js 22.18+ and npm in `hub/`. Run
+`npm ci --ignore-scripts`, `npm run build`, `npm run typecheck`, and `npm test`.
+`npm run build:release` also emits the installed server JavaScript.
