@@ -1,9 +1,11 @@
-# Experimental Python tool composition
+# Programmatic tool calling
 
-PTC lets the model compose installed functions in a Python program and return a
-small selected result. It is optional, source-installed, and not a general Python
-shell. The worker and interpreter are separate programs; no Python installation
-is needed when PTC is not configured.
+<a id="experimental-python-tool-composition"></a>
+
+Programmatic Tool Calling (PTC) lets the model write a program that calls tools
+and selects which results to return to the conversation. Simplex implements
+this optional feature with a separately installed interpreter that runs a Python
+subset. The interpreter is experimental and distributed as source.
 
 ## Install and enable
 
