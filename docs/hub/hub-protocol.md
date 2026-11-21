@@ -830,7 +830,7 @@ than cropped into another identity.
 
 
 Persistence backend selection and managed SQLite inspection follow
-[state and persistence](../architecture/state-and-persistence.md).
+[the persistence backend guide](../architecture/persistence-backends.md).
 
 ## Predefined skill library
 

@@ -37,13 +37,19 @@ history, and no migration is provided, so remove or migrate one store first.
 Changing the setting does not migrate data, and selecting the opposite backend
 over a sole existing store is rejected. Saved Hub configurations are preserved.
 
-Managed Hub sessions use `simplex manage read_state` for read-only inspection;
-the manager returns decoded JSON for either backend. For backups, stop the worker
-and finish manager reads before copying the whole session directory, including
-any SQLite WAL/SHM files. Use a local filesystem compatible with SQLite WAL.
+See [Configuration](../getting-started/configuration.md) for setup and
+[Architecture](overview.md#state-and-persistence) for the worker lifecycle.
 
-See [State and persistence](state-and-persistence.md) for recovery and lifecycle
-behavior, and [Configuration](../getting-started/configuration.md) for setup.
+## Inspection and backups
+
+For read-only inspection, the Hub invokes `simplex manage` on the worker target
+with a `read_state` request. The manager returns decoded JSON for either backend. See
+[worker storage management](../reference/management.md) for the command contract.
+
+For backups, stop the worker and finish manager reads before copying the whole
+session directory, including any SQLite WAL/SHM files. Use a local filesystem
+compatible with SQLite WAL. Mount or link the directory if needed and keep
+`state.sqlite3` as an ordinary file.
 
 ## Archived-text search
 
@@ -53,8 +59,9 @@ content are excluded from the index; complete snapshots remain unchanged.
 Retention removes an archive's index entries with the archive, so the default
 five-archive retention target also limits searchable history.
 
-When persistence is enabled and the selected backend is SQLite, the worker
-also loads `memory_search` and `memory_fetch`. The model can search with keyword
+The `archive_memory` toolset provides `memory_search` and `memory_fetch`.
+It requires active SQLite persistence and must be included when the
+`tools.intrinsic` list is explicit. The model can search with keyword
 terms (each term of three or more characters is matched as a case-insensitive
 trigram substring, and results are ranked by BM25), then fetch a hit using its
 `archive_id` and `source_id`. Long sources use
@@ -64,8 +71,6 @@ terms are present; a query of only short terms falls back to a literal scan.
 Retention may remove a source between search and fetch. Current unarchived turns
 are not searched.
 
-The tools require no extra worker setting, including with automatic backend
-selection. JSON and disabled persistence omit both tools and their skill.
 Host-side query timeout and display budgets live in the installed
 `bin/schemas/archive_memory/` declarations; see
 [tool configuration](../plugins/configuration.md). No Hub search interface is

@@ -228,7 +228,7 @@ cleanup and cannot undo external effects.
 
 On restart, `restore: if_present` restores saved state without starting inference.
 Stored prompts remain; current skills and environment hints are refreshed.
-Inspect [recovery phases](../architecture/agent-loop.md#recovery-phases) before
+Inspect [recovery phases](../core/worker-protocol.md#cancellation-shutdown-and-recovery) before
 continuing interrupted work.
 
 ## Manually launched workers
