@@ -62,10 +62,12 @@ remain after cancellation. The
 [recovery phases](../core/worker-protocol.md#cancellation-shutdown-and-recovery)
 determine whether a later message or continuation can proceed.
 
-## Python tool composition
+<a id="python-tool-composition"></a>
 
-Optional [Python tool composition (PTC)](../plugins/ptc.md) lets the model combine
-functions in one program through `ptc_execute(source)`. The worker applies its
+## Programmatic tool calling
+
+With [Programmatic Tool Calling (PTC)](../plugins/ptc.md), the model writes a
+Python program that calls tools and submits it through `ptc_execute(source)`. The worker applies its
 normal tool approval policy and invokes the separately installed `simplex-ptc`
 CLI over standard input and output. The CLI talks to a local daemon over a Unix
 socket. The daemon uses Pydantic Monty to execute a Python subset with configured
