@@ -3,80 +3,59 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/ci.yml"><img src="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/docs.yml"><img src="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/docs.yml/badge.svg" alt="Documentation build and deployment status"></a>
-  <a href="https://github.com/Hazer-BJTU/simplex-cpp/releases/latest"><img src="https://img.shields.io/github/v/release/Hazer-BJTU/simplex-cpp" alt="Latest release"></a>
-  <a href="https://www.npmjs.com/package/@hazer-bjtu/simplex-hub"><img src="https://img.shields.io/npm/v/%40hazer-bjtu%2Fsimplex-hub" alt="npm version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Hazer-BJTU/simplex-cpp" alt="License"></a>
+  <img src="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/ci.yml/badge.svg" alt="CI status">
+  <img src="https://github.com/Hazer-BJTU/simplex-cpp/actions/workflows/docs.yml/badge.svg" alt="Documentation build and deployment status">
+  <img src="https://img.shields.io/github/v/release/Hazer-BJTU/simplex-cpp" alt="Latest release">
+  <img src="https://img.shields.io/npm/v/%40hazer-bjtu%2Fsimplex-hub" alt="npm version">
+  <img src="https://img.shields.io/github/license/Hazer-BJTU/simplex-cpp" alt="License">
 </p>
 
 <p align="center">
-  <a href="https://isocpp.org/"><img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&amp;logoColor=white" alt="C++20"></a>
-  <a href="https://www.boost.org/"><img src="https://img.shields.io/badge/Boost-C%2B%2B%20Libraries-00599C" alt="Boost C++ libraries"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-22.18%2B-5FA04E?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.18 or newer"></a>
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript"></a>
-  <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-20232A?logo=react&amp;logoColor=61DAFB" alt="React"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&amp;logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/Boost-C%2B%2B%20Libraries-00599C" alt="Boost C++ libraries">
+  <img src="https://img.shields.io/badge/Node.js-22.18%2B-5FA04E?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.18 or newer">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/React-20232A?logo=react&amp;logoColor=61DAFB" alt="React">
 </p>
 
 **Understand every detail of an agent harness.**
 
-A lightweight, native C++ harness framework for LLM agents—and a learning
-project for building a minimal agent system from scratch.
+Simplex is a lightweight C++20 harness for running LLM agents and learning how
+an agent system works. Use the Hub’s browser panel to send a task, review tool
+requests, and resume a saved conversation. Each session runs in its own worker.
 
 [Documentation](https://hazer-bjtu.github.io/simplex-cpp/) ·
-[Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest) ·
-[Documentation source](docs/README.md) ·
-[Contributing](CONTRIBUTING.md)
+[Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest)
 
-## Architecture
+## Run your first session
 
-- **Worker:** one process per session, with an agent loop, model providers,
-  tool and hook registries, cancellation, and persistent state.
-- **Hub:** a separate Node.js service and browser panel for managing workers
-  and interacting with them over WebSocket.
-- **Extensions:** native model, tool, and loop-hook plugins with explicit
-  interfaces and lifetime rules.
-
-## Install
-
-Install the Hub with Node.js 22.18+, then use it to download the latest stable
-worker from the official GitHub Releases:
+For a local install, use Linux x86_64 with Bash, util-linux `flock`, and Node.js
+22.18 or newer. On a host with glibc 2.34+, OpenSSL 3, and `ldd`, run:
 
 ```bash
 npm install -g @hazer-bjtu/simplex-hub
 simplex-hub install-worker --platform linux-amd64-standard --update-path
 ```
 
-The installer verifies the release checksum, installs into `~/.simplex/worker`,
-and updates a managed PATH block in `~/.bashrc`. Use `--directory DIR` to choose
-another installation root. The required `--platform` selects
-`linux-amd64-standard` (host glibc 2.34+ and OpenSSL 3) or
-`linux-amd64-bundled` (bundled musl loader, OpenSSL and runtime dependencies).
-Both require Bash and util-linux `flock`; `install-worker --help` explains the
-remaining platform requirements.
-
-Open a new Bash shell or reload `~/.bashrc`, then start the Hub:
+Choose `linux-amd64-bundled` to use the packaged runtime libraries instead.
+The installer verifies the worker download and adds its `bin` directory to your
+Bash PATH. Open a new Bash shell, then start the Hub with your provider key:
 
 ```bash
-source ~/.bashrc
-export MODEL_API_KEY='your-api-key'
+read -rsp 'Model API key: ' MODEL_API_KEY && echo
+export MODEL_API_KEY
 simplex-hub
 ```
 
-Open <http://127.0.0.1:8800>. Configure a model and launch a worker using the
-[deployment guide](https://hazer-bjtu.github.io/simplex-cpp/deployment/hub.html).
-
-Alternatively, download and extract the worker manually from
-[GitHub Releases](https://github.com/Hazer-BJTU/simplex-cpp/releases/latest).
-Keep the extracted directory intact and add its `bin` directory to `PATH`.
-See the [installation guide](https://hazer-bjtu.github.io/simplex-cpp/getting-started/installation.html)
-for version selection, replacement behavior, and manual checksum verification.
+1. Open the panel at `http://127.0.0.1:8800` (the default address).
+2. In **Configurations**, create a worker configuration from the template. Set
+   `providers` for your account, set `driver_model` to the provider entry’s
+   name, and reference `${MODEL_API_KEY}` for its API key. Save the file.
+3. Create a session with the `local` launch profile and your saved configuration.
+   Select **Start**. When the worker is ready, send your first message.
 
 ## Security
 
-Native plugins execute with the worker's permissions; load only trusted code.
-Local tools can execute commands and modify files. Workspace hints and tool
-approval are not sandboxes, and cancellation does not undo completed effects.
-Use restricted accounts or containers and protect Hub access.
-[Security policy and private reporting](SECURITY.md) ·
-[Security details](https://hazer-bjtu.github.io/simplex-cpp/security.html).
+Local tools can run commands and change files with the worker account’s
+permissions. Run the worker under a restricted account or in a container when
+it needs limited access. Load native plugins only from sources you trust.
