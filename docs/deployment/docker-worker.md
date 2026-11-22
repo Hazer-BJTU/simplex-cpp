@@ -13,4 +13,4 @@ The Docker examples are now in [Deploy the Hub and a worker](hub.md#run-a-docker
 - <a id="launch-profile"></a><a id="startup-checks"></a> [Docker launch configuration and preflight checks](../reference/launch-profiles.md#docker-target)
 - <a id="lifecycle"></a> [Start and stop a session](hub.md#start-verify-and-stop-a-session)
 - <a id="process-terminals"></a> [Process pipes and terminals](https://github.com/Hazer-BJTU/simplex-cpp/blob/main/tools/intrinsic/toolsets/process/README.md#pipes-and-terminals)
-- <a id="security"></a> [Security boundaries](../architecture/security.md#local-operations)
+- <a id="security"></a> [Security boundaries](../security.md#worker-permissions-and-cancellation)

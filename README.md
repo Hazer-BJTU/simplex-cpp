@@ -79,4 +79,4 @@ Local tools can execute commands and modify files. Workspace hints and tool
 approval are not sandboxes, and cancellation does not undo completed effects.
 Use restricted accounts or containers and protect Hub access.
 [Security policy and private reporting](SECURITY.md) ·
-[Security details](https://hazer-bjtu.github.io/simplex-cpp/architecture/security.html).
+[Security details](https://hazer-bjtu.github.io/simplex-cpp/security.html).

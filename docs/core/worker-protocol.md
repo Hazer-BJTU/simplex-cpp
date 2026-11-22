@@ -33,7 +33,7 @@ Payloads, signals and one-shot messages carry their fields in `data`. Events
 also carry `event`, `session_id`, `worker_id`, `request_id`, `run_id` and
 `sequence` at the top level. Protect configured endpoints and authenticate the
 session before accepting input or approvals. The bundled Hub supplies tokenized
-routes. [Security boundaries](../architecture/security.md)
+routes. [Security boundaries](../security.md)
 
 ## Operations
 

@@ -44,8 +44,8 @@ export default defineConfig({
             group('Architecture', [
                 ['Overview', '/architecture/overview'],
                 ['Persistence backend', '/architecture/persistence-backends'],
-                ['Security', '/architecture/security'],
             ]),
+            { text: 'Security', link: '/security' },
             group('Build from source', [
                 ['Local environment', '/building/local'],
                 ['Build images', '/building/docker'],
