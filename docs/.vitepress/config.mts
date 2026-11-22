@@ -19,6 +19,7 @@ export default defineConfig({
         '**/README.md',
         'architecture/sqlite-schema-v1.md',
         'deployment/remote-worker.md',
+        'hub/npm-release.md',
         'abi-context.md',
         'plugins/development.md',
         'plugins/tools.md',
@@ -67,12 +68,21 @@ export default defineConfig({
                 ['GLM (Zhipu AI)', '/providers/glm'],
                 ['Custom Chat Completions', '/providers/chat-completions'],
             ]),
-            group('Reference', [
-                ['Command line', '/reference/cli'],
-                ['Worker management', '/reference/management'],
-                ['Configuration library', '/hub/configurations'],
-                ['Hub npm package', '/hub/npm-release'],
-            ]),
+            {
+                text: 'Reference',
+                collapsed: false,
+                items: [
+                    { text: 'Command line', link: '/reference/cli' },
+                    {
+                        ...group('Configuration library', [
+                            ['Hub settings', '/reference/hub-settings'],
+                            ['Launch profiles', '/reference/launch-profiles'],
+                            ['Worker settings', '/reference/worker-settings'],
+                        ]),
+                        link: '/hub/configurations',
+                    },
+                ],
+            },
         ],
         search: { provider: 'local' },
         outline: [2, 3],

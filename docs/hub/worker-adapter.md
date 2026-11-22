@@ -7,7 +7,7 @@ for the wire reference and an approved tool exchange.
 ## Managed sessions
 
 The Hub uses the target's `simplex manage` command to prepare allocations and
-inspect saved state. See [worker storage management](../reference/management.md).
+inspect saved state. See [worker storage management](../reference/cli.md#manage-worker-storage).
 
 ## Headless delegation
 

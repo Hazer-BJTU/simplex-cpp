@@ -39,7 +39,7 @@ providers:
 
 The adapter supplies absent defaults for `stream: true`, `n: 1` and
 `stream_options.include_usage: true`. Explicit values survive, but the service
-must still return SSE chunks. See [shared provider fields](../getting-started/configuration.md#provider-fields)
+must still return SSE chunks. See [shared provider fields](../reference/worker-settings.md#provider-fields)
 for authentication, headers and retries.
 
 ## Request ownership and precedence

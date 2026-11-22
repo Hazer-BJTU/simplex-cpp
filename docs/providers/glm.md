@@ -38,7 +38,7 @@ providers:
 | Other generation fields | The model can accept native options such as `max_tokens` or `response_format`. The plugin removes `n`, `frequency_penalty`, `presence_penalty` and `thinking_budget`. |
 
 The adapter requests streaming usage and reads cached input tokens from
-`prompt_tokens_details.cached_tokens`. [Shared provider fields](../getting-started/configuration.md#provider-fields)
+`prompt_tokens_details.cached_tokens`. [Shared provider fields](../reference/worker-settings.md#provider-fields)
 
 ## Runtime options
 

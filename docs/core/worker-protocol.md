@@ -116,7 +116,7 @@ Manual compact produces an admitted run. During automatic compact the user
 request keeps its run ID through summarization and continuation, with one final
 `run_finished` on normal settlement. The worker archives before summarizing.
 After a committed replacement, history reflects the new memory. Inspect any
-terminal storage error before continuing. [Compaction configuration](../getting-started/configuration.md)
+terminal storage error before continuing. [Compaction configuration](../reference/worker-settings.md#loop-and-compaction)
 
 <a id="bundled-hub-implementation"></a>
 

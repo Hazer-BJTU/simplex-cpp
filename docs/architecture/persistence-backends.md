@@ -30,6 +30,6 @@ convert their history, and the worker refuses a directory containing both stores
 ## Inspection and backups
 
 For managed sessions, the Hub reads either backend through
-[`simplex manage`](../reference/management.md). To back up a session, stop the
+[`simplex manage`](../reference/cli.md#manage-worker-storage). To back up a session, stop the
 worker, let manager reads finish, and copy the entire session directory,
 including any SQLite WAL and SHM files.

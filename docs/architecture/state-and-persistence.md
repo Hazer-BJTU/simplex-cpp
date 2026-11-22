@@ -9,7 +9,7 @@ next: false
 
 The state overview is now part of [Architecture](overview.md#state-and-persistence).
 
-- <a id="storage-ownership"></a> [Storage ownership](../reference/management.md#target-layout-and-ownership)
+- <a id="storage-ownership"></a> [Storage ownership](../reference/launch-profiles.md#paths-and-ownership)
 - <a id="backend-boundary"></a> [Persistence backends](persistence-backends.md)
 - <a id="checkpoints-and-restoration"></a> [Checkpoints and restoration](overview.md#state-and-persistence)
 - <a id="markdown-exports-and-compaction"></a> [Compaction and memory](../core/worker-protocol.md#compact-conversation-context)

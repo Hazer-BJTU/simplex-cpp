@@ -42,7 +42,7 @@ providers:
 
 Place these fields directly under `config`. The plugin rejects the Python SDK's
 `extra_body` wrapper and DeepSeek's `thinking` object. It removes `n` and
-requests streaming usage. [Qwen thinking controls](https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking) · [Shared provider fields](../getting-started/configuration.md#provider-fields)
+requests streaming usage. [Qwen thinking controls](https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking) · [Shared provider fields](../reference/worker-settings.md#provider-fields)
 
 ## Runtime options
 

@@ -98,5 +98,5 @@ original state and replaces the conversation turns with a summary in the
 model's memory. The worker records checkpoints and archives through its selected
 backend. The Hub maintains separate configuration, event, log, and plan records
 for supervision and display. For managed sessions it invokes
-[`simplex manage`](../reference/management.md) on the worker target to inspect
+[`simplex manage`](../reference/cli.md#manage-worker-storage) on the worker target to inspect
 saved state.
