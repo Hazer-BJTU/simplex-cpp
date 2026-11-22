@@ -93,7 +93,7 @@ host-network example, change its existing `worker.connectHost` to
 uses `/var/lib/simplex/allocations`. The Hub runs `simplex manage` and
 `simplex run` inside that container through `docker exec`. Keep the container
 running until its sessions have been deleted. See
-[security boundaries](../architecture/security.md#local-operations).
+[security boundaries](../security.md#worker-permissions-and-cancellation).
 
 ## Start, verify, and stop a session
 

@@ -15,11 +15,11 @@ Simplex workers perform local operations with the permissions of their process:
   permission to send input therefore also grants tool-approval authority.
 
 Use restricted accounts or containers, limit mounted data and credentials, and
-protect Hub access and session tokens. Conversation snapshots, readable memory
-archives, logs and model requests may contain sensitive data.
+protect Hub access and session tokens. Worker snapshots, compaction archives,
+summary memory, logs and model requests may contain sensitive data.
 
-See the full [security boundaries](https://hazer-bjtu.github.io/simplex-cpp/architecture/security.html)
-for plugin loading, local operations, Hub authority and remote deployment.
+See the full [security boundaries](https://hazer-bjtu.github.io/simplex-cpp/security.html)
+for Hub access, tool approvals, plugin loading and session data.
 
 ## Reporting a vulnerability
 

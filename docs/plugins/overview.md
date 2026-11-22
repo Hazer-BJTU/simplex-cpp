@@ -18,4 +18,4 @@ Set model roles, tool selection and extension names in the worker YAML. Settings
 in shared installation files apply to new workers that read those files.
 Native plugins execute inside the worker process. Use trusted plugin directories
 and builds compatible with the worker. [Configure plugins](configuration.md) ·
-[Security boundaries](../architecture/security.md#native-plugins)
+[Security boundaries](../security.md#native-plugins)

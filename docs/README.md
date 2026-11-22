@@ -4,6 +4,7 @@ Start with [installation](getting-started/installation.md), then
 [configuration](getting-started/configuration.md) and [deployment](deployment/hub.md).
 
 - [Architecture](architecture/overview.md)
+- [Security](security.md)
 - [Local source builds](building/local.md) and [Docker builds](building/docker.md)
 - [Deploy the Hub with a local or Docker worker](deployment/hub.md)
 - [Simplex Loop Worker Protocol](core/worker-protocol.md) and [Hub UI SDK](hub/ui-sdk.md)
