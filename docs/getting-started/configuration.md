@@ -1,11 +1,10 @@
 # Configuration
 
-Complete provider examples and shared field descriptions are in
-[Support policy](../providers/index.md#provider-configuration),
+For provider-specific examples and model controls, see
 [DeepSeek](../providers/deepseek.md#worker-configuration),
 [Qwen](../providers/qwen.md#worker-configuration),
 [GLM (Zhipu AI)](../providers/glm.md#worker-configuration), and
-[Custom Chat Completions](../providers/chat-completions.md#minimal-worker-configuration).
+[Custom Chat Completions](../providers/chat-completions.md#worker-configuration).
 
 There are three configuration layers. The Hub startup file controls listeners
 and access; a launch file controls how a worker process starts; worker YAML
@@ -81,6 +80,28 @@ the first attempt. It does not limit the number of agent-loop exchanges.
 The Hub fills managed endpoints and the session directory at launch. Those
 markers are not worker-side template variables. For a manually started worker,
 replace them with actual URLs and a local persistence path first.
+
+## Provider fields
+
+Each entry under `providers` configures one model profile. Set `driver_model` to
+its entry name. An optional `modality_assist_model` selects an independent
+instance, even when both roles reference the same entry. In the Hub, choose the
+saved worker YAML for a new managed session. Driver options selected in the
+panel apply at the next run boundary.
+
+| Worker field | Meaning |
+| --- | --- |
+| `plugin`, `model` | Installed plugin name (defaults to the entry name) and required service model ID. The plugin's runtime menu can be smaller than the service catalog. |
+| `endpoint.base_url`, `request_path` | The path is appended to the base URL's existing prefix. Dedicated providers supply both defaults. The generic plugin needs a base URL. |
+| `endpoint.auth` | Use `bearer` (default), `custom_header` or `none`. Supply `api_key` for authenticated requests. For a custom header, `header_name` defaults to `x-api-key`. |
+| `endpoint.user_agent`, `extra_headers` | Override the plugin's User-Agent or add string-valued HTTP headers. Extra headers are applied last and can replace authentication headers. |
+| `endpoint.extras`, `endpoint.auth.extras` | Optional endpoint metadata, separate from the request body. |
+| `config` | Model generation fields. The worker supplies the conversation and tool declarations. Each provider guide describes its transformations and supported controls. |
+| `retry` | `max_attempts` defaults to 3 retries after the first request. Use 0 for a single attempt. Backoff starts at `initial_backoff_ms` (500) and is capped by `max_backoff_ms` (120000). |
+
+The worker expands `${NAME}` in API keys and extra header values when it loads
+a selected profile. Set credentials in the environment of the actual worker
+process, including inside Docker when applicable.
 
 ## System prompts
 

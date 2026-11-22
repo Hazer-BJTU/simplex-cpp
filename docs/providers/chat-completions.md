@@ -1,311 +1,156 @@
 # Custom Chat Completions
 
-**Last updated: 2026-10-15.** The `chat-completions` plugin is the configurable
-fallback for services without a dedicated Simplex provider. It uses the shared
-Chat Completions adapter, with protocol differences declared in your worker's
-provider configuration. No provider names, model families, thinking modes or
-model catalogs are inferred.
+**Last updated: 2026-10-15.** Use `chat-completions` for an endpoint that
+accepts Chat Completions messages and returns streamed Server-Sent Events
+(SSE). You configure any service-specific translations. The parser assembles
+choice zero, including its text, reasoning and tool calls.
+[Chat Completions API reference](https://platform.openai.com/docs/api-reference/chat/create)
 
-Use a dedicated provider when you want its maintained defaults and service
-policies. Use this plugin when you want to control the request fields and
-compatibility rules yourself. The examples below demonstrate configuration,
-not live verification of a particular service.
+<a id="minimal-worker-configuration"></a>
 
-## Minimal worker configuration
+## Worker configuration
 
-Merge this fragment into an existing worker YAML, retaining its client,
-persistence and other settings:
+This example uses the OpenAI Chat Completions endpoint. For a compatible
+deployment, substitute its URL, API key and model ID. Set `driver_model: primary`
+in the containing worker YAML and export the key in the worker environment. [Example model and supported endpoints](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
 
 ```yaml
 providers:
-  custom:
+  primary:
     plugin: chat-completions
+    model: gpt-4.1-mini
     endpoint:
-      base_url: https://your-service.example
+      base_url: https://api.openai.com
       request_path: /v1/chat/completions
       auth:
         scheme: bearer
-        api_key: ${CUSTOM_API_KEY}
-    model: your-model
+        api_key: ${OPENAI_API_KEY}
     config:
       temperature: 0.7
-
-driver_model: custom
-# modality_assist_model: custom
 ```
 
-There is no default service origin. The default request path is
-`/v1/chat/completions`; authentication defaults to Bearer. The endpoint's path
-is appended to the base URL's path prefix. For a base URL ending in `/v1`, use
-`request_path: /chat/completions`. Headers, environment expansion and retry
-settings follow the [shared configuration contract](index.md#shared-fields-and-request-ownership).
+## Parameters
 
-All customization belongs to `config.compatibility` in this provider entry.
-The plugin consumes that object locally; it never sends it to the service.
-Other `config` fields are native generation parameters. Different named
-entries can use this plugin with independent endpoints, rules and options.
-Edit the persisted worker YAML and restart the worker to reload declarations.
-Runtime options change only the selections described below.
+| Field | Meaning |
+| --- | --- |
+| `endpoint.base_url` | Required service origin with an optional path prefix. If it ends in `/v1`, use `request_path: /chat/completions`. The default path is `/v1/chat/completions`. |
+| `config` | Native generation fields are preserved with their JSON types. Use fields supported by your service and model. |
+| `config.compatibility` | Optional startup rules for this named profile. The plugin consumes the declarations locally. |
+
+The adapter supplies absent defaults for `stream: true`, `n: 1` and
+`stream_options.include_usage: true`. Explicit values survive, but the service
+must still return SSE chunks. See [shared provider fields](../getting-started/configuration.md#provider-fields)
+for authentication, headers and retries.
 
 ## Request ownership and precedence
 
-Requests are assembled in this order:
+| Order | Rule or source | Operates on |
+| --- | --- | --- |
+| 1 | Generation settings, defaults and the worker conversation | Builds the outgoing body with current `messages` and `tools`. `replay_assistant_reasoning: true` includes saved assistant reasoning before patching. Default is `false`. |
+| 2 | `request.message_patches` | Each rule visits every message whose current `role` exactly matches its selector. Its pointers start at that message. A role change is visible to later rules. |
+| 3 | `request.patch` | Applies rules to the complete request body, including generated fields. |
+| 4 | Selected `options[].choices[].patch` | Applies the selected choices to the body in **option declaration order**. Later writes to the same path win. |
+| On receipt | `response.chunk_patch` | Applies to each decoded JSON chunk before the SSE reader interprets deltas or finish reasons. The SSE framing and `[DONE]` marker stay outside the rules. |
 
-1. Supply absent defaults: `stream: true`, `n: 1`, and
-   `stream_options.include_usage: true`.
-2. Preserve explicit generation parameters, including unknown fields and their
-   JSON types. An explicit non-object `stream_options` is also preserved.
-3. Build `messages` and `tools` from the current conversation. Configured
-   `messages`/`tools` do not replace the live conversation at this step.
-4. Apply `request.message_patches` in declaration order to matching roles.
-5. Apply `request.patch` in declaration order.
-6. Apply selected options' patches in **option declaration order**, irrespective
-   of when options were selected.
-7. Serialize and send. No parameter normalization follows these patches.
-
-The plugin does not translate `reasoning.effort`, clamp reasoning effort,
-remove unsupported parameters, unwrap `extra_body`, or infer behavior from a
-model name. A deleted field stays deleted. A field changed by the final patch
-stays changed. Set native fields directly or declare the translation you need.
-The C++ typed generation preset still produces the shared `reasoning.effort`
-envelope; this plugin leaves it unchanged unless you declare a patch.
-
-`replay_assistant_reasoning` defaults to `false`. Set it to `true` to include
-stored assistant reasoning as `reasoning_content` before message patches run.
-This is independent of whether the service is asked to generate new reasoning.
-
-The transport still sends JSON over HTTP and consumes **SSE Chat Completions**
-responses, assembling choice index zero. Input message capabilities remain
-those of the shared adapter; output is text, reasoning and agent tool calls.
-Setting `stream: false` or requesting multiple candidates is forwarded, but
-does not add a non-streaming parser or multiple-result support. SSE framing,
-`[DONE]`, tool-call assembly and completion/error handling remain shared.
+Rules within each patch run in list order. Each request starts from its base
+generation settings and current selections. An in-flight request and its
+retries retain their original settings.
 
 ## Declarative protocol patches
 
+For a service that calls assistant reasoning `thought`, add this fragment
+under the provider's `config`. The request rule renames saved reasoning on
+assistant messages. The response rule performs the reverse mapping on streamed
+deltas. The body rule removes the adapter's default `n` field.
+
 ```yaml
-config:
-  compatibility:
-    replay_assistant_reasoning: true
-    request:
-      message_patches:
-        - role: assistant
-          patch:
-            - op: remove
-              path: /reasoning_content
-      patch:
-        - op: remove
-          path: /n
-        - op: set
-          path: /thinking/type
-          value: enabled
-    response:
-      chunk_patch:
-        - op: move
-          from: /choices/0/delta/thought
-          path: /choices/0/delta/reasoning_content
-          if_missing: skip
+compatibility:
+  replay_assistant_reasoning: true
+  request:
+    message_patches:
+      - role: assistant
+        patch:
+          - {op: move, from: /reasoning_content, path: /thought, if_missing: skip}
+    patch:
+      - {op: remove, path: /n}
+  response:
+    chunk_patch:
+      - {op: move, from: /choices/0/delta/thought, path: /choices/0/delta/reasoning_content, if_missing: skip}
 ```
 
-Paths use JSON Pointer: `/` separates components, `~1` escapes a literal `/`,
-and `~0` escapes a literal `~`. The empty string addresses the document root.
-Paths in message patches are relative to one message; request paths are relative
-to the request body; response paths are relative to each decoded JSON chunk.
+For example, `{"choices":[{"delta":{"thought":"plan"}}]}` becomes
+`{"choices":[{"delta":{"reasoning_content":"plan"}}]}`. A text-only delta or
+usage-only chunk passes through because the source is absent and the rule
+specifies `if_missing: skip`.
 
-| Operation | Fields | Behavior |
+| Operation | Required fields | Effect |
 | --- | --- | --- |
-| `set` | `path`, `value` | Set or replace a value, including explicit null. Create missing object parents. |
-| `remove` | `path` | Remove an existing field or array element; missing paths do nothing. Cannot remove the document root. |
-| `copy` | `from`, `path`, optional `if_missing` | Copy a value to the destination, using `set` semantics. |
-| `move` | `from`, `path`, optional `if_missing` | Remove the source, then set the destination. Cannot move the root or move a value into its own descendant. |
+| `set` | `path`, `value` | Writes a value, including explicit null. Creates missing object parents. |
+| `remove` | `path` | Removes an object member or array element. A missing target is ignored. Removing the root is invalid. |
+| `copy` | `from`, `path` | Reads the source and writes a separate copy using `set` semantics. |
+| `move` | `from`, `path` | Removes the source before resolving the destination. Moving the root or moving into a descendant is invalid. |
 
-This is a small plugin rule language, **not the complete RFC 6902 JSON Patch
-standard**. Arrays require explicit existing indices: no wildcards, `-` append,
-implicit array creation or expansion. Removing an element shifts subsequent
-indices. A move resolves its destination after removing its source. Missing
-object parents are created as objects, including numeric-looking keys.
-Traversing a scalar or null is an error, not an instruction to replace it with
-an object. `set` can replace the root with a new JSON value.
+Pointers use `/` for each path segment, `~1` for a literal slash, and `~0`
+for a tilde. An empty string refers to the root. Arrays require existing
+numeric indices for writes. There is no wildcard or append syntax. Removing
+an element shifts later indices. A numeric key beneath a newly created object
+is still an object key.
 
-For `copy` and `move`, `if_missing` is `error` by default. Set it to `skip` when a
-field is optional, especially in SSE frames where reasoning, choices or usage
-may be absent. Invalid array index syntax remains an error even with `skip`.
-
-Rules execute in order. Unknown declaration fields, invalid pointers, duplicate
-option/model names and malformed rules are rejected locally. Runtime rule
-failures identify the rule's configuration path and propagate as errors; they
-are not silently discarded or retried as network failures. Diagnostics do not
-include the request's contents. No scripts, templates or network lookups are
-executed by these rules.
-
-Response rules run on decoded JSON chunks before the shared parser extracts
-text, reasoning, tool calls and finish reasons. `[DONE]` and other SSE framing
-are outside this patch mechanism. A response rule must produce the structure
-that the shared parser understands.
+For `copy` and `move`, an absent source raises an error by default.
+`if_missing: skip` skips that rule only. Malformed array indices, traversal
+through a scalar, and invalid destinations still fail. Invalid declarations are
+rejected at startup. A patch failure during an exchange reports its rule location.
 
 ## Token cost mapping
 
-```yaml
-config:
-  compatibility:
-    token_cost:
-      prompt: /prompt_tokens
-      generated: /completion_tokens
-      cache_hit: /prompt_cache_hit_tokens
-```
-
-Each pointer is relative to the **original `usage` object**, before response
-patches. Mapping populates the internal `TokenCost` directly; it does not
-rewrite usage into OpenAI field names. `extras.usage` retains the original
-usage, even if a response patch edits or deletes that object's fields.
-
-| Internal count | Default pointer |
-| --- | --- |
-| `prompt` | `/prompt_tokens` |
-| `generated` | `/completion_tokens` |
-| `cache_hit` | `/prompt_tokens_details/cached_tokens` |
-
-Omitting a mapping keeps its default. Setting a mapping to `null` disables it.
-An explicit pointer is read verbatim; it is not remapped through field-name aliases. Only nonnegative integer
-values representable by `uint64_t` are accepted; strings and floating-point
-values are not coerced. Missing or invalid prompt/generated counts suppress
-the complete cost record. Missing cache counts use the existing `TokenCost`
-zero default, which is not evidence that the service measured zero cache hits.
-Cache hits are a subset of prompt tokens, not an additional token total.
-
-Usage may accompany a choice or appear in a usage-only frame. The last original
-usage object replaces the previous one; partial objects are not merged across
-frames, and cumulative counters are not summed. Retry attempts reset usage.
-This feature maps token counts, not prices or currency, and supports no arithmetic
-expressions. Usage synthesized only by a response patch is not original usage
-and is not used for cost accounting.
-
-## User-declared model catalog and options
+Under the same `compatibility` mapping, set pointers **relative to the original
+usage object**. For a service that reports cache hits at `usage.prompt_cache_hit_tokens`:
 
 ```yaml
-config:
-  compatibility:
-    models:
-      - id: custom-model
-        description: My primary deployment
-      - id: custom-model-fast
-    options:
-      - name: model
-        default: custom-model
-        choices:
-          - value: custom-model
-            patch:
-              - op: set
-                path: /model
-                value: custom-model
-          - value: custom-model-fast
-            patch:
-              - op: set
-                path: /model
-                value: custom-model-fast
-      - name: thinking
-        default: enabled
-        choices:
-          - value: enabled
-            patch:
-              - op: set
-                path: /enable_thinking
-                value: true
-          - value: disabled
-            patch:
-              - op: set
-                path: /enable_thinking
-                value: false
+token_cost:
+  prompt: /prompt_tokens
+  generated: /completion_tokens
+  cache_hit: /prompt_cache_hit_tokens
 ```
 
-`models` is an array of objects with unique nonempty string `id` fields.
-Additional catalog fields are retained. `provider_info()` returns this array
-without making an HTTP request; if omitted, it returns `[]`. The plugin does
-not contact `/models`, add the current model, or restrict startup model names
-to this catalog.
+The first two pointers are defaults. The default cache pointer is
+`/prompt_tokens_details/cached_tokens`. Omit a key to keep its default, or
+supply null to disable it. Counts must be nonnegative integers representable
+as `uint64_t`. Missing prompt or generated counts suppress the cost record.
+Missing cache hits yield zero in that record. The last original usage object
+wins, including in a usage-only frame. Response patches do not affect these
+counts or the original usage stored in metadata.
 
-`options` is an ordered array of descriptors. Each has a unique nonempty string
-`name`, a nonempty `choices` array, and an optional `default` naming a choice.
-Each choice has a unique nonempty string `value` and a `patch` array. Option
-values use strings to match the worker protocol; their patches can write
-Boolean, numeric, object, array or null values to the request.
+## Runtime options
 
-`get_options()` exposes these declarations as the existing `{name, options}`
-worker descriptors. `get_current_options()` returns explicitly defaulted or
-selected values; options without a selection are omitted. No reverse inference
-from generation fields takes place. Model catalog entries do not automatically
-create a model option: declare its choices and patches separately.
-
-A batch update validates every selected name/value before committing any of
-it. The request snapshots generation parameters and all selections together.
-In-flight exchanges and their retries keep that snapshot. Each request starts
-from its base generation parameters, so switching options never leaves behind
-fields added by a previous selection. Current selections override conflicting
-base generation updates. Updating native generation fields does not reset the
-selected options. As with other providers, persistence of runtime selections
-is the host's responsibility.
-
-## Service-shaped examples
-
-These examples show explicit compatibility rules, not automatic service detection
-or complete replacements for the dedicated providers.
-
-### DeepSeek-style thinking and cache counts
+The generic plugin advertises options only when declared. Add `models` and
+`options` under the same `compatibility` mapping to offer a model selector:
 
 ```yaml
-config:
-  compatibility:
-    replay_assistant_reasoning: true
-    request:
-      patch:
-        - {op: remove, path: /n}
-        - {op: remove, path: /frequency_penalty}
-        - {op: remove, path: /presence_penalty}
-    token_cost:
-      cache_hit: /prompt_cache_hit_tokens
-    options:
-      - name: thinking
-        default: enabled
-        choices:
-          - value: enabled
-            patch:
-              - {op: set, path: /thinking/type, value: enabled}
-          - value: disabled
-            patch:
-              - {op: set, path: /thinking/type, value: disabled}
-              - {op: remove, path: /reasoning_effort}
+models:
+  - {id: fast}
+  - {id: accurate}
+options:
+  - name: model
+    default: fast
+    choices:
+      - value: fast
+        patch: [{op: set, path: /model, value: fast}]
+      - value: accurate
+        patch: [{op: set, path: /model, value: accurate}]
 ```
 
-Supply the appropriate endpoint and model in the enclosing provider entry.
-Unlike the dedicated DeepSeek plugin, this example does not interpret
-`reasoning_effort: none/minimal` as a thinking toggle.
+Replace both example IDs with models your endpoint serves. `models` publishes
+a local catalog for `provider_info()`. Each entry requires a unique nonempty
+`id`. The catalog neither restricts startup model IDs nor creates a panel menu.
+Each menu option needs a unique name, a nonempty list of uniquely named string
+choices and a patch for each choice. The optional default must name a choice.
+A selection can write any JSON value, including a Boolean or number. An
+invalid option batch leaves previous selections intact.
 
-### Qwen-style thinking and history
+## Usage notes
 
-```yaml
-config:
-  enable_thinking: true
-  reasoning_effort: xhigh
-  preserve_thinking: true
-  compatibility:
-    replay_assistant_reasoning: true
-    request:
-      patch:
-        - {op: remove, path: /n}
-    options:
-      - name: preserve_thinking
-        default: enabled
-        choices:
-          - value: enabled
-            patch:
-              - {op: set, path: /preserve_thinking, value: true}
-          - value: disabled
-            patch:
-              - {op: set, path: /preserve_thinking, value: false}
-```
-
-This option only changes the server control; it does not remove historical
-`reasoning_content`. To omit that history from requests, set
-`replay_assistant_reasoning: false`, or add an assistant message patch removing
-`/reasoning_content`. There are no model-family defaults, effort conversions or
-Qwen-specific parameter checks in this custom plugin.
+Keep separate named profiles for endpoints that use different rules. For a
+Hub-managed worker, select the saved configuration pair when creating a new
+session. The bundled plugin's adaptation date covers its rule engine. Service
+models and features follow the endpoint you select.

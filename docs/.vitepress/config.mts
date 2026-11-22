@@ -62,7 +62,6 @@ export default defineConfig({
                 ['Programmatic tool calling', '/plugins/ptc'],
             ]),
             group('Providers', [
-                ['Support policy', '/providers/index'],
                 ['DeepSeek', '/providers/deepseek'],
                 ['Qwen', '/providers/qwen'],
                 ['GLM (Zhipu AI)', '/providers/glm'],
