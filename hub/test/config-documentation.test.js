@@ -1,13 +1,48 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { parse } from 'yaml';
 import { defaultConfig, mergeConfig, parseConfigText, validateConfig } from '../src/config.ts';
+import { ConfigurationStore, workerDocument } from '../src/configurations/store.ts';
 import { normalizeSpec } from '../src/launch/spec.ts';
 import { renderWorkerConfig } from '../src/launch/config-render.ts';
 
 const example = parseConfigText(readFileSync(new URL('../hub.config.example.jsonc', import.meta.url), 'utf8'), 'Hub example');
 const legacy = parseConfigText(readFileSync(new URL('../hub.config.legacy.example.jsonc', import.meta.url), 'utf8'), 'Legacy example');
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+
+function examples(page, language) {
+    const markdown = readFileSync(new URL(`../../docs/${page}.md`, import.meta.url), 'utf8');
+    const blocks = [...markdown.matchAll(/^```(json|yaml)\n([\s\S]*?)^```$/gm)]
+        .filter(([, name]) => name === language);
+    assert.ok(blocks.length, `${page} must contain a ${language} example`);
+    return blocks.map(([, , source]) => language === 'json' ? JSON.parse(source) : parse(source));
+}
+
+test('configuration reference examples apply to current Hub and library templates', t => {
+    const config = defaultConfig();
+    config.dataDir = mkdtempSync(join(tmpdir(), 'simplex-doc-library-'));
+    t.after(() => rmSync(config.dataDir, { recursive: true, force: true }));
+    const store = new ConfigurationStore(config);
+    for (const fragment of examples('reference/hub-settings', 'json')) {
+        validateConfig(mergeConfig(config, fragment));
+    }
+    const docker = parseConfigText(store.read('launch', 'docker').text, 'Docker template');
+    for (const fragment of examples('reference/launch-profiles', 'json')) {
+        const launch = fragment.management ? fragment : mergeConfig(docker, fragment);
+        store.validate('launch', JSON.stringify(launch));
+    }
+    for (const page of ['getting-started/configuration', 'reference/worker-settings']) {
+        for (const fragment of examples(page, 'yaml')) {
+            if ('sections' in fragment) continue; // Separate prompt document.
+            const worker = workerDocument(store.read('worker', 'default').text);
+            for (const [name, value] of Object.entries(fragment)) worker.set(name, value);
+            store.validate('worker', worker.toString());
+        }
+    }
+});
 
 /** Provider profile contents are plugin-owned maps, not fixed Hub config keys. */
 function keyPaths(value, prefix = '') {
@@ -41,13 +76,11 @@ test('config documentation coverage detects new nested leaves rather than accept
 
 test('auto-compact defaults remain documented in the optional API-launch references', () => {
     const defaults = defaultConfig();
+    const protocol = readFileSync(new URL('../../docs/hub/hub-protocol.md', import.meta.url), 'utf8');
     for (const key of ['autoCompactThreshold', 'maxAutoCompactions']) {
         assert.equal(legacy.worker[key], defaults.worker[key]);
         assert.ok(readme.includes(`\`worker.${key}\``));
-        for (const file of ['configurations.md', 'hub-protocol.md']) {
-            const text = readFileSync(new URL(`../../docs/hub/${file}`, import.meta.url), 'utf8');
-            assert.ok(text.includes(key), `${file} must describe ${key}`);
-        }
+        assert.ok(protocol.includes(key), `panel protocol must describe ${key}`);
     }
 });
 

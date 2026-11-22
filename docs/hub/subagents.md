@@ -109,8 +109,8 @@ Managed launch profiles support local, SSH and retained-container Docker forks.
 The manager captures worker configuration on the target; Hub retains only the
 startup launch policy. Each child has a fresh flat target allocation, while its
 Hub bookkeeping remains in `dataDir/subagents/`. Remote worker paths need not
-exist on the Hub host. See [managed family lifecycle](../reference/management.md#managed-clean-fork-and-family-recovery)
-for preparation, uncertain dispatch, recovery and cleanup. No shared Hub bind
+exist on the Hub host. See [persistence and lifetime](#persistence-and-lifetime)
+for uncertain dispatch, recovery and cleanup. No shared Hub bind
 mount is required; the operator must retain the target/container until cleanup.
 
 Supported launches are managed profiles (local, SSH and retained-container

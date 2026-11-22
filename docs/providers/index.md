@@ -16,4 +16,4 @@ adapter. The four guides above cover Chat Completions integrations.
 
 <a id="shared-fields-and-request-ownership"></a>
 
-For fields shared by these profiles, see [worker configuration](../getting-started/configuration.md#provider-fields).
+For fields shared by these profiles, see [worker configuration](../reference/worker-settings.md#provider-fields).

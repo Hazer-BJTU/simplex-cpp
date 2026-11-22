@@ -37,7 +37,7 @@ providers:
 | Other generation fields | Set native fields such as `max_tokens` or `response_format` under `config`. Service support depends on the model and thinking mode. The plugin removes `n`, `frequency_penalty` and `presence_penalty`. |
 
 For custom headers, authentication alternatives, and retry limits, see
-[shared provider fields](../getting-started/configuration.md#provider-fields).
+[shared provider fields](../reference/worker-settings.md#provider-fields).
 
 ## Runtime options
 

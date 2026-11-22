@@ -95,7 +95,7 @@ Adapters using either bundled wire interpreter inherit this behavior. An
 independent adapter can read `AgentInputState::extras["simplex.tool_result_notice"]`
 on the request snapshot and append its `text` to the matching final tool result
 (`call_id`) after output formatting. Preserve the call ID and all preceding
-messages. See [model-visible budget configuration](../getting-started/configuration.md#controlled-research-budgets).
+messages. See [model-visible budget configuration](../reference/worker-settings.md#controlled-research-budgets).
 
 For services with configurable Chat Completions field differences, the bundled
 [Custom Chat Completions provider](../providers/chat-completions.md) can avoid
