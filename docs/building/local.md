@@ -14,6 +14,7 @@ a newer host glibc is not automatically portable to older machines; use the
 | Boost | 1.91.0, shared `filesystem`, `process`, `program_options`, `unit_test_framework` |
 | OpenSSL | Development headers/libraries; released binaries target OpenSSL 3 |
 | nlohmann/json | 3.12.0 single header |
+| pboettch/json-schema-validator | 2.4.1 static library compiled with PIC against the worker's nlohmann/json header |
 | yaml-cpp | 0.9.0 static library compiled with PIC |
 | SQLite | 3.54.0 amalgamation, compiled from the pinned C source with FTS5 enabled |
 | Test utilities | Python 3, Bash, binutils (`readelf`, `nm`), normal POSIX process tools |
@@ -46,6 +47,7 @@ tar -xzf "$SIMPLEX_DEPS/src/boost.tar.gz" -C "$SIMPLEX_DEPS/src"
 )
 curl -fL https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp \
   -o "$SIMPLEX_DEPS/third-party/include/nlohmann/json.hpp"
+bash docker/install-json-schema-validator.sh "$SIMPLEX_DEPS/third-party"
 curl -fL https://github.com/jbeder/yaml-cpp/archive/refs/tags/yaml-cpp-0.9.0.tar.gz \
   -o "$SIMPLEX_DEPS/src/yaml-cpp.tar.gz"
 tar -xzf "$SIMPLEX_DEPS/src/yaml-cpp.tar.gz" -C "$SIMPLEX_DEPS/src"

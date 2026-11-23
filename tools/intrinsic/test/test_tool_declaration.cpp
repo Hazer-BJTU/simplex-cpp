@@ -1261,6 +1261,26 @@ argument_schema:
     BOOST_TEST(mentions(message, "\"executable\" is required"));
 }
 
+BOOST_AUTO_TEST_CASE(draft7_rejects_duplicate_required_names_at_load_time)
+{
+    Scratch scratch;
+    const auto file = scratch.write("duplicates.yaml", R"(
+name: probe
+description: Duplicate entries are invalid even when both name a declared property.
+argument_schema:
+  type: object
+  properties:
+    path: {type: string, description: File to open.}
+  required: [path, path]
+)");
+    const auto message = refusal([&] { (void)load_tool_declaration(file); });
+    BOOST_TEST(mentions(message, file.string()));
+    BOOST_TEST(mentions(message, "/argument_schema"));
+    BOOST_TEST(mentions(message, "Draft 7"));
+    BOOST_TEST(mentions(message, "/required"));
+    BOOST_TEST(!try_load_tool_declaration(file));
+}
+
 // ---- the reporting form ------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(try_load_answers_a_good_file_and_reports_a_bad_one)
