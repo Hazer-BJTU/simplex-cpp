@@ -8,8 +8,9 @@ privately through the [security policy](SECURITY.md).
 ## 1. Prepare the toolchain
 
 The reference native environment uses GCC 14.3.0, C++20, CMake 3.20+, Boost 1.91.0
-(shared libraries), OpenSSL 3, nlohmann/json 3.12.0, and yaml-cpp 0.9.0 (static,
-with PIC). Build the worker and native plugins with the same compiler and runtime.
+(shared libraries), OpenSSL 3, nlohmann/json 3.12.0, and the SQLite 3.54.0
+amalgamation. Build yaml-cpp 0.9.0 and json-schema-validator 2.4.1 as static
+libraries with PIC. Use the same compiler and runtime for the worker and native plugins.
 
 Follow the [local build guide](docs/building/local.md) to prepare dependencies.
 The [published Docker build images](docs/building/docker.md) provide an alternative

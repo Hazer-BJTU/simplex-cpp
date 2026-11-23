@@ -245,6 +245,7 @@ the instructions included in each download.
 | binutils (nm/readelf) | from the gcc base image | PATH | Needed by the `llm_plugin_boundary_hygiene` ctest. |
 | Boost | 1.91.0 **shared** | `/usr/local` | Built with exactly `filesystem` + `process` + `program_options` + `test` (= unit_test_framework): headers, `libboost_*.so.1.91.0`, and the CMake config package under `/usr/local/lib/cmake/Boost-1.91.0` — `find_package(Boost)` needs no `BOOST_ROOT`. |
 | nlohmann/json | 3.12.0 (single header) | `/opt/simplex-thirdparty/include/nlohmann/json.hpp` | |
+| json-schema-validator | 2.4.1, static PIC | `/opt/simplex-thirdparty/libs/libnlohmann_json_schema_validator.a` | Built separately with each image's compiler against the bundled nlohmann/json header. |
 | yaml-cpp | 0.9.0, static **PIC** | `/opt/simplex-thirdparty/libs/libyaml-cpp.a` | PIC because it reaches MODULE plugin `.so`s through `simplex_thirdparty_iface`. |
 
 `/opt/simplex-thirdparty` mirrors the tree's `third_party/{include,libs}`
@@ -381,8 +382,9 @@ options; the image does not supply a prebuilt SQLite library. Both `gcc-14` and
 For an incremental dependency update, pass
 `--build-arg PROVISIONED_BASE=ghcr.io/hazer-bjtu/simplex-cpp/build-base@sha256:<verified-digest>`
 to reuse an existing dependency layer with BuildKit. That image must already
-contain the pinned GCC, Boost, nlohmann/json and yaml-cpp releases; only the final
-SQLite provisioning/compiler-alias steps are applied. The default
+contain the pinned GCC, Boost, nlohmann/json and yaml-cpp releases. The final
+stage provisions SQLite, checks the compiler aliases, and builds json-schema-validator.
+The default
 `PROVISIONED_BASE=toolchain` builds all dependency stages from the pinned GCC
 image. Validate the resulting image before publishing and updating CI digests.
 
@@ -405,8 +407,9 @@ Same flow, one extra step: the CI job that consumes it pins the image by
 digest, so the digest has to be read back after the push and pasted into
 `.github/workflows/ci.yml` and `.github/workflows/release-worker.yml`.
 
-The portable recipe also provisions the pinned SQLite amalgamation and its
-public-domain notice. It supports `PROVISIONED_BASE` like build-base, but the
+The portable recipe also provisions SQLite, builds json-schema-validator for
+glibc 2.34, and includes both dependencies' notices. Like build-base, the
+recipe supports `PROVISIONED_BASE`, but the
 input must be a verified **portable** image with Python 3 and the matching
 compiler, dependency set and `/opt/simplex-runtime` contents. Never substitute
 the Debian development image. The final stage checks GCC 14.3.0 for C/C++ and
@@ -444,8 +447,8 @@ GCC 14.3.0/glibc 2.34 toolchain without a source bootstrap on cache misses.
 
 ### Updating the musl dependency image
 
-`Dockerfile.build-musl` also provisions the verified SQLite 3.54.0 amalgamation
-and its public-domain notice. SQLite is compiled from C source with the musl
+`Dockerfile.build-musl` builds json-schema-validator with the Alpine toolchain
+and provisions the verified SQLite 3.54.0 amalgamation. SQLite is compiled from C source with the musl
 compiler when the project builds; no glibc library is copied into this image.
 The musl project build selects both `-DCMAKE_C_COMPILER=gcc` and
 `-DCMAKE_CXX_COMPILER=g++` explicitly.

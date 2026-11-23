@@ -12,6 +12,7 @@ and copy the listed files into place.
 | Library           | Release   | Record                              |
 | ----------------- | --------- | ----------------------------------- |
 | nlohmann/json     | 3.12.0    | [nlohmann_json.md](nlohmann_json.md) |
+| json-schema-validator | 2.4.1 | [json-schema-validator.md](json-schema-validator.md) |
 | yaml-cpp          | 0.9.0     | [yaml-cpp.md](yaml-cpp.md)          |
 | SQLite           | 3.54.0    | [sqlite.md](sqlite.md)              |
 | Boost (system)    | 1.91.0    | [boost.md](boost.md)                |

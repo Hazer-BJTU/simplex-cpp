@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     container:
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:4618daf101fb052fe78e0207bd84b0183298ff9792fe3f1f63702b43f1286b24
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:af4061dd34bb95f4d859506bee3bc80ac3773991525692c433918f1a7271c3ea
       # If the ghcr package is private, uncomment these:
       # credentials:
       #   username: ${{ github.actor }}
@@ -321,7 +321,7 @@ jobs:
       # change to the reference release environment must be an explicit,
       # reviewable edit. When the base image is rebuilt, update the digest
       # (docker buildx imagetools inspect <image> prints it).
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:7cc0b5add834b54d4cf1c7526ff95a86f5edb01ed8adc409b733aff24be8c2b8
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-portable:glibc2.34-gcc14.3@sha256:72724b27f242c6bbbfb666a1943bc15865c522fdd7fbd7c59f28cbafe0dfd357
       # credentials:
       #   username: ${{ github.actor }}
       #   password: ${{ secrets.GITHUB_TOKEN }}

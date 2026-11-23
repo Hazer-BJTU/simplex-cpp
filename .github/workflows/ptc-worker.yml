@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     container:
-      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:4618daf101fb052fe78e0207bd84b0183298ff9792fe3f1f63702b43f1286b24
+      image: ghcr.io/hazer-bjtu/simplex-cpp/build-base:boost1.91-gcc14@sha256:af4061dd34bb95f4d859506bee3bc80ac3773991525692c433918f1a7271c3ea
     steps:
       - uses: actions/checkout@v4
         with:

@@ -80,5 +80,12 @@ RUN bash /tmp/install-sqlite-amalgamation.sh \
     && test "$(gcc -dumpfullversion)" = "$(g++ -dumpfullversion)"
 COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
 
+ARG JOBS=1
+COPY docker/install-json-schema-validator.sh /tmp/install-json-schema-validator.sh
+RUN CXX=g++ JOBS="$JOBS" bash /tmp/install-json-schema-validator.sh /opt/simplex-thirdparty \
+    && rm /tmp/install-json-schema-validator.sh
+COPY third_party/license/json-schema-validator/ /opt/simplex-thirdparty-licenses/json-schema-validator/
+
 LABEL org.opencontainers.image.title="simplex experimental musl build environment" \
+      simplex.build.json-schema-validator="2.4.1" \
       simplex.build.sqlite="3.54.0"

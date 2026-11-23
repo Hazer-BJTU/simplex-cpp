@@ -9,6 +9,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json-schema.hpp>
+
 #include "logging/logger.hpp"
 #include "yamlconfig/yaml_json.hpp"
 
@@ -719,6 +721,17 @@ json require_argument_schema(const json& document, const std::filesystem::path& 
             check_branch((*alternatives)[index], properties, required_names,
                          file, index);
         }
+    }
+    // Keep the tool-specific diagnostics above first. Validate the declaration
+    // as an instance of the built-in meta-schema, once at load time. The
+    // validator's optional default patch is irrelevant to the advertised schema.
+    static const nlohmann::json_schema::json_validator draft7(
+        nlohmann::json_schema::draft7_schema_builtin, nullptr,
+        nlohmann::json_schema::default_string_format_check);
+    try {
+        (void)draft7.validate(*schema);
+    } catch (const std::invalid_argument& error) {
+        fail(file, base, std::format("invalid Draft 7 schema: {}", error.what()));
     }
     return *schema;
 }

@@ -76,9 +76,11 @@ target_link_libraries(tools_intrinsic PUBLIC
     asio_iface
     logging_lib
 )
-# Both are implementation-only: yamlconfig loads declarations and textformat
-# formats result fields. Neither dependency appears in intrinsic public headers.
-target_link_libraries(tools_intrinsic PRIVATE yamlconfig_iface textformat_iface)
+# Compile the Draft 7 validator into this shared library only. Its headers and
+# symbols are implementation details of the YAML declaration loader.
+target_link_libraries(tools_intrinsic PRIVATE yamlconfig_iface textformat_iface
+    "${SIMPLEX_THIRDPARTY_DIR}/libs/libnlohmann_json_schema_validator.a")
+target_link_options(tools_intrinsic PRIVATE "LINKER:--exclude-libs,libnlohmann_json_schema_validator.a")
 target_compile_options(tools_intrinsic PRIVATE
     $<$<CONFIG:Debug>:-g -Wall -Wextra -O0>
 )

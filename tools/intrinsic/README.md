@@ -86,6 +86,11 @@ shared YAML-to-JSON conversion unchanged; the argument-schema vocabulary does
 not apply. Concrete tools validate all supported keys, types, ranges and defaults.
 Host config never becomes part of Invocable, arguments, skill text or state.
 
+After checking the project's declaration rules, the loader validates
+`argument_schema` against the embedded JSON Schema Draft 7 meta-schema.
+This offline check runs at load time. Each tool's `ensure_arguments()`
+continues to validate and settle individual calls.
+
 The schema's vocabulary is **closed**, because that subtree goes to a provider
 verbatim: `type` (`string` / `boolean` / `integer` / `array` / `object`), a
 `description` on every named property, scalar/string-list `default` and `enum`,

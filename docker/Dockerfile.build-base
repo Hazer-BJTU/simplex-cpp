@@ -135,6 +135,12 @@ RUN bash /tmp/install-sqlite-amalgamation.sh \
     && test "$(g++-14 -dumpfullversion)" = 14.3.0
 COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
 
+ARG JOBS=1
+COPY docker/install-json-schema-validator.sh /tmp/install-json-schema-validator.sh
+RUN CXX=g++-14 JOBS="$JOBS" bash /tmp/install-json-schema-validator.sh /opt/simplex-thirdparty \
+    && rm /tmp/install-json-schema-validator.sh
+COPY third_party/license/json-schema-validator/ /opt/simplex-thirdparty-licenses/json-schema-validator/
+
 LABEL org.opencontainers.image.title="simplex-cpp build-base" \
       org.opencontainers.image.description="Toolchain base for simplex-cpp: GCC 14.3 C/C++, Boost 1.91.0 shared, OpenSSL, nlohmann/json, yaml-cpp and SQLite 3.54.0 amalgamation" \
       org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
@@ -142,4 +148,5 @@ LABEL org.opencontainers.image.title="simplex-cpp build-base" \
       simplex.build.boost="1.91.0" \
       simplex.build.nlohmann-json="3.12.0" \
       simplex.build.yaml-cpp="0.9.0" \
+      simplex.build.json-schema-validator="2.4.1" \
       simplex.build.sqlite="3.54.0"

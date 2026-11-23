@@ -255,6 +255,12 @@ RUN bash /tmp/install-sqlite-amalgamation.sh \
     && test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.34"
 COPY third_party/license/sqlite/PUBLIC-DOMAIN.txt /opt/simplex-thirdparty-licenses/sqlite/PUBLIC-DOMAIN.txt
 
+ARG JOBS=1
+COPY docker/install-json-schema-validator.sh /tmp/install-json-schema-validator.sh
+RUN CXX=g++-14 JOBS="$JOBS" bash /tmp/install-json-schema-validator.sh /opt/simplex-thirdparty \
+    && rm /tmp/install-json-schema-validator.sh
+COPY third_party/license/json-schema-validator/ /opt/simplex-thirdparty-licenses/json-schema-validator/
+
 LABEL org.opencontainers.image.title="simplex-cpp build-portable" \
       org.opencontainers.image.description="Portable toolchain base: AlmaLinux 9 (glibc 2.34), GCC 14.3.0, Boost 1.91.0 shared, OpenSSL 3.5, nlohmann/json, yaml-cpp and SQLite 3.54.0 amalgamation" \
       org.opencontainers.image.source="https://github.com/Hazer-BJTU/simplex-cpp" \
@@ -265,4 +271,5 @@ LABEL org.opencontainers.image.title="simplex-cpp build-portable" \
       simplex.build.boost="1.91.0" \
       simplex.build.nlohmann-json="3.12.0" \
       simplex.build.yaml-cpp="0.9.0" \
+      simplex.build.json-schema-validator="2.4.1" \
       simplex.build.sqlite="3.54.0"
