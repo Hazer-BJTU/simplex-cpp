@@ -9,7 +9,8 @@ temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
 cd "$temporary"
 
-curl -fLsS --retry 2 "https://codeload.github.com/pboettch/json-schema-validator/tar.gz/refs/tags/$version" -o source.tar.gz
+wget --quiet --timeout=30 --tries=3 -O source.tar.gz \
+    "https://codeload.github.com/pboettch/json-schema-validator/tar.gz/refs/tags/$version"
 echo '0c8bf7ba59bd50e312d82da4bab1d49cf3e2211cfbd659472f9c90505d2a4e4c  source.tar.gz' | sha256sum -c -
 tar -xzf source.tar.gz
 
