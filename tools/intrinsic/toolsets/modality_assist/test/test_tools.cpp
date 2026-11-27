@@ -136,8 +136,10 @@ BOOST_FIXTURE_TEST_CASE(one_exchange_defaults_and_image_bytes_are_preserved, Fix
 BOOST_FIXTURE_TEST_CASE(multiple_images_preserve_order_and_duplicates_in_both_protocols, Fixture)
 {
     const auto gif = (fs::path(MODALITY_IMAGE_FIXTURE).parent_path() / "icon.gif").string();
+    const auto mislabeled = root / "diagram.jpg";
+    fs::create_symlink(MODALITY_IMAGE_FIXTURE, mislabeled);
     auto args = arguments();
-    const std::vector<std::string> paths{MODALITY_IMAGE_FIXTURE, gif, MODALITY_IMAGE_FIXTURE};
+    const std::vector<std::string> paths{mislabeled.string(), gif, mislabeled.string()};
     args["path"] = paths;
     const auto result = call(args);
     BOOST_REQUIRE(!tools::is_error(result));
@@ -170,6 +172,14 @@ BOOST_FIXTURE_TEST_CASE(multiple_images_preserve_order_and_duplicates_in_both_pr
     BOOST_TEST(content[1].raw.starts_with("data:image/png;base64,"));
     BOOST_TEST(content[2].raw.starts_with("data:image/gif;base64,"));
     BOOST_TEST(content[1].raw == content[3].raw);
+    BOOST_TEST(result.output.raw.find("[[media_type]]: [\"image/png\",\"image/gif\",\"image/png\"]")
+        != std::string::npos);
+    const auto first_hint = result.output.raw.find("path[0]: .jpg suggests image/jpeg, but the header identifies image/png");
+    const auto last_hint = result.output.raw.find("path[2]: .jpg suggests image/jpeg, but the header identifies image/png");
+    const auto description = result.output.raw.find("description (");
+    BOOST_REQUIRE(description != std::string::npos);
+    BOOST_TEST(first_hint < last_hint);
+    BOOST_TEST(last_hint < description);
     BOOST_TEST(result.output.raw.find("[[file_bytes]]: " + std::to_string(total_bytes))
         != std::string::npos);
     BOOST_TEST(result.output.raw.find("base64,") == std::string::npos);
@@ -214,25 +224,75 @@ BOOST_FIXTURE_TEST_CASE(custom_prompts_and_successive_calls_have_no_shared_histo
     BOOST_TEST(model->inputs[1].turns[0].agent_loop_step.empty());
 }
 
-BOOST_FIXTURE_TEST_CASE(extension_checks_are_case_insensitive_and_only_advisory, Fixture)
+BOOST_FIXTURE_TEST_CASE(headers_identify_images_with_or_without_suffixes, Fixture)
 {
-    for (const auto& [extension, mime] : std::vector<std::pair<std::string, std::string>>{
-        {".PNG", "image/png"}, {".JpG", "image/jpeg"}, {".jpeg", "image/jpeg"},
-        {".gif", "image/gif"}, {".webp", "image/webp"}
-    }) {
-        const auto path = root / ("input" + extension);
-        std::ofstream(path, std::ios::binary) << "suffix hint only";
+    struct Example {
+        const char* name;
+        std::string_view bytes;
+        const char* mime;
+        std::string_view hint;
+    };
+    using namespace std::string_view_literals;
+    const Example examples[] = {
+        {"pixel", "\x89PNG\r\n\x1a\n", "image/png", ""},
+        {"one.JPG", "\xff\xd8\xff", "image/jpeg", ""},
+        {"two.jpeg", "\xff\xd8\xff", "image/jpeg", ""},
+        {"old", "GIF87a", "image/gif", ""},
+        {"new", "GIF89a", "image/gif", ""},
+        {"preview.bin", "RIFF\x08\0\0\0WEBPVP8L"sv, "image/webp", "unrecognized filename suffix"},
+        {"short.PNG", "\x89PN", "image/png", "inferred image/png from .PNG"},
+    };
+    for (const auto& example : examples) {
+        const auto path = root / example.name;
+        std::ofstream(path, std::ios::binary) << example.bytes;
         auto args = arguments();
         args["path"] = Json::array({path.string()});
-        BOOST_REQUIRE(!tools::is_error(call(args)));
+        const auto result = call(args);
+        BOOST_REQUIRE(!tools::is_error(result));
         BOOST_TEST(model->inputs.back().turns.front().user_input.content[1].raw.starts_with(
-            "data:" + mime + ";base64,"));
+            std::string("data:") + example.mime + ";base64,"));
+        if (!example.hint.empty()) {
+            BOOST_TEST(result.output.raw.find("[[hints]]: [\"path[0]:") != std::string::npos);
+            BOOST_TEST(result.output.raw.find(example.hint) != std::string::npos);
+        } else {
+            BOOST_TEST(result.output.raw.find("[[hints]]") == std::string::npos);
+        }
     }
-    const auto link = root / "linked.png";
-    fs::create_symlink(MODALITY_IMAGE_FIXTURE, link);
+}
+
+BOOST_FIXTURE_TEST_CASE(unidentified_files_abort_the_batch_and_keep_earlier_hints, Fixture)
+{
+    const auto first = root / "diagram.jpg";
+    fs::copy_file(MODALITY_IMAGE_FIXTURE, first);
+    for (const auto name : {"unknown.bin", "no-extension"}) {
+        const auto path = root / name;
+        for (const auto header : {"x", "RIFF", "RIFF1234WEBPV", "RIFF1234WAVEfmt ", "RIFF1234AVI LIST"}) {
+            std::ofstream(path, std::ios::binary) << header;
+            auto args = arguments();
+            args["path"] = Json::array({first.string(), path.string()});
+            const auto result = call(args);
+            BOOST_TEST(tools::is_error(result));
+            BOOST_TEST(result.output.raw.find("path[1]: cannot identify") != std::string::npos);
+            BOOST_TEST(result.output.raw.find("path[0]: .jpg suggests image/jpeg, but the header identifies image/png")
+                != std::string::npos);
+        }
+    }
+    BOOST_TEST(model->inputs.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(provider_error_preserves_header_mismatch_diagnostic, Fixture)
+{
+    const auto first = root / "diagram.jpg";
+    fs::copy_file(MODALITY_IMAGE_FIXTURE, first);
     auto args = arguments();
-    args["path"] = Json::array({link.string()});
-    BOOST_REQUIRE(!tools::is_error(call(args)));
+    args["path"] = Json::array({first.string()});
+    model->fail = true;
+    const auto result = call(args);
+    BOOST_TEST(tools::is_error(result));
+    BOOST_TEST(model->inputs.size() == 1u);
+    BOOST_TEST(result.output.raw.find("test provider failure") != std::string::npos);
+    BOOST_TEST(result.output.raw.find("path[0]: .jpg suggests image/jpeg, but the header identifies image/png")
+        != std::string::npos);
 }
 
 BOOST_FIXTURE_TEST_CASE(invalid_arguments_and_file_failures_do_not_call_the_model, Fixture)
@@ -241,11 +301,9 @@ BOOST_FIXTURE_TEST_CASE(invalid_arguments_and_file_failures_do_not_call_the_mode
         {"request", ""}, {"request", nullptr}, {"request", 42},
         {"path", ""}, {"path", nullptr}, {"path", MODALITY_IMAGE_FIXTURE},
         {"path", Json::array()}, {"path", Json::array({""})},
-        {"path", Json::array({"file.txt"})},
         {"path", Json::array({std::string("bad\0.png", 8)})},
         {"path", Json::array({MODALITY_IMAGE_FIXTURE, 42})},
         {"path", Json::array({MODALITY_IMAGE_FIXTURE, nullptr})},
-        {"path", Json::array({MODALITY_IMAGE_FIXTURE, "bad.txt"})},
         {"extra_modality", "audio"}, {"extra_modality", 1},
         {"system_prompt", ""}, {"system_prompt", false}
     }) {

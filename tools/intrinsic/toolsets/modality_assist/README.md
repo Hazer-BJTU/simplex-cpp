@@ -32,10 +32,15 @@ and avoid tool calls. It applies only to this auxiliary request. The image-text
 instruction in that default is guidance, not a fixed security boundary: callers
 that replace the system prompt must include their own guidance.
 
-PNG, JPEG (`.jpg` or `.jpeg`), GIF, and WebP suffixes are accepted without regard
-to case. The suffix supplies the MIME type and is only a plausibility check;
-the tool does not decode, resize, transcode, or verify image contents. Actual
-format support belongs to the configured provider. NUL paths, missing or
+The tool identifies PNG, JPEG, GIF, and WebP from the file header, including
+images without an extension. For example, a PNG named `diagram.jpg` is sent as
+`image/png`. A conflicting or unrecognized suffix produces a hint with the
+zero-based path index. An extensionless image with a recognized header needs no hint.
+If the header is unrecognized, the tool falls back to `.png`, `.jpg`, `.jpeg`,
+`.gif`, or `.webp` (case-insensitive) and reports the inference. If neither
+identifies a supported format, the whole call fails before model IO.
+Header recognition does not validate the complete file. The configured
+provider decodes the original bytes. NUL paths, missing or
 non-regular files, empty files, and a combined input size over 16 MiB fail before
 model invocation. The byte limit covers all original file bytes in the list,
 including repeated entries. All images are read and encoded before the request
@@ -69,8 +74,9 @@ the provider completes or fails. There is no extra timeout beyond the provider's
 normal request policy.
 
 Success uses the shared intrinsic text format: `[[path]]`, `[[media_type]]`,
-`[[file_bytes]]`, optional `[[token_cost]]`, followed by a `description` block.
-`path` and `media_type` are corresponding ordered arrays; `file_bytes` is the
+`[[file_bytes]]`, optional `[[hints]]` and `[[token_cost]]`, followed by a `description` block.
+Each `media_type` is the MIME type used in the corresponding image data URL.
+Errors also include format hints collected before failure. `file_bytes` is the
 combined original size of all submitted images.
 Text content parts are joined with newlines. Reasoning and internal response
 metadata are omitted. Empty/non-text replies and any attempted tool calls fail;
