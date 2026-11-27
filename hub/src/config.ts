@@ -71,6 +71,8 @@ export interface HubConfig {
     /** Empty token disables panel authentication on a loopback listener. */
     panel: {
         token: string;
+        /** Operator-selected desktop program on the Hub host. {file} is one argv entry. */
+        editor?: { command: string; args?: string[] };
         background?: Omit<BackgroundOptions, 'opacity' | 'frameOpacity'> & {
             opacity: number | BackgroundOptions['opacity'];
             frameOpacity?: number | BackgroundOptions['frameOpacity'];
@@ -309,7 +311,7 @@ function unknownConfigKeys(
     const expectedKeys = shape as Record<string, unknown>;
     for (const [key, item] of Object.entries(value)) {
         const path = prefix ? `${prefix}.${key}` : key;
-        if (path === "panel.background") continue; // Validated explicitly: optional and union-valued.
+        if (path === "panel.editor" || path === "panel.background") continue; // Validated explicitly: optional and union-valued.
         const expected = expectedKeys[key];
         if (expected === undefined) {
             found.push(path);
@@ -535,6 +537,20 @@ export function validateConfig(config: HubConfig): HubConfig {
     check(typeof config.dataDir === 'string' && config.dataDir.length > 0,
         'dataDir must be a nonempty string');
     check(typeof config.panel?.token === 'string', 'panel.token must be a string');
+
+    const editor = config.panel.editor;
+    if (editor !== undefined) {
+        check(isPlainObject(editor) && Object.keys(editor).every(key => key === 'command' || key === 'args'),
+            'panel.editor must contain command and optional args');
+        check(typeof editor.command === 'string' && editor.command.trim() && !editor.command.includes('\0'),
+            'panel.editor.command must be a nonempty executable name or path');
+        if (editor.args !== undefined) {
+            check(Array.isArray(editor.args) && editor.args.every(arg => typeof arg === 'string' && !arg.includes('\0')),
+                'panel.editor.args must be a list of strings');
+            check(editor.args.filter(arg => arg === '{file}').length === 1,
+                'panel.editor.args must contain exactly one {file} argument');
+        }
+    }
 
     const localOnly = ['127.0.0.1', '::1', 'localhost'].includes(config.listen.host);
     if (!localOnly && config.panel.token.length === 0) {

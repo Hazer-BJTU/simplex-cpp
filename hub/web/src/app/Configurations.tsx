@@ -1,14 +1,13 @@
-/** Configuration library UI. Saving a shared file does not mutate a session;
- * applying to a stopped session is an explicit separate action. */
-import { useEffect, useState } from 'react';
+/** Manage saved library files separately from session configuration snapshots. */
+import { useEffect, useRef, useState } from 'react';
 import { useClient } from './ClientContext.tsx';
 import { usePanel } from '../state/usePanel.ts';
 import { Button } from '../ui/Button.tsx';
 import { Dialog, DialogContent } from '../ui/overlays.tsx';
-import { ConfigEditor } from './ConfigEditor.tsx';
 
-import type { ConfigKind as Kind, ConfigFile as File, ConfigList, ConfigPreviewResponse, ConfigTemplateResponse, RestOperations } from '../../../ui/index.ts';
+import type { ConfigKind as Kind, ConfigFile, ConfigList, ConfigPreviewResponse, ConfigTemplateResponse, RestOperations } from '../../../ui/index.ts';
 export type { ConfigList } from '../../../ui/index.ts';
+type FileSelection = Pick<ConfigFile, 'id' | 'revision'>;
 const control = 'config-control h-9 min-w-0 rounded-md border border-line bg-surface px-3 text-sm text-ink transition-colors hover:border-line-strong';
 
 /** Shared picker for session creation and explicit snapshot replacement. */
@@ -45,8 +44,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     const [list, setList] = useState<ConfigList>({ launch: [], worker: [] });
     const [templateSource, setTemplateSource] = useState('default');
     const [kind, setKind] = useState<Kind>('worker');
-    const [file, setFile] = useState<File | null>(null);
-    const [text, setText] = useState('');
+    const [file, setFile] = useState<FileSelection | null>(null);
     const [name, setName] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -54,7 +52,6 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
     const [launch, setLaunch] = useState('local');
     const [worker, setWorker] = useState('default');
     const [preview, setPreview] = useState<ConfigPreviewResponse['endpoints'] | null>(null);
-    const dirty = text !== (file?.text ?? '');
     const stopped = session && !session.connected && !['starting', 'running', 'stopping'].includes(session.process?.state ?? '');
 
     useEffect(() => {
@@ -66,13 +63,6 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
         return () => { disposed = true; };
     }, [open, rest]);
 
-    useEffect(() => {
-        if (!dirty) return;
-        const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-        window.addEventListener('beforeunload', warn);
-        return () => window.removeEventListener('beforeunload', warn);
-    }, [dirty]);
-
     async function action(work: () => Promise<void>) {
         setBusy(true); setError(''); setNotice('');
         try { await work(); }
@@ -80,77 +70,113 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
         finally { setBusy(false); }
     }
 
-    const discard = () => !dirty || window.confirm('Discard unsaved configuration changes?');
     const refresh = async () => setList(await rest.request<ConfigList>('GET', '/api/configurations'));
-    function loaded(value: File) { setFile(value); setText(value.text); setName(value.id); setKind(value.kind); }
     const path = (id: string) => `/api/configurations/${kind}/${encodeURIComponent(id)}`;
-
+    const suffix = kind === 'launch' ? '.jsonc' : '.yaml';
+    const read = (id: string) => rest.request<ConfigFile & { path: string }>('GET', path(id) + '/source');
+    function select(value: ConfigFile) {
+        setFile({ id: value.id, revision: value.revision });
+        setName('');
+    }
+    async function save(id: string, text: string, revision: string | null) {
+        const saved = await rest.request<ConfigFile>('PUT', path(id), { body: { text, revision } });
+        select(saved);
+        await refresh();
+        setNotice(`Saved ${saved.id}${suffix} to the library.`);
+    }
+    async function upload(source: globalThis.File, replacement?: FileSelection) {
+        if (source.size > 1024 * 1024) throw new Error('Configuration exceeds 1 MiB.');
+        const id = replacement?.id ?? source.name.replace(/\.(yaml|yml|jsonc|json)$/i, '');
+        if (!replacement && list[kind].includes(id)) {
+            throw new Error(`Select ${id}${suffix} and choose Replace from file to update it.`);
+        }
+        if (replacement && !window.confirm(`Replace ${id}${suffix} with ${source.name}?`)) return;
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await source.arrayBuffer());
+        await save(id, text, replacement?.revision ?? null);
+    }
+    async function download() {
+        if (!file) return;
+        const latest = await read(file.id);
+        const url = URL.createObjectURL(new Blob([latest.text], { type: 'text/plain;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = latest.id + suffix;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        select(latest);
+    }
     async function showPreview() {
-        const current = kind === 'launch' && text ? text :
-            (await rest.request<File>('GET', `/api/configurations/launch/${encodeURIComponent(launch)}`)).text;
+        const current = (await rest.request<ConfigFile>('GET', `/api/configurations/launch/${encodeURIComponent(launch)}/source`)).text;
         const result = await rest.request<ConfigPreviewResponse>('POST', '/api/configurations/preview', { body: { launch: current } satisfies RestOperations['POST /api/configurations/preview']['body'] });
         setPreview(result.endpoints);
     }
 
     return (
-        <Dialog open={open} onOpenChange={value => { if (!value && !busy && discard()) onClose(); }}>
-            <DialogContent title="Configurations" description="Edit reusable launch and worker files. Session snapshots change only when explicitly applied." wide>
+        <Dialog open={open} onOpenChange={value => { if (!value && !busy) onClose(); }}>
+            <DialogContent title="Configurations" description="Manage reusable worker and launch configuration files." wide>
                 <div className="configuration-workspace space-y-4">
-                    <div className="config-library flex flex-wrap items-center gap-3 rounded-lg border border-line bg-sunken p-3">
+                    <div className="config-library flex flex-wrap items-center gap-2">
                         <select aria-label="Configuration kind" className={control} value={kind} disabled={busy}
-                            onChange={e => { if (discard()) { setKind(e.target.value as Kind); setTemplateSource('default'); setFile(null); setText(''); setName(''); setPreview(null); } }}>
-                            <option value="launch">Launch configs · JSONC</option><option value="worker">Worker configs · YAML</option>
+                            onChange={e => { setKind(e.target.value as Kind); setTemplateSource('default'); setFile(null); setName(''); setPreview(null); setError(''); setNotice(''); }}>
+                            <option value="worker">Worker · YAML</option><option value="launch">Launch · JSONC</option>
                         </select>
                         <select aria-label="Saved configuration" className={control} value={file?.id ?? ''} disabled={busy}
-                            onChange={e => { const id = e.target.value; if (id && discard()) void action(async () => loaded(await rest.request<File>('GET', path(id)))); }}>
+                            onChange={e => { const id = e.target.value; setFile(null); setName(''); if (id) void action(async () => select(await read(id))); }}>
                             <option value="">Select a saved file</option>
-                            {list[kind].map(id => <option key={id}>{id}</option>)}
+                            {list[kind].map(id => <option key={id} value={id}>{id}{suffix}</option>)}
                         </select>
-                        <select aria-label="Template source" className={control} value={templateSource} disabled={busy} onChange={e => setTemplateSource(e.target.value)}>
-                            <option value="default">Default template</option>
-                            {kind === 'launch' && <option value="docker">Docker (running container)</option>}
-                            {kind === 'launch' && <option value="managed">Managed worker</option>}
-                        </select>
-                        <Button disabled={busy} onClick={() => {
-                            if (!discard()) return;
-                            void action(async () => {
-                                const result = await rest.request<ConfigTemplateResponse>('GET', `/api/configurations/${kind}/template?source=${templateSource}`);
-                                setFile(null); setText(result.text); setName(''); setPreview(null);
-                            });
-                        }}>New from template</Button>
-                    </div>
-                    <div className="config-file-toolbar flex flex-wrap items-center gap-2">
-                        <input aria-label="Configuration name" className={control} value={name} placeholder="Configuration name"
-                            disabled={busy} onChange={e => setName(e.target.value)} maxLength={128} />
-                        <span className="mr-auto rounded bg-sunken px-2 py-1 font-mono text-xs text-ink-muted">{kind === 'launch' ? '.jsonc' : '.yaml'}{dirty ? ' · Unsaved changes' : ''}</span>
-                        <Button variant="primary" disabled={busy || !name || !text} onClick={() => void action(async () => {
-                            const value = await rest.request<File>('PUT', path(name), { body: { text, revision: file?.id === name ? file.revision : null } satisfies RestOperations['PUT /api/configurations/:kind/:id']['body'] });
-                            loaded(value); await refresh(); setNotice('Saved. Existing session snapshots are unchanged.');
-                        })}>{file && file.id !== name ? 'Save copy' : 'Save'}</Button>
-                        <Button disabled={busy || !text} onClick={() => void action(async () => {
-                            await rest.request('POST', `/api/configurations/${kind}/validate`, { body: { text } satisfies RestOperations['POST /api/configurations/:kind/validate']['body'] });
-                            setNotice('Configuration syntax and required fields are valid. Worker startup checks plugins and local resources.');
-                        })}>Validate</Button>
-                        <Button disabled={busy || !file} onClick={() => { if (file && discard()) void action(async () => loaded(await rest.request<File>('GET', path(file.id)))); }}>Reload</Button>
-                        <Button disabled={busy || !file || file.id === name || !name || dirty} onClick={() => void action(async () => {
-                            if (!file) return;
-                            loaded(await rest.request<File>('POST', `${path(file.id)}/rename`, { body: { id: name, revision: file.revision } satisfies RestOperations['POST /api/configurations/:kind/:id/rename']['body'] }));
+                        <Button disabled={busy} onClick={() => void action(async () => {
                             await refresh();
-                        })}>Rename</Button>
-                        <Button variant="ghost" className="text-danger" disabled={busy || !file} onClick={() => {
-                            if (!file || !window.confirm(`Delete ${file.id}? Existing sessions keep their snapshots.`)) return;
-                            void action(async () => {
-                                await rest.request('DELETE', path(file.id), { body: { revision: file.revision } satisfies RestOperations['DELETE /api/configurations/:kind/:id']['body'] });
-                                setFile(null); setText(''); setName(''); await refresh();
+                            if (file) select(await read(file.id));
+                        })}>Refresh</Button>
+                    </div>
+                    {file && <div className="flex flex-wrap items-center gap-2">
+                        {list.editorAvailable && <Button variant="primary" disabled={busy} onClick={() => void action(async () => {
+                            await rest.request('POST', path(file.id) + '/open', { body: {} });
+                            setNotice('Requested editor on the Hub host.');
+                        })}>Open in editor</Button>}
+                        <Button disabled={busy} onClick={() => void action(download)}>Download</Button>
+                        <Button disabled={busy} onClick={() => void action(async () => {
+                            const { path } = await read(file.id);
+                            setNotice(path);
+                            await navigator.clipboard?.writeText(path).catch(() => { /* Path stays available to copy manually. */ });
+                        })}>Copy Hub path</Button>
+                        <UploadButton label="Replace from file" disabled={busy} accept={kind === 'worker' ? '.yaml,.yml' : '.jsonc,.json'}
+                            onFile={source => void action(() => upload(source, file))} />
+                        <Button disabled={busy} onClick={() => void action(async () => {
+                            const latest = await read(file.id);
+                            await rest.request('POST', `/api/configurations/${kind}/validate`, { body: { text: latest.text } });
+                            setNotice('Valid configuration. The worker checks plugins and local resources at startup.');
+                        })}>Validate</Button>
+                        <Button variant="ghost" className="text-danger" disabled={busy} onClick={() => {
+                            if (window.confirm(`Delete ${file.id}${suffix} from the library?`)) void action(async () => {
+                                await rest.request('DELETE', path(file.id), { body: { revision: file.revision } });
+                                setFile(null); await refresh();
                             });
                         }}>Delete</Button>
-                    </div>
-                    <div className="overflow-hidden rounded-lg border border-line shadow-sm">
-                    <div className="flex items-center justify-between border-b border-line bg-sunken px-3 py-2 text-xs text-ink-muted">
-                        <span className="font-mono">{name || 'Untitled'}{kind === 'launch' ? '.jsonc' : '.yaml'}</span>
-                        <span>{busy ? 'Working…' : dirty ? 'Unsaved changes' : file ? 'Saved' : 'Choose a file or template'}</span>
-                    </div>
-                    <ConfigEditor text={text} language={kind === 'worker' ? 'yaml' : 'json'} onChange={setText} disabled={busy} />
+                    </div>}
+                    <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
+                        <input aria-label="Configuration name" className={control} value={name} placeholder="New file name"
+                            disabled={busy} onChange={e => setName(e.target.value)} maxLength={128} />
+                        {kind === 'launch' && <select aria-label="Template source" className={control} value={templateSource} disabled={busy} onChange={e => setTemplateSource(e.target.value)}>
+                            <option value="default">Default template</option>
+                            <option value="docker">Docker</option><option value="managed">Managed worker</option>
+                        </select>}
+                        <Button disabled={busy || !name} onClick={() => void action(async () => {
+                            const template = await rest.request<ConfigTemplateResponse>('GET', `/api/configurations/${kind}/template?source=${templateSource}`);
+                            await save(name, template.text, null);
+                        })}>New from template</Button>
+                        {file && <>
+                            <Button disabled={busy || !name || name === file.id} onClick={() => void action(async () => {
+                                await save(name, (await read(file.id)).text, null);
+                            })}>Save copy</Button>
+                            <Button disabled={busy || !name || name === file.id} onClick={() => void action(async () => {
+                                select(await rest.request<ConfigFile>('POST', path(file.id) + '/rename', { body: { id: name, revision: file.revision } }));
+                                await refresh();
+                            })}>Rename</Button>
+                        </>}
+                        <UploadButton label="Upload new file" disabled={busy} accept={kind === 'worker' ? '.yaml,.yml' : '.jsonc,.json'}
+                            onFile={source => void action(() => upload(source))} />
                     </div>
                     {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
                     {notice && <p role="status" className="text-xs text-ok">{notice}</p>}
@@ -169,9 +195,9 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                                 setNotice(`Configuration applied to ${selected}. Start its worker to load it.`);
                             });
                         }}>Apply to {selected ?? 'selected session'}</Button>
-                        <Button className="ml-auto" disabled={busy} onClick={() => { if (discard()) onClose(); }}>Close</Button>
+                        <Button className="ml-auto" disabled={busy} onClick={onClose}>Close</Button>
                     </div>
-                    <p className="text-xs text-ink-muted">Apply requires a stopped, disconnected worker and uses saved files. To copy a file, change its name and save.</p>
+                    <p className="text-xs text-ink-muted">Apply requires a stopped, disconnected worker and uses saved files. A bound managed session keeps its captured configuration.</p>
                     </section>
                     {preview && <div className="overflow-auto rounded border border-line bg-surface p-2 text-xs">
                         <p className="mb-1 text-ink-muted">Session identity is filled at launch. For containers or proxies, edit the launch config address settings.</p>
@@ -181,4 +207,20 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
             </DialogContent>
         </Dialog>
     );
+}
+
+/** Select a local text file. Reset the picker so a corrected file can be retried. */
+function UploadButton({ label, disabled, accept, onFile }: {
+    label: string; disabled: boolean; accept: string; onFile: (file: globalThis.File) => void;
+}) {
+    const input = useRef<HTMLInputElement>(null);
+    return <>
+        <input hidden ref={input} aria-label={label} type="file" accept={accept} disabled={disabled}
+            onChange={event => {
+                const chosen = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (chosen) onFile(chosen);
+            }} />
+        <Button disabled={disabled} onClick={() => input.current?.click()}>{label}</Button>
+    </>;
 }

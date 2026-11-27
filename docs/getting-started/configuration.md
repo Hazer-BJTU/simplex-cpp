@@ -7,6 +7,7 @@ and start the Hub. Local workers inherit the Hub's environment at launch.
 [Deployment guide](../deployment/hub.md)
 
 In **Configurations**, create a **Worker configuration** from the template.
+Use **Open in editor** if configured, or **Download** the YAML and edit it locally.
 Replace its `providers` and `driver_model` sections with the fragment below.
 Keep the Hub connection and persistence placeholders elsewhere in the template.
 
@@ -20,7 +21,8 @@ providers:
 driver_model: primary
 ```
 
-Choose **Validate** and **Save**. Create a session with the `local` launch
+Save in the host editor, or use **Replace from file** to upload the edited copy.
+Choose **Validate** to check the saved configuration. Create a session with the `local` launch
 profile and the saved worker file. Select **Start**, wait until the worker is
 ready, and send a short message to verify model access.
 

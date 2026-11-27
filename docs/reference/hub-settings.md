@@ -31,6 +31,22 @@ Use TLS termination and protect access when exposing listeners outside a
 trusted local network. A worker's advertised address belongs in the
 [launch profile](launch-profiles.md#worker-and-network-settings).
 
+## Configuration editor
+
+To enable **Open in editor** in the configuration library, merge this setting
+into `hub.config.jsonc` and restart the Hub:
+
+```json
+{"panel": {"editor": {"command": "code", "args": ["--reuse-window", "{file}"]}}}
+```
+
+Choose a graphical editor executable available to the **Hub process**. The Hub
+passes arguments directly; one `{file}` argument holds the saved file's path.
+Omitting `args` passes just that path. The command runs on the Hub host under
+its account. With WSL, verify the editor command works in that environment.
+Leaving `panel.editor` unset keeps downloads and uploads available for remote
+browsers or headless hosts.
+
 ## Panel background
 
 Merge this fragment into the Hub startup file, retaining any existing panel token:

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { defaultConfig, parseConfigText } from '../src/config.ts';
+import { defaultConfig, parseConfigText, validateConfig } from '../src/config.ts';
 import { ConfigurationStore, launchDocument } from '../src/configurations/store.ts';
 
 test('configuration library preserves text, guards revisions and survives restart', () => {
@@ -368,4 +368,53 @@ test('new local template binds management while saved legacy profiles remain unc
         assert.equal(restarted.read('launch', 'local').text, legacy);
         assert.equal(launchDocument(restarted.read('launch', 'local').text, config).management, undefined);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('host editor accepts only a saved library file and administrator-owned argv', async t => {
+    const scratch = mkdtempSync(join(tmpdir(), 'simplex editor '));
+    const output = join(scratch, 'argv.json');
+    const editor = { command: process.execPath, args: ['-e',
+        'const fs = require("node:fs"); fs.writeFileSync(process.argv[1]+".tmp", JSON.stringify(process.argv.slice(2))); fs.renameSync(process.argv[1]+".tmp", process.argv[1])',
+        output, 'literal $HOME', '{file}'] };
+    const ctx = await startTestHub({ panel: { token: 'test-secret', editor } });
+    t.after(async () => {
+        await ctx.hub.stop();
+        rmSync(scratch, { recursive: true, force: true });
+        rmSync(ctx.config.dataDir, { recursive: true, force: true });
+    });
+    const headers = { authorization: 'Bearer test-secret', 'content-type': 'application/json' };
+    const url = ctx.base + '/api/configurations/worker/default/open';
+    const post = (id, body) => fetch(ctx.base + '/api/configurations/worker/' + id + '/open', {
+        method: 'POST', headers, body: JSON.stringify(body),
+    });
+    assert.equal((await fetch(url, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(url, { method: 'POST', headers: { authorization: headers.authorization } })).status, 415);
+    assert.equal((await post('default', { command: 'anything' })).status, 400);
+    assert.equal((await post('..%2Fother', {})).status, 400);
+    assert.equal((await post('missing', {})).status, 404);
+    assert.equal((await (await fetch(ctx.base + '/api/configurations', { headers })).json()).editorAvailable, true);
+    assert.equal((await post('default', {})).status, 200);
+    const path = join(ctx.config.dataDir, 'configs', 'worker', 'default.yaml');
+    // The endpoint acknowledges spawn before the child writes the file.
+    const deadline = Date.now() + 5000;
+    while (!existsSync(output) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')), ['literal $HOME', path]);
+    const store = new ConfigurationStore(ctx.config);
+    const saved = store.save('worker', 'template', store.read('worker', 'default').text, null);
+    const source = await fetch(ctx.base + '/api/configurations/worker/template/source', { headers });
+    assert.deepEqual(await source.json(), { ...saved, path: store.path('worker', 'template') });
+    ctx.config.panel.editor = { command: join(scratch, 'missing-editor') };
+    assert.equal((await post('default', {})).status, 503);
+    delete ctx.config.panel.editor;
+    assert.equal((await post('default', {})).status, 409);
+});
+
+test('host editor settings reject invalid executable and argument specifications', () => {
+    for (const editor of [null, {}, { command: '' }, { command: 'x', args: {} },
+        { command: 'x', args: ['{file}', '{file}'] }, { command: 'x', args: ['--some-option'] },
+        { command: 'x', shell: true }]) {
+        const config = defaultConfig();
+        config.panel.editor = editor;
+        assert.throws(() => validateConfig(config), /panel.editor/);
+    }
 });
