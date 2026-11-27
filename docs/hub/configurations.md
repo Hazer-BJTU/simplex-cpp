@@ -23,9 +23,11 @@ separate groups.
 - Choose **Open** beside a filename to start the [configured editor on the Hub host](../reference/hub-settings.md#configuration-editor).
   With no host editor configured, the row offers **Download**. Download is
   also available in the actions menu when Open is the primary action.
-- To upload an edited copy, choose **⋯ → Replace from file** on the original
-  row. Choose the local file and confirm with **Replace**. If the downloaded
-  revision has changed, download the new version and reconcile your changes.
+- To upload an edited copy, choose **⋯ → Replace from file** on the file’s
+  row. Choose the local file and confirm with **Replace**. The panel remembers
+  the revision you downloaded, even if you rename the file. If another client
+  changes it, replacement and deletion report a conflict. Download the current
+  version to review it or reconcile your edits before retrying.
 - The same menu offers **Validate**, **Copy Hub path**, **Create copy**,
   **Rename** and **Delete**. A launch file also offers **Preview Hub endpoints**.
   Validation checks the saved source; worker startup checks plugins and local resources.

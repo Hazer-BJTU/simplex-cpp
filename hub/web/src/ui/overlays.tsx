@@ -46,7 +46,7 @@ export function MenuContent({ children, align = 'end', onCloseAutoFocus }: {
             <DropdownMenu.Content
                 align={align}
                 sideOffset={4}
-                className={`${SURFACE} min-w-44`}
+                className={`${SURFACE} min-w-44 max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto overscroll-contain`}
                 {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
             >
                 {children}

@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { ConfigFile, ConfigKind, ConfigPreviewResponse } from '../../../ui/index.ts';
 import { Button, IconButton } from '../ui/Button.tsx';
 import { Glyph } from '../ui/icons.tsx';
@@ -20,15 +20,6 @@ export function libraryFilename(file: LibraryFile): string {
 
 export function entryId(kind: ConfigKind, id?: string): string {
     return id === undefined ? `config-add-${kind}` : `config-file-${kind}-${id}`;
-}
-
-/** A menu that reveals an inline form hands it keyboard focus when Radix closes. */
-function focusInlineField(event: Event, trigger: string) {
-    const field = document.getElementById(trigger + ':field');
-    if (field) {
-        event.preventDefault();
-        field.focus();
-    }
 }
 
 type InlineProps = {
@@ -108,6 +99,33 @@ export function ConfigurationFileGroup({ kind, ids, editorAvailable, busy, task,
     onAction: (file: LibraryFile, action: FileAction) => void;
 }) {
     const picker = useRef<HTMLInputElement>(null);
+    const deferredFocus = useRef<HTMLButtonElement | null>(null);
+    useLayoutEffect(() => {
+        if (busy) return;
+        const origin = deferredFocus.current;
+        deferredFocus.current = null;
+        if (!origin?.isConnected) return;
+        const active = document.activeElement;
+        if (active && active !== document.body && !active.matches('[role="dialog"]')) return;
+        const field = task && document.getElementById(entryId(task.kind, task.id) + ':field');
+        (field ?? origin).focus();
+    }, [busy, task]);
+
+    function onMenuClose(event: Event, entry: string) {
+        const trigger = document.getElementById(entry)?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+        if (trigger?.disabled) {
+            // Radix cannot return focus until the pending file operation re-enables its trigger.
+            event.preventDefault();
+            deferredFocus.current = trigger;
+            return;
+        }
+        const field = document.getElementById(entry + ':field');
+        if (field) {
+            event.preventDefault();
+            field.focus();
+        }
+    }
+
     const title = kind === 'worker' ? 'Worker configurations' : 'Launch configurations';
     const addId = entryId(kind);
     const form = task && <InlineAction key={task.action + ':' + (task.id ?? '')} task={task} busy={busy}
@@ -120,7 +138,7 @@ export function ConfigurationFileGroup({ kind, ids, editorAvailable, busy, task,
                     <MenuTrigger asChild disabled={busy}>
                         <Button variant="ghost" aria-label={`Add ${kind} configuration`}>+ Add</Button>
                     </MenuTrigger>
-                    <MenuContent onCloseAutoFocus={event => focusInlineField(event, addId)}>
+                    <MenuContent onCloseAutoFocus={event => onMenuClose(event, addId)}>
                         <MenuItem onSelect={onNew}>New from template…</MenuItem>
                         <MenuItem onSelect={() => picker.current?.click()}>Upload file…</MenuItem>
                     </MenuContent>
@@ -144,7 +162,10 @@ export function ConfigurationFileGroup({ kind, ids, editorAvailable, busy, task,
                             <div className="flex min-h-11 items-center gap-1 rounded px-1 hover:bg-subtle focus-within:bg-subtle">
                                 <button type="button" disabled={busy} title={filename}
                                     aria-label={editorAvailable ? `Open ${filename} in editor` : `Download ${filename}`}
-                                    onClick={() => onAction(file, editorAvailable ? 'open' : 'download')}
+                                    onClick={event => {
+                                        deferredFocus.current = event.currentTarget;
+                                        onAction(file, editorAvailable ? 'open' : 'download');
+                                    }}
                                     className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded px-2 text-left focus-visible:outline-2 focus-visible:outline-interactive">
                                     <Glyph name="output" className="text-ink-muted" />
                                     <span className="min-w-0 flex-1 truncate font-mono text-sm">{filename}</span>
@@ -156,7 +177,7 @@ export function ConfigurationFileGroup({ kind, ids, editorAvailable, busy, task,
                                             <Glyph name="more" />
                                         </IconButton>
                                     </MenuTrigger>
-                                    <MenuContent onCloseAutoFocus={event => focusInlineField(event, trigger)}>
+                                    <MenuContent onCloseAutoFocus={event => onMenuClose(event, trigger)}>
                                         {editorAvailable && <MenuItem onSelect={() => onAction(file, 'download')}>Download</MenuItem>}
                                         <MenuItem onSelect={() => onAction(file, 'replace')}>Replace from file…</MenuItem>
                                         <MenuItem onSelect={() => onAction(file, 'validate')}>Validate</MenuItem>

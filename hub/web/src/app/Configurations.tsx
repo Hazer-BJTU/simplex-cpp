@@ -88,10 +88,14 @@ function ConfigurationManager({ revisions, onClose }: { revisions: Map<string, s
         }
     };
     const refresh = async () => setList(await rest.request<ConfigList>('GET', '/api/configurations'));
-    const read = (file: LibraryFile) => rest.request<ConfigFile & { path: string }>('GET', filePath(file) + '/source');
-    // Downloading pins the content the operator took away. Listing files or acting on
-    // another row must never silently advance the revision used to replace that copy.
-    const replacementRevision = async (file: LibraryFile) => revisions.get(filePath(file)) ?? (await read(file)).revision;
+    /** The first read pins a baseline. Only a download or content save advances an existing pin. */
+    async function read(file: LibraryFile) {
+        const path = filePath(file);
+        const source = await rest.request<ConfigFile & { path: string }>('GET', path + '/source');
+        if (!revisions.has(path)) revisions.set(path, source.revision);
+        return source;
+    }
+    const observedRevision = async (file: LibraryFile) => revisions.get(filePath(file)) ?? (await read(file)).revision;
 
     function finishTask(file: { kind: LibraryFile['kind']; id?: string }) {
         setTask(null);
@@ -114,7 +118,14 @@ function ConfigurationManager({ revisions, onClose }: { revisions: Map<string, s
     }
 
     function saved(file: ConfigFile, oldName: string | null = null) {
-        revisions.set(filePath(file), file.revision);
+        let observed = file.revision;
+        if (oldName !== null) {
+            // Rename moves the file, but the operator still has the same downloaded copy.
+            const oldPath = filePath({ kind: file.kind, id: oldName });
+            observed = revisions.get(oldPath) ?? file.revision;
+            revisions.delete(oldPath);
+        }
+        revisions.set(filePath(file), observed);
         updateListing(file.kind, file.id, oldName);
         finishTask(file);
         return `Saved ${libraryFilename(file)}.`;
@@ -146,7 +157,7 @@ function ConfigurationManager({ revisions, onClose }: { revisions: Map<string, s
                 setTask({ ...file, action, revision: (await read(file)).revision });
                 return;
             case 'replace':
-                setTask({ ...file, action, revision: await replacementRevision(file) });
+                setTask({ ...file, action, revision: await observedRevision(file) });
                 return;
             case 'copy':
                 setTask({ ...file, action });
@@ -167,9 +178,16 @@ function ConfigurationManager({ revisions, onClose }: { revisions: Map<string, s
                 return;
             }
             case 'delete': {
-                const previous = (await read(file)).revision;
+                const previous = await observedRevision(file);
                 if (!window.confirm(`Delete ${libraryFilename(file)} from the library?`)) return;
-                await rest.request('DELETE', path, { body: { revision: previous } });
+                try {
+                    await rest.request('DELETE', path, { body: { revision: previous } });
+                } catch (error) {
+                    if (error instanceof ApiError && error.status === 409) {
+                        throw new Error(`${libraryFilename(file)} changed. Download the current file before deleting it.`);
+                    }
+                    throw error;
+                }
                 revisions.delete(path);
                 updateListing(file.kind, null, file.id);
                 finishTask({ kind: file.kind });
@@ -207,7 +225,6 @@ function ConfigurationManager({ revisions, onClose }: { revisions: Map<string, s
                 const renamed = await rest.request<ConfigFile>('POST', filePath(task) + '/rename', {
                     body: { id, revision: task.revision },
                 });
-                revisions.delete(filePath(task));
                 return saved(renamed, task.id);
             }
         }
