@@ -342,6 +342,7 @@ export function SessionList({ open, onClose, collapsed }: {
                 if (!value) setError('');
             }}>
                 <DialogContent
+                    frosted
                     title="Create a session"
                     description="Choose an ID for a new conversation. You can start its worker afterward."
                 >

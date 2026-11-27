@@ -743,14 +743,22 @@ select option:checked {
     --panel-frame-opacity: var(--panel-frame-light-opacity, 1);
 }
 [data-panel-frame="sunken"] { --panel-frame-base: var(--sunken); }
+[data-panel-frame="raised"] { --panel-frame-base: var(--raised); }
 [data-theme="dark"] [data-panel-frame] {
     --panel-frame-opacity: var(--panel-frame-dark-opacity, 1);
 }
-html:is([data-theme="light"][data-panel-background~="light"],
-        [data-theme="dark"][data-panel-background~="dark"]) [data-panel-frame] {
-    background-color: color-mix(in srgb, var(--panel-frame-base)
-        calc(var(--panel-frame-opacity) * 100%), transparent);
-    backdrop-filter: blur(calc((1 - var(--panel-frame-opacity)) * 24px));
+@supports (backdrop-filter: blur(1px)) {
+    html:is([data-theme="light"][data-panel-background~="light"],
+            [data-theme="dark"][data-panel-background~="dark"]) [data-panel-frame] {
+        background-color: color-mix(in srgb, var(--panel-frame-base)
+            calc(var(--panel-frame-opacity) * 100%), transparent);
+        backdrop-filter: blur(calc((1 - var(--panel-frame-opacity)) * 24px));
+    }
+    /* The modal scrim darkens the wallpaper behind the light dialog. Keep
+       small descriptions and field labels readable on that darker surface. */
+    html[data-theme="light"][data-panel-background~="light"] [data-panel-frame="raised"] {
+        --ink-muted: color-mix(in srgb, var(--ink) 84%, var(--raised));
+    }
 }
 /* The faint tone is tuned to 4.5:1 against the solid surface, and a veil is not
  * that surface: over a black or white region at the default opacity it measures

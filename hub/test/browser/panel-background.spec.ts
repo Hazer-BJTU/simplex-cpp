@@ -221,6 +221,62 @@ test('a Hub that omits frameOpacity keeps the solid frame', async ({ page }) => 
     }
 });
 
+test('session dialogs follow the active frame tint over conversation text', async ({ page }, testInfo) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page);
+    await page.getByTestId('session-row').click();
+    await emit(page, 'model_response', modelResponse('The configuration library contains worker and launch profiles.\n\n'.repeat(18)));
+    await page.getByRole('button', { name: 'Create a session', exact: true }).click();
+    const create = page.getByRole('dialog', { name: 'Create a session' });
+    await expect(create.getByLabel('new session id')).toBeFocused();
+    await expect(create).toHaveCSS('backdrop-filter', 'blur(16.8px)');
+    expect(await backgroundAlpha(page, '[role="dialog"]')).toBeCloseTo(0.3, 2);
+    expect(await backgroundAlpha(page, '#new-session-id')).toBe(1);
+    await page.screenshot({ path: testInfo.outputPath('create-light.png'), animations: 'disabled' });
+
+    await create.getByRole('button', { name: 'Edit configurations' }).click();
+    const library = page.getByRole('dialog', { name: 'Configurations' });
+    await expect(library).toHaveCSS('backdrop-filter', 'blur(16.8px)');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(library).toHaveCSS('backdrop-filter', 'blur(13.2px)');
+    expect(await backgroundAlpha(page, '[role="dialog"]')).toBeCloseTo(0.45, 2);
+    expect(await backgroundAlpha(page, '[aria-label="Session configuration"]')).toBe(0);
+    await page.route('**/api/configurations/worker/default/source', route => route.fulfill({ json: {
+        kind: 'worker', id: 'default', text: '', revision: '1', path: '/tmp/default.yaml',
+    } }));
+    await library.getByLabel('Saved configuration').selectOption('default');
+    await expect(library.getByRole('button', { name: 'Download' })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('configurations-dark.png'), animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 480 });
+    await library.getByRole('button', { name: 'Close', exact: true }).focus();
+    await expect(library.getByRole('button', { name: 'Close', exact: true })).toBeInViewport();
+    await page.keyboard.press('Escape');
+    await expect(library).toBeHidden();
+});
+
+test('session dialogs respect frame extremes and fall back to solid without a visible wallpaper', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await setup(page, { frameOpacity: { light: 1, dark: 0 } });
+    for (const name of ['Create a session', 'Configurations']) {
+        await page.getByRole('button', { name, exact: true }).click();
+        const dialog = page.getByRole('dialog', { name });
+        await expect(dialog).toHaveCSS('backdrop-filter', 'blur(0px)');
+        expect(await backgroundAlpha(page, '[role="dialog"]')).toBe(1);
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await expect(dialog).toHaveCSS('backdrop-filter', 'blur(24px)');
+        expect(await backgroundAlpha(page, '[role="dialog"]')).toBe(0);
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await page.emulateMedia({ colorScheme: 'light' });
+    }
+
+    await setup(page, { opacity: { light: 0, dark: 0.3 } });
+    await expect(page.locator('html')).toHaveAttribute('data-panel-background', 'dark');
+    await page.getByRole('button', { name: 'Configurations', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCSS('backdrop-filter', 'none');
+    expect(await backgroundAlpha(page, '[role="dialog"]')).toBe(1);
+});
+
 test('frameOpacity accepts one number for both themes', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await setup(page, { frameOpacity: 0.2 });

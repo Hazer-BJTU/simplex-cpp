@@ -64,7 +64,8 @@ and also accepts `contain`, `auto`, or one/two dimensions in px or percent.
 `position` defaults to `center` and accepts an edge or corner such as `top right`.
 Each opacity accepts a number from 0 to 1 or a light/dark pair. Defaults are
 0.12/0.08 for `opacity`, 0.6/0.6 for `toolCardOpacity`, and 0.3/0.45 for
-`frameOpacity`.
+`frameOpacity`. The Create a session and Configurations dialogs use the same
+frame opacity as the surrounding panel when the current theme shows a wallpaper.
 
 ## Resource limits
 
