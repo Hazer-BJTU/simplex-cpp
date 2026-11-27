@@ -23,12 +23,13 @@ public:
     /// Requires a nonnull, already-built Conversation model. Does not build or release it.
     explicit ModalityAssistTool(std::shared_ptr<llm::LLMModel> model);
 
-    /// Validate strings, the supported modality/extension and materialize defaults.
+    /// Validate path strings and the requested modality, then materialize defaults.
     void ensure_arguments(model_io::InvokeQuery& query) const override;
     /// ParallWrite/Trusted: sends files to the provider, with external effects.
     void write_attributes(model_io::InvokeQuery& query) const override;
     /**
-     * Read regular files within a shared byte budget, encode data URLs, then await
+     * Read regular files within a shared byte budget, select each data URL's MIME
+     * type from its header or a fallback filename suffix, encode the bytes, then await
      * one converse call. Any file failure aborts the whole call before model IO.
      * Cancellation is disabled for this invocation. Provider retry policy still
      * applies; there is no auxiliary loop or tool dispatch. Only final text is

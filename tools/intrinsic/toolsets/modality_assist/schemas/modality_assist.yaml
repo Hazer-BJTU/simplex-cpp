@@ -3,8 +3,9 @@ description: >-
   Ask the configured auxiliary vision model to interpret an ordered list of local images in one
   exchange and return a text description. Sends all files to that model's endpoint;
   its retry policy applies. No auxiliary tools or follow-up exchanges are run.
-  Supports PNG, JPEG, GIF and WebP based on the filename suffix (case-insensitive);
-  the suffix is a hint, not proof of valid image data or provider support.
+  Identifies PNG, JPEG, GIF and WebP by file header, including extensionless images.
+  If the header is unrecognized, a supported filename suffix (case-insensitive)
+  supplies the MIME type. Reports suffix conflicts and fallback in result hints.
   Requires a nonempty path list of nonempty regular files, totaling at most
   16 MiB. Any file or provider parsing failure fails the whole call; all files
   must be ready before model IO. Follows symlinks; relative paths
@@ -40,5 +41,5 @@ argument_schema:
         type: string
       description: >-
         Required nonempty ordered list of local image paths. Every entry must be
-        nonempty, contain no NUL, and end in .png, .jpg, .jpeg, .gif or .webp.
+        nonempty and contain no NUL. Fallback suffixes are .png, .jpg, .jpeg, .gif and .webp.
         Duplicates are preserved. Even a single image must use an array.

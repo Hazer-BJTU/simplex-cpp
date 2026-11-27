@@ -5,15 +5,27 @@
 #include "fileio/read_prefix.hpp"
 
 #include <boost/asio/this_coro.hpp>
+#include <format>
 #include <stdexcept>
 
 namespace tools::intrinsic {
 namespace {
 
-/** Suffix-based admission and MIME hint, not image decoding or verification. */
-std::string_view image_media_type(const std::filesystem::path& path)
+/** Match the image signatures in the WHATWG MIME Sniffing Standard. */
+std::string_view header_media_type(std::string_view bytes)
 {
-    auto extension = path.extension().string();
+    if (bytes.starts_with("\x89PNG\r\n\x1a\n")) return "image/png";
+    if (bytes.starts_with("\xff\xd8\xff")) return "image/jpeg";
+    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")) return "image/gif";
+    // RIFF is shared with WAV and AVI. Skip its four-byte size field.
+    if (bytes.starts_with("RIFF") && bytes.size() >= 14 && bytes.substr(8, 6) == "WEBPVP") {
+        return "image/webp";
+    }
+    return {};
+}
+
+std::string_view suffix_media_type(std::string extension)
+{
     for (auto& character : extension) {
         if (character >= 'A' && character <= 'Z') {
             character = static_cast<char>(character - 'A' + 'a');
@@ -24,6 +36,33 @@ std::string_view image_media_type(const std::filesystem::path& path)
     if (extension == ".gif") return "image/gif";
     if (extension == ".webp") return "image/webp";
     return {};
+}
+
+/** Use the bytes that will be sent. Keep diagnostics factual even if a later file fails. */
+std::string_view select_media_type(const std::filesystem::path& path, std::string_view bytes,
+                                   std::size_t index, std::vector<std::string>& hints)
+{
+    const auto extension = path.extension().string();
+    const auto suffix = suffix_media_type(extension);
+    const auto header = header_media_type(bytes);
+    if (!header.empty()) {
+        if (!extension.empty() && header != suffix) {
+            if (suffix.empty()) {
+                hints.push_back(std::format(
+                    "path[{}]: unrecognized filename suffix; the header identifies {}.", index, header));
+            } else {
+                hints.push_back(std::format(
+                    "path[{}]: {} suggests {}, but the header identifies {}.", index, extension, suffix, header));
+            }
+        }
+        return header;
+    }
+    if (suffix.empty()) {
+        throw std::runtime_error("cannot identify PNG, JPEG, GIF, or WebP from the header or filename suffix");
+    }
+    hints.push_back(std::format(
+        "path[{}]: unrecognized image header; inferred {} from {}.", index, suffix, extension));
+    return suffix;
 }
 
 /** Refuse unsupported responses rather than interpreting tool calls or binary as text. */
@@ -69,9 +108,6 @@ void ModalityAssistTool::ensure_arguments(model_io::InvokeQuery& query) const
         if (paths[index].empty() || paths[index].find('\0') != std::string::npos) {
             bad_argument(label + " must be nonempty and must not contain NUL");
         }
-        if (image_media_type(paths[index]).empty()) {
-            bad_argument(label + " must end in .png, .jpg, .jpeg, .gif, or .webp");
-        }
     }
     if (settle_string(query, "extra_modality", "vision") != "vision") {
         bad_argument("extra_modality must be vision");
@@ -94,6 +130,7 @@ boost::asio::awaitable<model_io::Content> ModalityAssistTool::invoke(
     co_await boost::asio::this_coro::reset_cancellation_state(
         boost::asio::disable_cancellation());
     const auto paths = optional_string_list(query, "path");
+    std::vector<std::string> hints;
     try {
         model_io::AgentInputState input;
         input.system_prompt.add_section("instruction", "",
@@ -117,7 +154,7 @@ boost::asio::awaitable<model_io::Content> ModalityAssistTool::invoke(
                     throw std::runtime_error("combined image size exceeds 16 MiB");
                 }
                 file_bytes += bytes.size();
-                media_types.emplace_back(image_media_type(paths[index]));
+                media_types.emplace_back(select_media_type(paths[index], bytes, index, hints));
                 model_io::Content image;
                 image.type = model_io::ContentType::ExternalRef;
                 image.modality = model_io::Modality::Image;
@@ -135,12 +172,17 @@ boost::asio::awaitable<model_io::Content> ModalityAssistTool::invoke(
         ToolResult output;
         output.field("path", paths)
             .field("media_type", media_types)
-            .field("file_bytes", file_bytes);
+            .field("file_bytes", file_bytes)
+            .field("hints", hints);
         if (response.cost) output.field("token_cost", *response.cost);
         output.block("description", response_text(response));
         co_return output.render();
     } catch (const std::exception& error) {
-        invoke_failed(std::string("modality_assist: ") + error.what());
+        std::string message = std::string("modality_assist: ") + error.what();
+        if (!hints.empty()) {
+            message += "\n" + ToolResult{}.field("hints", hints).text();
+        }
+        invoke_failed(std::move(message));
     }
 }
 
