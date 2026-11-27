@@ -113,7 +113,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
 
     return (
         <Dialog open={open} onOpenChange={value => { if (!value && !busy) onClose(); }}>
-            <DialogContent title="Configurations" description="Manage reusable worker and launch configuration files." wide>
+            <DialogContent title="Configurations" description="Manage reusable worker and launch configuration files." wide frosted>
                 <div className="configuration-workspace space-y-4">
                     <div className="config-library flex flex-wrap items-center gap-2">
                         <select aria-label="Configuration kind" className={control} value={kind} disabled={busy}
@@ -180,7 +180,7 @@ export function Configurations({ open, onClose }: { open: boolean; onClose: () =
                     </div>
                     {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
                     {notice && <p role="status" className="text-xs text-ok">{notice}</p>}
-                    <section className="space-y-3 rounded-lg border border-line bg-sunken p-3" aria-label="Session configuration">
+                    <section className="space-y-3 border-t border-line pt-3" aria-label="Session configuration">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <h3 className="text-xs font-semibold text-ink">Session configuration</h3>
                         <span className="text-xs text-ink-muted">{selected ? `Apply saved files to ${selected}` : 'Select a session to apply saved files'}</span>

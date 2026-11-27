@@ -106,10 +106,12 @@ export const DialogClose = DialogPrimitive.Close;
  * on a freshly opened approval dismissed it silently.
  */
 export function DialogContent({
-    title, description, children, footer, focus = 'first', wide = false,
+    title, description, children, footer, focus = 'first', wide = false, frosted = false,
 }: {
     title: string;
     wide?: boolean;
+    /** Use the panel's frame opacity when the active theme displays a background image. */
+    frosted?: boolean;
     description?: string | undefined;
     children?: ReactNode;
     footer?: ReactNode;
@@ -135,6 +137,7 @@ export function DialogContent({
             <DialogPrimitive.Overlay className="fixed inset-0 z-40 animate-fade bg-scrim" />
             <DialogPrimitive.Content
                 ref={surface}
+                data-panel-frame={frosted ? 'raised' : undefined}
                 tabIndex={-1}
                 onOpenAutoFocus={(event) => {
                     if (focus === 'none') {
