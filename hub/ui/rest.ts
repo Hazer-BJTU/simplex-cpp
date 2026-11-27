@@ -145,13 +145,17 @@ export interface RestOperations {
     'POST /api/configurations/preview': RestOperation<never, never, ConfigPreviewRequest, { 200: ConfigPreviewResponse }>;
     /** Validate source without saving it or starting a worker. */
     'POST /api/configurations/:kind/validate': RestOperation<{ kind: ConfigKind }, never, ConfigValidateRequest, { 200: ConfigValidateResponse }>;
+    /** Read the saved file and its host path, including files named template. */
+    'GET /api/configurations/:kind/:id/source': RestOperation<{ kind: ConfigKind; id: string }, never, never, { 200: ConfigFile & { path: string } }>;
     /** Read secret-bearing source text and its current opaque revision. */
     'GET /api/configurations/:kind/:id': RestOperation<{ kind: ConfigKind; id: string }, never, never, { 200: ConfigFile }>;
     /** Create with a null revision, or replace a matching revision. */
     'PUT /api/configurations/:kind/:id': RestOperation<{ kind: ConfigKind; id: string }, never, ConfigSaveRequest, { 200: ConfigFile }>;
     /** Delete a matching library revision; existing snapshots remain intact. */
     'DELETE /api/configurations/:kind/:id': RestOperation<{ kind: ConfigKind; id: string }, never, ConfigRemoveRequest, { 200: ConfigRemoveResponse }>;
-    /** Rename a matching library revision to a new library ID. */
+    /** Ask the Hub host to launch its configured editor for a saved file. */
+    'POST /api/configurations/:kind/:id/open': RestOperation<{ kind: ConfigKind; id: string }, never, Record<string, never>, { 200: { opened: true } }>;
+    /** Rename a saved file using its last observed revision. */
     'POST /api/configurations/:kind/:id/rename': RestOperation<{ kind: ConfigKind; id: string }, never, ConfigRenameRequest, { 200: ConfigFile }>;
     /** List operator-visible sessions; stopped headless sessions are removed. */
     'GET /api/sessions': RestOperation<never, never, never, { 200: SessionListResponse }>;
@@ -201,9 +205,11 @@ export const REST_ROUTES = [
     'GET /api/configurations/:kind/template',
     'POST /api/configurations/preview',
     'POST /api/configurations/:kind/validate',
+    'GET /api/configurations/:kind/:id/source',
     'GET /api/configurations/:kind/:id',
     'PUT /api/configurations/:kind/:id',
     'DELETE /api/configurations/:kind/:id',
+    'POST /api/configurations/:kind/:id/open',
     'POST /api/configurations/:kind/:id/rename',
     'GET /api/sessions',
     'POST /api/sessions',

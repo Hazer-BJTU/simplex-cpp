@@ -15,6 +15,8 @@ export interface ConfigFile {
 
 /** Lists contain names only, never source text, credentials or session tokens. */
 export interface ConfigList {
+    /** True when the Hub administrator configured a host editor. */
+    editorAvailable?: boolean;
     /** Saved launcher names only; no source text or credentials. */
     launch: string[];
     /** Saved worker configuration names only. */

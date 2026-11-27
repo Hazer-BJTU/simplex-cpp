@@ -8,6 +8,8 @@
     // A non-loopback listener requires a nonempty authentication token.
     "panel": {
         "token": ""
+        // Optional desktop editor on the Hub host.
+        // , "editor": { "command": "code", "args": ["--reuse-window", "{file}"] }
         // Optional static PNG/JPEG, relative to this config file. Restart to apply.
         // , "background": {
         //     "image": "./assets/background.jpg",

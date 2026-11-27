@@ -25,7 +25,8 @@ environment. For Docker, supply the credential when creating the container.
 
 ## Configure the model
 
-In **Configurations**, create a worker configuration from the template. Replace
+In **Configurations**, create a worker configuration from the template. Open it in
+the configured Hub editor, or download and edit a copy locally. Replace
 its `providers` and `driver_model` sections with settings for your account. For
 example, this fragment uses the bundled DeepSeek plugin and its default endpoint:
 
@@ -41,7 +42,7 @@ providers:
 driver_model: primary
 ```
 
-Save the file. Keep the template's Hub endpoint and session directory
+Save the file (use **Replace from file** for a downloaded copy). Keep the template's Hub endpoint and session directory
 placeholders so the Hub fills them for each session. See the
 [provider guides](../providers/index.md#provider-configuration) for other models.
 

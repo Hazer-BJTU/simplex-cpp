@@ -13,14 +13,20 @@ one worker YAML, and keeps its own copies.
 
 ## Editing the library
 
-Use **Configurations → New from template**, select the file kind, give it a
-name, then **Validate** and **Save**. The default library includes the `local`
-and `docker` launch files and a `default` worker template with provider
-placeholders. Library IDs contain 1–128 ASCII letters, digits, underscores or
-hyphens. The Hub adds the file extension. Saving under another name creates a
-reusable copy. Hub validation
-checks the document shape; starting the worker verifies its installed plugins,
-files and credentials. [First session](../getting-started/configuration.md)
+In **Configurations**, choose Worker (YAML) or Launch (JSONC), enter a new
+file name and select **New from template**. The Hub creates the file in its
+library. Select a saved file to download, validate or delete it. To copy or
+rename it, enter the destination name and choose **Save copy** or **Rename**.
+Library IDs contain 1–128 ASCII letters, digits, underscores or hyphens.
+
+- **Open in editor** launches the [configured editor on the Hub host](../reference/hub-settings.md#configuration-editor).
+  Save in the editor. **Copy Hub path** identifies the library file for terminal editing.
+- **Download** a configuration, edit it locally, then choose **Replace from file**.
+  Replacement checks the selected revision. On conflict, download the current
+  file and reconcile the changes before replacing it.
+- **Upload new file** imports a UTF-8 file under its base name (up to 1 MiB).
+  Uploads are validated before saving. **Validate** checks the current saved
+  file after external edits. Worker startup checks installed plugins and local resources.
 
 ## Directory and startup configuration
 
