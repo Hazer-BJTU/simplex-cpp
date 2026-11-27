@@ -146,6 +146,7 @@ export function SessionList({ open, onClose, collapsed }: {
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState('');
     const [configuring, setConfiguring] = useState(false);
+    const configurationsButton = useRef<HTMLButtonElement>(null);
     const [configs, setConfigs] = useState<ConfigList>({ launch: [], worker: [] });
     const [launch, setLaunch] = useState('local');
     const [worker, setWorker] = useState('default');
@@ -219,6 +220,7 @@ export function SessionList({ open, onClose, collapsed }: {
                     <span className="flex-1" />
                     <Tooltip label="Edit launch and worker configurations">
                         <IconButton
+                            ref={configurationsButton}
                             label="Configurations"
                             onClick={() => setConfiguring(true)}
                         >
@@ -336,7 +338,10 @@ export function SessionList({ open, onClose, collapsed }: {
                     </section>
                 )}
             </aside>
-            <Configurations open={configuring} onClose={() => setConfiguring(false)} />
+            <Configurations open={configuring} onClose={() => {
+                setConfiguring(false);
+                requestAnimationFrame(() => configurationsButton.current?.focus());
+            }} />
             <Dialog open={creating} onOpenChange={(value) => {
                 setCreating(value);
                 if (!value) setError('');

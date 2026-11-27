@@ -241,11 +241,7 @@ test('session dialogs follow the active frame tint over conversation text', asyn
     await expect(library).toHaveCSS('backdrop-filter', 'blur(13.2px)');
     expect(await backgroundAlpha(page, '[role="dialog"]')).toBeCloseTo(0.45, 2);
     expect(await backgroundAlpha(page, '[aria-label="Session configuration"]')).toBe(0);
-    await page.route('**/api/configurations/worker/default/source', route => route.fulfill({ json: {
-        kind: 'worker', id: 'default', text: '', revision: '1', path: '/tmp/default.yaml',
-    } }));
-    await library.getByLabel('Saved configuration').selectOption('default');
-    await expect(library.getByRole('button', { name: 'Download' })).toBeVisible();
+    await expect(library.getByRole('button', { name: 'Download default.yaml' })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('configurations-dark.png'), animations: 'disabled' });
     await page.setViewportSize({ width: 390, height: 480 });
     await library.getByRole('button', { name: 'Close', exact: true }).focus();

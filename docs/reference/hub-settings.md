@@ -33,7 +33,7 @@ trusted local network. A worker's advertised address belongs in the
 
 ## Configuration editor
 
-To enable **Open in editor** in the configuration library, merge this setting
+To enable **Open** on configuration file rows, merge this setting
 into `hub.config.jsonc` and restart the Hub:
 
 ```json
