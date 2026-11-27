@@ -577,22 +577,6 @@ select option:checked {
     color: var(--ink);
 }
 
-.configuration-workspace button {
-    min-height: 2.25rem;
-    justify-content: center;
-    border-radius: 0.375rem;
-}
-
-@media (max-width: 640px) {
-    .config-library > select {
-        flex: 1 1 45%;
-        width: 0;
-    }
-    .config-library > button {
-        flex: 1 1 45%;
-    }
-}
-
 /* Shared reading measure; scrolling lives outside this aligned content. */
 :root {
     --reading-width: 52rem;

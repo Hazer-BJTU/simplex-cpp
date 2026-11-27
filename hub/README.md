@@ -108,9 +108,9 @@ npm run build        # bundles the panel into web/dist
 npm start
 ```
 
-Then open <http://127.0.0.1:8800>. In **Configurations**, select the default
-worker YAML. Use **Open in editor** when a host editor is configured, or
-**Download** the file, edit it locally and **Replace from file**. Create a session, select
+Then open <http://127.0.0.1:8800>. In **Configurations**, find the default
+worker YAML. Choose **Open** if a host editor is configured, or **Download**
+the file, edit it locally and choose **⋯ → Replace from file**. Create a session, select
 both saved configurations, and press *Start worker*. The local template uses
 `simplex run`; install `simplex` on PATH or edit its executable path.
 

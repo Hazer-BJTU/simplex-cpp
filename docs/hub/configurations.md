@@ -13,20 +13,28 @@ one worker YAML, and keeps its own copies.
 
 ## Editing the library
 
-In **Configurations**, choose Worker (YAML) or Launch (JSONC), enter a new
-file name and select **New from template**. The Hub creates the file in its
-library. Select a saved file to download, validate or delete it. To copy or
-rename it, enter the destination name and choose **Save copy** or **Rename**.
-Library IDs contain 1–128 ASCII letters, digits, underscores or hyphens.
+The **Configurations** dialog lists Worker YAML and Launch JSONC files in
+separate groups.
 
-- **Open in editor** launches the [configured editor on the Hub host](../reference/hub-settings.md#configuration-editor).
-  Save in the editor. **Copy Hub path** identifies the library file for terminal editing.
-- **Download** a configuration, edit it locally, then choose **Replace from file**.
-  Replacement checks the selected revision. On conflict, download the current
-  file and reconcile the changes before replacing it.
-- **Upload new file** imports a UTF-8 file under its base name (up to 1 MiB).
-  Uploads are validated before saving. **Validate** checks the current saved
-  file after external edits. Worker startup checks installed plugins and local resources.
+- Choose **+ Add → New from template** in the target group, enter a name and
+  choose **Create**. Launch files offer Local, Docker and Managed templates.
+  **+ Add → Upload file** imports a UTF-8 file under its base name (up to 1 MiB).
+  Library names accept 1–128 ASCII letters, digits, underscores or hyphens.
+- Choose **Open** beside a filename to start the [configured editor on the Hub host](../reference/hub-settings.md#configuration-editor).
+  With no host editor configured, the row offers **Download**. Download is
+  also available in the actions menu when Open is the primary action.
+- To upload an edited copy, choose **⋯ → Replace from file** on the file’s
+  row. Choose the local file and confirm with **Replace**. The panel remembers
+  the revision you downloaded, even if you rename the file. If another client
+  changes it, replacement and deletion report a conflict. Download the current
+  version to review it or reconcile your edits before retrying.
+- The same menu offers **Validate**, **Copy Hub path**, **Create copy**,
+  **Rename** and **Delete**. A launch file also offers **Preview Hub endpoints**.
+  Validation checks the saved source; worker startup checks plugins and local resources.
+
+Expand **Session configuration** to choose and explicitly apply a saved pair
+to the displayed session. Browsing or editing library files leaves its
+selection intact.
 
 ## Directory and startup configuration
 

@@ -46,7 +46,8 @@ export function App() {
     useEffect(() => {
         if (!sessionsOpen) return;
         function onKeyDown(event: KeyboardEvent): void {
-            if (event.key === 'Escape') setSessionsOpen(false);
+            // A menu or dialog opened from the drawer handles its own Escape first.
+            if (event.key === 'Escape' && !event.defaultPrevented) setSessionsOpen(false);
         }
         document.addEventListener('keydown', onKeyDown);
         return () => document.removeEventListener('keydown', onKeyDown);

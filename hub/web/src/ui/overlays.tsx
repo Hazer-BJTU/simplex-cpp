@@ -46,7 +46,7 @@ export function MenuContent({ children, align = 'end', onCloseAutoFocus }: {
             <DropdownMenu.Content
                 align={align}
                 sideOffset={4}
-                className={`${SURFACE} min-w-44`}
+                className={`${SURFACE} min-w-44 max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto overscroll-contain`}
                 {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
             >
                 {children}
@@ -106,7 +106,7 @@ export const DialogClose = DialogPrimitive.Close;
  * on a freshly opened approval dismissed it silently.
  */
 export function DialogContent({
-    title, description, children, footer, focus = 'first', wide = false, frosted = false,
+    title, description, children, footer, headerActions, focus = 'first', wide = false, frosted = false,
 }: {
     title: string;
     wide?: boolean;
@@ -115,6 +115,8 @@ export function DialogContent({
     description?: string | undefined;
     children?: ReactNode;
     footer?: ReactNode;
+    /** Dialog-level actions that stay accessible while the body scrolls. */
+    headerActions?: ReactNode;
     /**
      * Where focus lands when the dialog opens.
      *
@@ -137,6 +139,7 @@ export function DialogContent({
             <DialogPrimitive.Overlay className="fixed inset-0 z-40 animate-fade bg-scrim" />
             <DialogPrimitive.Content
                 ref={surface}
+                {...(description ? {} : { 'aria-describedby': undefined })}
                 data-panel-frame={frosted ? 'raised' : undefined}
                 tabIndex={-1}
                 onOpenAutoFocus={(event) => {
@@ -150,14 +153,17 @@ export function DialogContent({
                     }
                 }}
                 className={'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] '
-                    + (wide ? 'w-[min(72rem,calc(100vw-2rem))] ' : 'w-[min(32rem,calc(100vw-2rem))] ')
+                    + (wide ? 'w-[min(40rem,calc(100vw-2rem))] ' : 'w-[min(32rem,calc(100vw-2rem))] ')
                     + '-translate-x-1/2 -translate-y-1/2 '
                     + 'flex-col animate-pop rounded-xl border border-line bg-raised p-4 sm:p-5 '
                     + 'shadow-xl focus:outline-none'}
             >
-                <DialogPrimitive.Title className="shrink-0 break-words [overflow-wrap:anywhere] text-base font-semibold text-ink">
-                    {title}
-                </DialogPrimitive.Title>
+                <div className="flex shrink-0 items-center justify-between gap-2">
+                    <DialogPrimitive.Title className="min-w-0 break-words [overflow-wrap:anywhere] text-base font-semibold text-ink">
+                        {title}
+                    </DialogPrimitive.Title>
+                    {headerActions}
+                </div>
                 {description && (
                     <DialogPrimitive.Description className="mt-1 shrink-0 break-words [overflow-wrap:anywhere] text-xs text-ink-muted">
                         {description}
